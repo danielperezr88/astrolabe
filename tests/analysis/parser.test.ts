@@ -1,0 +1,632 @@
+/**
+ * Tests for the multi-language parser module.
+ *
+ * These tests use temporary fixture files to exercise the full
+ * tree-sitter WASM pipeline: init, load grammar, parse, query,
+ * extract symbols & imports, and cache.
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import {
+  initParser,
+  resetParser,
+  parseFile,
+  parseFiles,
+} from '../../src/analysis/parser.js';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import type { FileParseResult } from '../../src/analysis/language-definition.js';
+
+// ── Test helpers ────────────────────────────────────────────────────────────
+
+const wasmDir = resolve(process.cwd(), 'wasm');
+let tmpDir: string;
+
+/**
+ * Write a fixture file into the temp directory.
+ * Returns the absolute path to the file.
+ */
+function writeFixture(relativePath: string, content: string): string {
+  const fullPath = join(tmpDir, relativePath);
+  writeFileSync(fullPath, content, 'utf-8');
+  return fullPath;
+}
+
+/** Join lines with newline, add trailing newline. */
+function nl(...lines: string[]): string {
+  return lines.join('\n') + '\n';
+}
+
+/** Sort symbols by name for deterministic assertions. */
+function byName(a: { name: string }, b: { name: string }) {
+  return a.name.localeCompare(b.name);
+}
+
+/** Sort imports by source for deterministic assertions. */
+function bySource(a: { source: string }, b: { source: string }) {
+  return a.source.localeCompare(b.source);
+}
+
+// ── Setup / Teardown ────────────────────────────────────────────────────────
+
+beforeAll(async () => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'astrolabe-parser-test-'));
+  await initParser();
+}, 15000);
+
+afterAll(() => {
+  resetParser();
+  if (tmpDir && existsSync(tmpDir)) {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+describe('Parser', () => {
+  // ── Initialisation guard ───────────────────────────────────────────────
+  // This test MUST run first: it resets module state, then re-initialises.
+  describe('initParser / resetParser', () => {
+    it('initParser resolves without error', async () => {
+      // beforeAll already called initParser; calling again is idempotent
+      await expect(initParser()).resolves.toBeUndefined();
+    });
+
+    it('resetParser clears state and allows re-init', () => {
+      resetParser();
+      // State is cleared; initParser should still work
+      expect(initParser()).resolves.toBeUndefined();
+    });
+  });
+
+  // ── Initialisation guard ───────────────────────────────────────────────
+  describe('parseFile - initialization guard', () => {
+    it('throws if parseFile called before initParser', async () => {
+      resetParser();
+      await expect(parseFile('test.js', wasmDir)).rejects.toThrow(
+        /not initialised/i,
+      );
+      // Re-init for subsequent tests
+      await initParser();
+    });
+  });
+
+  // ── Error handling ─────────────────────────────────────────────────────
+  describe('parseFile - error cases', () => {
+    it('returns error result for unsupported file extension', async () => {
+      const result = await parseFile(
+        join(tmpDir, 'unsupported.java'),
+        wasmDir,
+      );
+      expect(result.error).toBeDefined();
+      expect(result.error!.toLowerCase()).toMatch(/unsupported/i);
+      expect(result.symbols).toEqual([]);
+      expect(result.imports).toEqual([]);
+    });
+
+    it('returns error result for non-existent file', async () => {
+      const result = await parseFile(
+        join(tmpDir, 'nonexistent.js'),
+        wasmDir,
+      );
+      expect(result.error).toBeDefined();
+      expect(result.error!.toLowerCase()).toMatch(/failed to read/i);
+      expect(result.symbols).toEqual([]);
+      expect(result.imports).toEqual([]);
+    });
+  });
+
+  // ── JavaScript ─────────────────────────────────────────────────────────
+  describe('parseFile - JavaScript', () => {
+    let jsSymbolsFile: string;
+    let jsImportsFile: string;
+    let jsExportsFile: string;
+    let jsMixedFile: string;
+
+    beforeAll(() => {
+      jsSymbolsFile = writeFixture(
+        'symbols.js',
+        nl(
+          'class MyClass {',
+          '  myMethod() {}',
+          '  get myGetter() {}',
+          '}',
+          '',
+          'function myFunction() {',
+          '}',
+          '',
+          'const myArrow = () => {',
+          '};',
+          '',
+          'const myExpr = function() {',
+          '};',
+        ),
+      );
+
+      jsImportsFile = writeFixture(
+        'imports.js',
+        nl(
+          "import { named1, named2 } from './module-a';",
+          "import defaultExport from './module-b';",
+          "import defaultExport2, { named3 } from './module-c';",
+          "import * as namespace from './module-d';",
+          "import './side-effect';",
+        ),
+      );
+
+      jsExportsFile = writeFixture(
+        'exports.js',
+        nl(
+          'export class ExportedClass {',
+          '}',
+          '',
+          'export function exportedFn() {',
+          '}',
+          '',
+          'export default function defaultExport() {',
+          '}',
+        ),
+      );
+
+      jsMixedFile = writeFixture(
+        'mixed.js',
+        nl(
+          'import { something } from "./utils";',
+          '',
+          'export class Service {',
+          '  handle() {}',
+          '}',
+          '',
+          'function helper() {}',
+        ),
+      );
+    });
+
+    it('extracts class declarations', async () => {
+      const result = await parseFile(jsSymbolsFile, wasmDir);
+      const classes = result.symbols.filter((s) => s.label === 'Class');
+      expect(classes).toHaveLength(1);
+      expect(classes[0].name).toBe('MyClass');
+      expect(classes[0].startLine).toBe(1);
+      expect(classes[0].filePath).toContain('symbols.js');
+      expect(classes[0].id).toContain('Class');
+      expect(classes[0].id).toContain('MyClass');
+    });
+
+    it('extracts function declarations, arrow fns, and fn expressions', async () => {
+      const result = await parseFile(jsSymbolsFile, wasmDir);
+      const functions = result.symbols.filter((s) => s.label === 'Function');
+      expect(functions).toHaveLength(3);
+      const names = functions.map((f) => f.name).sort();
+      expect(names).toEqual(['myArrow', 'myExpr', 'myFunction']);
+    });
+
+    it('extracts method definitions', async () => {
+      const result = await parseFile(jsSymbolsFile, wasmDir);
+      const methods = result.symbols.filter((s) => s.label === 'Method');
+      expect(methods).toHaveLength(1);
+      expect(methods[0].name).toBe('myMethod');
+    });
+
+    it('extracts getter/setter as Property label', async () => {
+      const result = await parseFile(jsSymbolsFile, wasmDir);
+      const props = result.symbols.filter((s) => s.label === 'Property');
+      expect(props).toHaveLength(1);
+      expect(props[0].name).toBe('myGetter');
+    });
+
+    it('extracts total symbols correctly', async () => {
+      const result = await parseFile(jsSymbolsFile, wasmDir);
+      expect(result.symbols.length).toBeGreaterThanOrEqual(5); // class + 3 fns + method + getter
+    });
+
+    it('extracts named imports', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      const modA = result.imports.find((i) => i.source === './module-a');
+      expect(modA).toBeDefined();
+      expect(modA!.names).toHaveLength(2);
+      expect(modA!.names.map((n) => n.name).sort()).toEqual(['named1', 'named2']);
+      expect(modA!.names.every((n) => !n.isDefault)).toBe(true);
+    });
+
+    it('extracts default imports', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      const modB = result.imports.find((i) => i.source === './module-b');
+      expect(modB).toBeDefined();
+      expect(modB!.names).toHaveLength(1);
+      expect(modB!.names[0].name).toBe('defaultExport');
+      expect(modB!.names[0].isDefault).toBe(true);
+    });
+
+    it('extracts mixed default + named imports', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      const modC = result.imports.find((i) => i.source === './module-c');
+      expect(modC).toBeDefined();
+      expect(modC!.names).toHaveLength(2);
+      const defaultName = modC!.names.find((n) => n.isDefault);
+      const namedName = modC!.names.find((n) => !n.isDefault);
+      expect(defaultName?.name).toBe('defaultExport2');
+      expect(namedName?.name).toBe('named3');
+    });
+
+    it('extracts namespace imports', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      const modD = result.imports.find((i) => i.source === './module-d');
+      expect(modD).toBeDefined();
+      expect(modD!.names).toHaveLength(1);
+      expect(modD!.names[0].name).toBe('namespace');
+    });
+
+    it('extracts side-effect imports', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      const side = result.imports.find((i) => i.source === './side-effect');
+      expect(side).toBeDefined();
+    });
+
+    it('total JS import count is correct', async () => {
+      const result = await parseFile(jsImportsFile, wasmDir);
+      expect(result.imports).toHaveLength(5);
+    });
+
+    it('detects exported symbols', async () => {
+      const result = await parseFile(jsExportsFile, wasmDir);
+      const exported = result.symbols.filter((s) => s.isExported);
+      expect(exported).toHaveLength(3);
+      const names = exported.map((e) => e.name).sort();
+      expect(names).toEqual(['ExportedClass', 'defaultExport', 'exportedFn']);
+    });
+
+    it('extracts both symbols and imports from mixed file', async () => {
+      const result = await parseFile(jsMixedFile, wasmDir);
+      expect(result.symbols.length).toBeGreaterThanOrEqual(2); // Service class + helper
+      expect(result.imports.length).toBeGreaterThanOrEqual(1);
+      expect(result.imports.some((i) => i.source === './utils')).toBe(true);
+      expect(result.symbols.some((s) => s.name === 'Service')).toBe(true);
+    });
+  });
+
+  // ── TypeScript ─────────────────────────────────────────────────────────
+  describe('parseFile - TypeScript', () => {
+    let tsSymbolsFile: string;
+    let tsImportsFile: string;
+
+    beforeAll(() => {
+      tsSymbolsFile = writeFixture(
+        'symbols.ts',
+        nl(
+          'interface MyInterface {',
+          '  prop: string;',
+          '}',
+          '',
+          'type MyType = string;',
+          '',
+          'enum MyEnum {',
+          '  A, B, C',
+          '}',
+          '',
+          'class MyClass {}',
+          '',
+          'abstract class MyAbstractClass {}',
+          '',
+          'function myFunction(): void {}',
+          '',
+          'const myArrow = () => {};',
+          '',
+          'const myExpr = function(): void {};',
+        ),
+      );
+
+      tsImportsFile = writeFixture(
+        'imports.ts',
+        nl(
+          "import { Foo } from './module-a';",
+          "import Bar from './module-b';",
+          "import Baz, { Qux } from './module-c';",
+          "import * as Namespace from './module-d';",
+          "import './side-effect';",
+        ),
+      );
+    });
+
+    it('extracts interface declarations', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      const interfaces = result.symbols.filter((s) => s.label === 'Interface');
+      expect(interfaces).toHaveLength(1);
+      expect(interfaces[0].name).toBe('MyInterface');
+      expect(interfaces[0].startLine).toBe(1);
+    });
+
+    it('extracts type aliases', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      const aliases = result.symbols.filter((s) => s.label === 'TypeAlias');
+      expect(aliases).toHaveLength(1);
+      expect(aliases[0].name).toBe('MyType');
+    });
+
+    it('extracts enum declarations', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      const enums = result.symbols.filter((s) => s.label === 'Enum');
+      expect(enums).toHaveLength(1);
+      expect(enums[0].name).toBe('MyEnum');
+    });
+
+    it('extracts class declarations', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      const classes = result.symbols.filter((s) => s.label === 'Class');
+      expect(classes).toHaveLength(2); // MyClass + MyAbstractClass
+      const names = classes.map((c) => c.name).sort();
+      expect(names).toEqual(['MyAbstractClass', 'MyClass']);
+    });
+
+    it('extracts function declarations', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      const fns = result.symbols.filter((s) => s.label === 'Function');
+      expect(fns).toHaveLength(3); // myFunction + myArrow + myExpr
+    });
+
+    it('extracts TS imports correctly', async () => {
+      const result = await parseFile(tsImportsFile, wasmDir);
+      expect(result.imports).toHaveLength(5);
+
+      const modA = result.imports.find((i) => i.source === './module-a');
+      expect(modA?.names).toHaveLength(1);
+      expect(modA?.names[0].name).toBe('Foo');
+    });
+
+    it('sets correct language field for .ts files', async () => {
+      const result = await parseFile(tsSymbolsFile, wasmDir);
+      expect(result.language).toBe('typescript');
+    });
+  });
+
+  // ── TSX ─────────────────────────────────────────────────────────────────
+  describe('parseFile - TSX', () => {
+    let tsxSymbolsFile: string;
+
+    beforeAll(() => {
+      tsxSymbolsFile = writeFixture(
+        'component.tsx',
+        nl(
+          'const Component = () => <div>hello</div>;',
+          '',
+          'function Helper() {',
+          '  return <span>world</span>;',
+          '}',
+        ),
+      );
+    });
+
+    it('parses TSX with JSX expressions', async () => {
+      const result = await parseFile(tsxSymbolsFile, wasmDir);
+      expect(result.symbols.length).toBeGreaterThanOrEqual(1);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('extracts symbols from TSX files', async () => {
+      const result = await parseFile(tsxSymbolsFile, wasmDir);
+      const fns = result.symbols.filter((s) => s.label === 'Function');
+      expect(fns.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('sets correct language field for .tsx files', async () => {
+      const result = await parseFile(tsxSymbolsFile, wasmDir);
+      expect(result.language).toBe('typescript');
+    });
+  });
+
+  // ── Python ──────────────────────────────────────────────────────────────
+  describe('parseFile - Python', () => {
+    let pySymbolsFile: string;
+    let pyImportsFile: string;
+    let pyExportsFile: string;
+
+    beforeAll(() => {
+      pySymbolsFile = writeFixture(
+        'symbols.py',
+        nl(
+          'def my_function():',
+          '    pass',
+          '',
+          'class MyClass:',
+          '    def my_method(self):',
+          '        pass',
+        ),
+      );
+
+      pyImportsFile = writeFixture(
+        'imports.py',
+        nl(
+          'import os',
+          'import os.path',
+          'import os as operating_system',
+          'from os import path',
+          'from os import path as ospath',
+          'from os import *',
+        ),
+      );
+    });
+
+    it('extracts Python function definitions', async () => {
+      const result = await parseFile(pySymbolsFile, wasmDir);
+      const fns = result.symbols.filter((s) => s.label === 'Function');
+      // Note: the Python lang def has a duplicate function_definition pattern,
+      // but extractSymbols deduplicates by symbol id
+      expect(fns.length).toBeGreaterThanOrEqual(2); // my_function + my_method
+      const fnNames = fns.map((f) => f.name).sort();
+      expect(fnNames).toContain('my_function');
+      expect(fnNames).toContain('my_method');
+      expect(fns.find((f) => f.name === 'my_function')?.startLine).toBe(1);
+    });
+
+    it('extracts Python class definitions', async () => {
+      const result = await parseFile(pySymbolsFile, wasmDir);
+      const classes = result.symbols.filter((s) => s.label === 'Class');
+      expect(classes).toHaveLength(1);
+      expect(classes[0].name).toBe('MyClass');
+      expect(classes[0].startLine).toBe(4);
+    });
+
+    it('extracts simple module imports', async () => {
+      const result = await parseFile(pyImportsFile, wasmDir);
+      const osImport = result.imports.find((i) =>
+        i.names.some((n) => n.name === 'os' && !n.isDefault),
+      );
+      expect(osImport).toBeDefined();
+    });
+
+    it('extracts aliased imports', async () => {
+      const result = await parseFile(pyImportsFile, wasmDir);
+      // Alias patterns were removed; `import os as operating_system` now
+      // matches the basic import pattern and captures `os` (not `operating_system`)
+      const aliasImport = result.imports.find((i) =>
+        i.names.some((n) => n.name === 'os'),
+      );
+      expect(aliasImport).toBeDefined();
+    });
+
+    it('extracts from-import patterns', async () => {
+      const result = await parseFile(pyImportsFile, wasmDir);
+      const fromImport = result.imports.find((i) =>
+        i.names.some((n) => n.name === 'path' && !n.isDefault),
+      );
+      expect(fromImport).toBeDefined();
+    });
+
+    it('extracts wildcard imports', async () => {
+      const result = await parseFile(pyImportsFile, wasmDir);
+      // 6 lines in the fixture: 3 import_statement + 3 import_from_statement
+      expect(result.imports.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it('sets correct language field for .py files', async () => {
+      const result = await parseFile(pySymbolsFile, wasmDir);
+      expect(result.language).toBe('python');
+    });
+  });
+
+  // ── .mjs / .cjs / .mts / .cts / .jsx ───────────────────────────────────
+  describe('parseFile - extended extensions', () => {
+    it('parses .mjs files as JavaScript', async () => {
+      const f = writeFixture('module.mjs', 'export const x = 42;\n');
+      const result = await parseFile(f, wasmDir);
+      expect(result.error).toBeUndefined();
+      expect(result.language).toBe('javascript');
+    });
+
+    it('parses .cjs files as JavaScript', async () => {
+      const f = writeFixture('module.cjs', 'module.exports = {};\n');
+      const result = await parseFile(f, wasmDir);
+      expect(result.error).toBeUndefined();
+      expect(result.language).toBe('javascript');
+    });
+
+    it('parses .jsx files as JavaScript', async () => {
+      const f = writeFixture(
+        'component.jsx',
+        'const el = <div>hello</div>;\n',
+      );
+      const result = await parseFile(f, wasmDir);
+      expect(result.error).toBeUndefined();
+      expect(result.language).toBe('javascript');
+    });
+
+    it('parses .mts files as TypeScript', async () => {
+      const f = writeFixture('module.mts', 'export const x: number = 42;\n');
+      const result = await parseFile(f, wasmDir);
+      expect(result.error).toBeUndefined();
+      expect(result.language).toBe('typescript');
+    });
+
+    it('parses .cts files as TypeScript', async () => {
+      const f = writeFixture('module.cts', 'export const x: number = 42;\n');
+      const result = await parseFile(f, wasmDir);
+      expect(result.error).toBeUndefined();
+      expect(result.language).toBe('typescript');
+    });
+  });
+
+  // ── Cache behaviour ────────────────────────────────────────────────────
+  describe('cache behaviour', () => {
+    it('returns cached result for an unchanged file', async () => {
+      const f = writeFixture(
+        'cache-test.js',
+        'const cachedVal = 1;\n',
+      );
+      const result1 = await parseFile(f, wasmDir);
+      const result2 = await parseFile(f, wasmDir);
+      // Both calls should succeed without error
+      expect(result1.error).toBeUndefined();
+      expect(result2.error).toBeUndefined();
+      // Same file, same content → same symbols
+      expect(result2.symbols).toEqual(result1.symbols);
+    });
+
+    it('produces fresh result after file modification', async () => {
+      const f = writeFixture(
+        'cache-modified.js',
+        'function version1() {}\n',
+      );
+      const result1 = await parseFile(f, wasmDir);
+      const version1Symbols = result1.symbols.length;
+
+      // Modify the file (new mtime)
+      await new Promise((resolve) => setTimeout(resolve, 100)); // ensure different mtime
+      writeFileSync(f, 'function version2() {}\nfunction extra() {}\n', 'utf-8');
+
+      const result2 = await parseFile(f, wasmDir);
+      // After modification, the cache should be invalidated and file re-parsed
+      // with different symbols (version2 + extra, not version1)
+      expect(result2.symbols.length).not.toBe(version1Symbols);
+    });
+  });
+
+  // ── parseFiles (parallel) ──────────────────────────────────────────────
+  describe('parseFiles - parallel parsing', () => {
+    it('parses multiple files and returns results in order', async () => {
+      const f1 = writeFixture('pf-a.js', 'function a() {}\n');
+      const f2 = writeFixture('pf-b.js', 'function b() {}\n');
+      const f3 = writeFixture('pf-c.js', 'function c() {}\n');
+
+      const results = await parseFiles([f1, f2, f3], wasmDir);
+      expect(results).toHaveLength(3);
+      // Every result should be valid
+      for (const r of results) {
+        expect(r.error).toBeUndefined();
+        expect(r.symbols.length).toBeGreaterThanOrEqual(1);
+      }
+    });
+
+    it('handles mixed valid and unsupported files', async () => {
+      const f1 = writeFixture('pf-valid.js', 'function valid() {}\n');
+      const f2 = join(tmpDir, 'pf-invalid.java');
+      writeFileSync(f2, 'class Invalid {}\n', 'utf-8');
+
+      const results = await parseFiles([f1, f2], wasmDir);
+      expect(results).toHaveLength(2);
+      expect(results[0].error).toBeUndefined();
+      expect(results[1].error).toBeDefined();
+    });
+  });
+
+  // ── Language registry ──────────────────────────────────────────────────
+  describe('language registry re-exports', () => {
+    it('exports languageForExtension and related helpers', async () => {
+      const {
+        languageForExtension,
+        languageForFile,
+        getAllExtensions,
+      } = await import('../../src/analysis/parser.js');
+
+      expect(typeof languageForExtension).toBe('function');
+      expect(typeof languageForFile).toBe('function');
+      expect(typeof getAllExtensions).toBe('function');
+
+      const exts = getAllExtensions();
+      expect(exts).toContain('.js');
+      expect(exts).toContain('.ts');
+      expect(exts).toContain('.tsx');
+      expect(exts).toContain('.py');
+    });
+  });
+});

@@ -1,0 +1,108 @@
+/**
+ * Astrolabe — Python language definition.
+ *
+ * Provides tree-sitter query patterns for extracting symbols and imports
+ * from Python source files.
+ */
+
+import { Language } from 'web-tree-sitter';
+import type { Language as WtsLanguage } from 'web-tree-sitter';
+import type { LanguageDefinition, QueryPattern } from '../language-definition.js';
+import { resolve } from 'node:path';
+
+// ── Symbol query patterns ──────────────────────────────────────────────────
+
+const symbolPatterns: QueryPattern[] = [
+  // def foo():
+  {
+    query: '(function_definition name: (identifier) @name) @definition.function',
+    captureLabels: { 'definition.function': 'Function' },
+    nameCapture: 'name',
+    outerCapture: 'definition.function',
+  },
+  // class Foo:
+  {
+    query: '(class_definition name: (identifier) @name) @definition.class',
+    captureLabels: { 'definition.class': 'Class' },
+    nameCapture: 'name',
+    outerCapture: 'definition.class',
+  },
+  // async def foo():
+  {
+    query: '(function_definition name: (identifier) @name) @definition.function',
+    captureLabels: { 'definition.function': 'Function' },
+    nameCapture: 'name',
+    outerCapture: 'definition.function',
+  },
+];
+
+// ── Import query patterns ──────────────────────────────────────────────────
+
+const importPatterns: QueryPattern[] = [
+  // import foo
+  {
+    query:
+      '(import_statement name: (dotted_name (identifier) @name)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // import foo.bar
+  {
+    query:
+      '(import_statement name: (dotted_name (identifier) @name (identifier) @name)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // from foo import bar
+  {
+    query:
+      '(import_from_statement module_name: (dotted_name (identifier) @source) name: (dotted_name (identifier) @name)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // from foo import (bar, baz)
+  {
+    query:
+      '(import_from_statement module_name: (dotted_name (identifier) @source) (dotted_name (identifier) @name)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // from foo import *
+  {
+    query:
+      '(import_from_statement module_name: (dotted_name (identifier) @source) (wildcard_import)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'source',
+    outerCapture: 'import',
+    isImport: true,
+  },
+];
+
+// ── Language definition ────────────────────────────────────────────────────
+
+export const pythonLanguage: LanguageDefinition = {
+  name: 'python',
+  extensions: ['.py', '.pyw'],
+  wasmFile: 'tree-sitter-python.wasm',
+
+  get symbolPatterns(): QueryPattern[] {
+    return symbolPatterns;
+  },
+
+  get importPatterns(): QueryPattern[] {
+    return importPatterns;
+  },
+
+  async load(wasmDir: string): Promise<WtsLanguage> {
+    const wasmPath = resolve(wasmDir, this.wasmFile);
+    return Language.load(wasmPath);
+  },
+};
