@@ -60,7 +60,8 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
           const lRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
           let lMatch;
           while ((lMatch = lRegex.exec(line)) !== null) {
-            links.push({ text: lMatch[1], target: lMatch[2].split('#')[0], line: i + 1 });
+            // Keep anchor segments for cross-file anchor links (#147)
+            links.push({ text: lMatch[1], target: lMatch[2], line: i + 1 });
           }
         }
 
@@ -85,16 +86,24 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
           }
         }
 
-        // Create cross-reference edges for internal links
+        // Create cross-reference edges from the correct containing section (#139)
         for (const link of links) {
-          if (link.target.startsWith('http')) continue; // Skip external
-          // Try to find target section
+          if (link.target.startsWith('http')) continue;
+          // Find which heading/section this link falls under
+          let containingSection: string | null = null;
+          for (const h of [...headings].reverse()) {
+            if (h.line <= link.line) { containingSection = h.slug; break; }
+          }
+          const sourceSlug = containingSection ?? (headings[0]?.slug ?? 'top');
+
+          // Try to find target section by slug (including anchor fragments)
+          const anchor = link.target.includes('#') ? link.target.split('#')[1] : '';
+          const targetFile = link.target.split('#')[0];
           for (const h of headings) {
-            if (`./${link.target}` === `./${file.filePath}` ||
-                link.target === h.slug ||
-                link.target.endsWith(`#${h.slug}`)) {
-              const sourceSlug = headings.find(() => true)?.slug ?? '';
-              const edgeId = `xref:${file.filePath}:${link.text}:${h.slug}`;
+            const matchesAnchor = anchor ? h.slug === anchor : false;
+            const matchesTarget = `./${targetFile}` === `./${file.filePath}` || link.target === h.slug || link.target.endsWith(`#${h.slug}`);
+            if (matchesAnchor || matchesTarget) {
+              const edgeId = `xref:${file.filePath}:${sourceSlug}:${h.slug}`;
               if (!graph.getRelationship(edgeId)) {
                 graph.addRelationship({
                   id: edgeId,
