@@ -8,7 +8,11 @@
     "vscode": "^1.90.0"
   },
   "activationEvents": [
-    "onCommand:astrolabe.analyze"
+    "onCommand:astrolabe.analyze",
+    "onCommand:astrolabe.showGraph",
+    "onCommand:astrolabe.query",
+    "onCommand:astrolabe.context",
+    "onCommand:astrolabe.impact"
   ],
   "main": "dist/extension.js",
   "contributes": {
@@ -20,6 +24,18 @@
       {
         "command": "astrolabe.showGraph",
         "title": "Astrolabe: Show Knowledge Graph"
+      },
+      {
+        "command": "astrolabe.query",
+        "title": "Astrolabe: Query Knowledge Graph"
+      },
+      {
+        "command": "astrolabe.context",
+        "title": "Astrolabe: Show Symbol Context"
+      },
+      {
+        "command": "astrolabe.impact",
+        "title": "Astrolabe: Analyze Impact"
       }
     ]
   },
