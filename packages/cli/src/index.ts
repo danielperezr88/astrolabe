@@ -3,9 +3,11 @@
  * @astrolabe/cli — CLI entry point with full command suite.
  */
 import { program } from 'commander';
-import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, existsSync, statSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, parseEmitPhase,
   resolutionPhase, mroPhase, communityPhase, processTracingPhase,
@@ -15,6 +17,23 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+const REGISTRY_DIR = join(homedir(), '.astrolabe');
+const REGISTRY_FILE = join(REGISTRY_DIR, 'registry.json');
+
+function loadRegistry(): Array<{ name: string; path: string; dbPath: string; lastCommit: string; indexedAt: number }> {
+  try { if (!existsSync(REGISTRY_FILE)) return []; return JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8')); }
+  catch { return []; }
+}
+
+function saveRegistry(entries: Array<{ name: string; path: string; dbPath: string; lastCommit: string; indexedAt: number }>): void {
+  mkdirSync(REGISTRY_DIR, { recursive: true });
+  writeFileSync(REGISTRY_FILE, JSON.stringify(entries, null, 2));
+}
+
+function getGitCommit(repoPath: string): string {
+  try { return execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); }
+  catch { return 'unknown'; }
+}
 
 program.name('astrolabe').description('Codebase knowledge graph analysis tool').version(pkg.version);
 
@@ -44,8 +63,20 @@ program
       if (outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
       const store = createSqliteStore(opts.output);
       store.saveGraph(graph);
-      log.info('Analysis complete', { nodes: graph.nodeCount, edges: graph.relationshipCount });
+      const nodeCount = graph.nodeCount;
+      const edgeCount = graph.relationshipCount;
       store.close();
+
+      // Register repo in global registry for multi-repo MCP support
+      const absDb = join(repoPath, opts.output);
+      const repos = loadRegistry();
+      const repoName = basename(repoPath);
+      const existingIdx = repos.findIndex((r) => r.path === repoPath);
+      const entry = { name: repoName, path: repoPath, dbPath: absDb, lastCommit: getGitCommit(repoPath), indexedAt: Date.now() };
+      if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
+      saveRegistry(repos);
+
+      log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, registered: repoName });
     } catch (err) {
       log.error('Analysis failed', { error: String(err) });
       process.exit(1);
