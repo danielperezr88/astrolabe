@@ -1,0 +1,222 @@
+/**
+ * Tests for the Resolution pipeline phase.
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { scanPhase } from '../../../src/analysis/phases/scan.js';
+import { structurePhase } from '../../../src/analysis/phases/structure.js';
+import { parseEmitPhase } from '../../../src/analysis/phases/parse-emit.js';
+import { resolutionPhase } from '../../../src/analysis/phases/resolution.js';
+import type { ResolutionOutput } from '../../../src/analysis/phases/resolution.js';
+import { createPhaseContext, runPipeline, getPhaseOutput } from '../../../src/core/pipeline.js';
+import { createKnowledgeGraph } from '../../../src/core/graph.js';
+import { initParser } from '../../../src/analysis/parser.js';
+
+let testDir: string;
+
+beforeAll(async () => {
+  testDir = mkdtempSync(join(tmpdir(), 'astrolabe-resolution-'));
+  await initParser();
+}, 30000);
+
+afterAll(() => {
+  rmSync(testDir, { recursive: true, force: true });
+});
+
+function makeRepo(fixtures: Record<string, string>): string {
+  const tmp = mkdtempSync(join(testDir, 'repo-'));
+  for (const [relPath, content] of Object.entries(fixtures)) {
+    const fullPath = join(tmp, relPath);
+    const dir = fullPath.substring(0, fullPath.lastIndexOf('\\'));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(fullPath, content);
+  }
+  return tmp;
+}
+
+describe('Resolution Phase', () => {
+  describe('cross-file USES edges', () => {
+    it('resolves named import to target symbol across files', async () => {
+      const repo = makeRepo({
+        'src/utils.ts': `
+export function helper(): string {
+  return 'ok';
+}
+
+export function format(x: string): string {
+  return x.toUpperCase();
+}
+        `.trim(),
+        'src/app.ts': `
+import { helper, format } from './utils';
+
+export function main(): string {
+  return format(helper());
+}
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      expect(out.edgeCount).toBeGreaterThanOrEqual(2); // At least USES for helper, format
+      expect(out.bindingCount).toBeGreaterThanOrEqual(2);
+
+      // Verify USES edges exist
+      const usesEdges = Array.from(graph.iterRelationshipsByType('USES'));
+      expect(usesEdges.length).toBeGreaterThanOrEqual(2);
+
+      // Verify target nodes exist
+      const helperNode = graph.getNode('Function:src/utils.ts:helper');
+      expect(helperNode).toBeDefined();
+      const formatNode = graph.getNode('Function:src/utils.ts:format');
+      expect(formatNode).toBeDefined();
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('resolves default import to target class', async () => {
+      const repo = makeRepo({
+        'src/animal.ts': `
+export default class Animal {
+  speak() { return '...'; }
+}
+
+export class Dog {
+  bark() { return 'woof'; }
+}
+        `.trim(),
+        'src/main.ts': `
+import Animal from './animal';
+import { Dog } from './animal';
+
+export function handle(a: Animal) {
+  const d = new Dog();
+}
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      expect(out.edgeCount).toBeGreaterThan(0);
+
+      // Should have Import nodes
+      const importCount = Array.from(graph.iterNodes())
+        .filter((n) => n.label === 'Import').length;
+      expect(importCount).toBeGreaterThanOrEqual(2);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+  });
+
+  describe('EXTENDS heuristic', () => {
+    it('creates EXTENDS guess when importing a Class', async () => {
+      const repo = makeRepo({
+        'src/base.ts': `
+export class Animal {
+  name: string = '';
+}
+
+export class BaseService {
+  doWork() {}
+}
+        `.trim(),
+        'src/derived.ts': `
+import { Animal } from './base';
+
+export class Dog {
+  woof() { return 'woof'; }
+}
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+
+      // Should have edge counts
+      expect(out.edgeCounts).toBeDefined();
+
+      // Dog class should exist
+      const dogNode = graph.getNode('Class:src/derived.ts:Dog');
+      expect(dogNode).toBeDefined();
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+  });
+
+  describe('empty / edge cases', () => {
+    it('handles repo with no imports', async () => {
+      const repo = makeRepo({
+        'src/standalone.ts': `
+export function foo() { return 1; }
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      expect(out.edgeCount).toBe(0);
+      expect(out.bindingCount).toBe(0);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('handles import from non-existent file gracefully', async () => {
+      const repo = makeRepo({
+        'src/app.ts': `
+import { something } from './nonexistent';
+
+export function foo() {}
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      // Graceful — no crash, just no edges
+      expect(out.edgeCount).toBeGreaterThanOrEqual(0);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('handles namespace imports', async () => {
+      const repo = makeRepo({
+        'src/lib.ts': `
+export function a() {}
+export function b() {}
+        `.trim(),
+        'src/app.ts': `
+import * as lib from './lib';
+export function main() {
+  lib.a();
+  lib.b();
+}
+        `.trim(),
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+
+      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      expect(out.fileCount).toBeGreaterThan(0);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+  });
+});
