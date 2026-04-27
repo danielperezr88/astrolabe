@@ -8,8 +8,9 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import {
-  createKnowledgeGraph, scanPhase, structurePhase, parseEmitPhase,
-  resolutionPhase, crossFilePhase, mroPhase, communityPhase, processTracingPhase,
+  createKnowledgeGraph, scanPhase, structurePhase, markdownPhase, parseEmitPhase,
+  resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
+  mroPhase, communityPhase, processTracingPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry,
@@ -41,10 +42,11 @@ program
       const graph = createKnowledgeGraph();
       const context = createPhaseContext(repoPath, graph, () => undefined);
       // Run ALL phases in ONE pipeline call so dependencies are satisfied (#54)
-      // Full DAG: scan -> structure -> parse-emit -> resolution -> cross-file -> mro -> community -> process-tracing
+      // Full 12-phase pipeline DAG (#136)
       await runPipeline([
-        scanPhase, structurePhase, parseEmitPhase, resolutionPhase,
-        crossFilePhase, mroPhase, communityPhase, processTracingPhase,
+        scanPhase, structurePhase, markdownPhase, parseEmitPhase,
+        resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
+        mroPhase, communityPhase, processTracingPhase,
       ], context);
       // Ensure output directory exists (#58)
       const outDir = dirname(opts.output);

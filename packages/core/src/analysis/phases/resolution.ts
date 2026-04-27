@@ -42,7 +42,9 @@ function buildSymbolIndex(graph: PhaseContext['graph']): SymbolIndex {
 
 function resolveModule(baseDir: string, spec: string): string {
   if (!spec.startsWith('.')) return spec;
-  const parts = baseDir.split('/').filter(Boolean);
+  // Normalize to forward slashes for cross-platform compatibility (#144)
+  const normalized = baseDir.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
   for (const p of spec.split('/')) {
     if (p === '..') parts.pop();
     else if (p !== '.') parts.push(p);

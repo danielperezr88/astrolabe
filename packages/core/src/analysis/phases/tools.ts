@@ -1,23 +1,25 @@
 /**
  * Pipeline Phase: Tool/Handler Detection
  *
- * Detects MCP tool definitions, tRPC routers, gRPC services, and
- * CLI command handlers. Creates Tool nodes with HANDLES_TOOL edges.
- *
- * Dependencies: parse-emit
- * Output: Tool nodes + HANDLES_TOOL edges
+ * Reads actual source files to detect MCP tools, tRPC routers, gRPC services,
+ * and CLI commands by scanning file contents (#138).
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
-export interface ToolsOutput {
-  toolCount: number;
-  toolTypes: string[];
-}
+export interface ToolsOutput { toolCount: number; toolTypes: string[]; }
+
+const PATTERNS: Array<{ type: string; regex: RegExp; nameGroup: number }> = [
+  { type: 'mcp', regex: /server\.tool\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
+  { type: 'trpc', regex: /\.(query|mutation|procedure)\s*\(\s*['"]([^'"]+)['"]?/g, nameGroup: 0 },
+  { type: 'cli', regex: /\.command\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
+  { type: 'grpc', regex: /\brpc\s+(\w+)\s*\(/g, nameGroup: 1 },
+];
 
 export const toolsPhase: PhaseDefinition<ToolsOutput> = {
-  name: 'tools',
-  dependencies: ['parse-emit'],
+  name: 'tools', dependencies: ['parse-emit'],
 
   execute(context: PhaseContext): ToolsOutput {
     const { graph } = context;
@@ -25,63 +27,33 @@ export const toolsPhase: PhaseDefinition<ToolsOutput> = {
     const toolTypes = new Set<string>();
 
     for (const node of graph.iterNodes()) {
+      if (node.label !== 'File') continue;
       const fp = node.properties.filePath as string | undefined;
-      const name = node.properties.name as string | undefined;
-      if (!fp || !name) continue;
+      if (!fp) continue;
 
-      // CLI command: commander/yargs command handlers
-      if (/\.command\s*\(/.test(name) || /\.action\s*\(/.test(name)) {
-        createTool(`cli:${fp}:${name}`, 'cli', name, fp);
-        toolTypes.add('cli');
-        toolCount++;
-      }
+      try {
+        const content = readFileSync(join(context.repoPath, fp), 'utf-8');
+        for (const pat of PATTERNS) {
+          let match;
+          while ((match = pat.regex.exec(content)) !== null) {
+            const toolName = pat.nameGroup ? match[pat.nameGroup] : match[0];
+            const toolId = `tool:${fp}:${pat.type}:${toolName}`;
+            if (graph.getNode(toolId)) continue;
 
-      // tRPC router procedures
-      if (node.label === 'Function' && /\.query\(|\.mutation\(|\.procedure\(/.test(name)) {
-        createTool(`trpc:${fp}:${name}`, 'trpc', name, fp);
-        toolTypes.add('trpc');
-        toolCount++;
-      }
-
-      // MCP tool definitions
-      if (node.label === 'Function' && /server\.tool\(/.test(name)) {
-        createTool(`mcp:${fp}:${name}`, 'mcp', name, fp);
-        toolTypes.add('mcp');
-        toolCount++;
-      }
-
-      // gRPC handler functions
-      if (node.label === 'Function' && /rpc\s+\w+|Handle\w+|Serve\w+/.test(name)) {
-        createTool(`grpc:${fp}:${name}`, 'grpc', name, fp);
-        toolTypes.add('grpc');
-        toolCount++;
-      }
-    }
-
-    function createTool(id: string, toolType: string, name: string, filePath: string) {
-      if (graph.getNode(id)) return;
-      graph.addNode({
-        id,
-        label: 'Tool',
-        properties: { name, filePath, toolType },
-      });
-
-      // Find the file node to create HANDLES_TOOL edge
-      for (const fileNode of graph.iterNodes()) {
-        if (fileNode.label === 'File' && fileNode.properties.filePath === filePath) {
-          graph.addRelationship({
-            id: `tool:${id}:file:${fileNode.id}`,
-            sourceId: fileNode.id,
-            targetId: id,
-            type: 'HANDLES_TOOL',
-            confidence: 0.6,
-            reason: `${toolType} tool detected from symbol ${name}`,
-          });
-          break;
+            graph.addNode({
+              id: toolId, label: 'Tool',
+              properties: { name: toolName, filePath: fp, toolType: pat.type },
+            });
+            graph.addRelationship({
+              id: `tool:file:${toolId}:${node.id}`, sourceId: node.id, targetId: toolId,
+              type: 'HANDLES_TOOL', confidence: 0.6,
+              reason: `${pat.type} tool ${toolName} detected in ${fp}`,
+            });
+            toolCount++; toolTypes.add(pat.type);
+          }
         }
-      }
+      } catch { /* skip unreadable */ }
     }
-
     return { toolCount, toolTypes: Array.from(toolTypes) };
   },
 };

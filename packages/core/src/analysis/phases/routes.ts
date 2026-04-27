@@ -1,13 +1,12 @@
 /**
  * Pipeline Phase: Route Detection
  *
- * Detects API route definitions across common web frameworks and creates
- * Route nodes with HANDLES_ROUTE edges to their handler functions.
- *
- * Dependencies: parse-emit (needs symbol nodes)
- * Output: Route nodes + HANDLES_ROUTE edges
+ * Reads actual source files to detect API route definitions across common
+ * web frameworks. Creates Route nodes with HANDLES_ROUTE edges (#137).
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 export interface RoutesOutput {
@@ -15,19 +14,13 @@ export interface RoutesOutput {
   frameworks: string[];
 }
 
-const routePatterns: Array<{ regex: RegExp; framework: string; method: string; pathGroup: number; handlerGroup: number }> = [
-  // Express: app.get('/path', handler) / router.get('/path', handler)
-  { regex: /\b(app|router)\.(get|post|put|delete|patch|use)\s*\(\s*['"]([^'"]+)['"]/g, framework: 'express', method: '', pathGroup: 3, handlerGroup: 0 },
-  // Flask: @app.route('/path', methods=[...])
-  { regex: /@\w+\.route\s*\(\s*['"]([^'"]+)['"]/g, framework: 'flask', method: 'ANY', pathGroup: 1, handlerGroup: 0 },
-  // FastAPI: @app.get('/path') / @router.get('/path')
-  { regex: /@\w+\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, framework: 'fastapi', method: '', pathGroup: 2, handlerGroup: 0 },
-  // Django urlpatterns
-  { regex: /\bpath\s*\(\s*['"]([^'"]+)['"]/g, framework: 'django', method: 'ANY', pathGroup: 1, handlerGroup: 0 },
-  // Laravel Route::
-  { regex: /\bRoute::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, framework: 'laravel', method: '', pathGroup: 2, handlerGroup: 0 },
-  // Next.js route.ts: export async function GET/POST/PUT/DELETE
-  { regex: /export\s+async\s+function\s+(GET|POST|PUT|DELETE|PATCH)\b/g, framework: 'nextjs', method: '', pathGroup: 1, handlerGroup: 1 },
+const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegExpExecArray) => { method: string; path: string } }> = [
+  { name: 'express', regex: /\b(app|router)\.(get|post|put|delete|patch|use)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[2], path: m[3] }) },
+  { name: 'fastapi', regex: /@\w+\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1], path: m[2] }) },
+  { name: 'flask', regex: /@\w+\.route\s*\(\s*['"]([^'"]+)['"](?:.|\n)*?methods\s*=\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[2]?.trim() ?? 'GET', path: m[1] }) },
+  { name: 'laravel', regex: /\bRoute::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1], path: m[2] }) },
+  { name: 'django', regex: /\bpath\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'ANY', path: m[1] }) },
+  { name: 'nextjs', regex: /export\s+async\s+function\s+(GET|POST|PUT|DELETE|PATCH)\b/g, extract: (m) => ({ method: m[1], path: '[inferred]' }) },
 ];
 
 export const routesPhase: PhaseDefinition<RoutesOutput> = {
@@ -39,57 +32,37 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
     let routeCount = 0;
     const frameworks = new Set<string>();
 
-    // Collect files that look like route files
-    const routeFileNodes: Array<{ id: string; filePath: string; content: string }> = [];
     for (const node of graph.iterNodes()) {
       if (node.label !== 'File') continue;
       const fp = node.properties.filePath as string | undefined;
       if (!fp) continue;
-      const name = fp.split('/').pop() ?? '';
-      // Heuristic: files in routes/api/controllers/handlers dirs or named route*
-      if (/routes?[\/\\]/.test(fp) || /api[\/\\]/.test(fp) || /controller/i.test(fp) || /handler/i.test(fp) || /route/i.test(name)) {
-        routeFileNodes.push({ id: node.id, filePath: fp, content: (node.properties.name ?? '') });
-      }
-    }
 
-    // Apply patterns
-    for (const file of routeFileNodes) {
-      for (const pattern of routePatterns) {
-        const text = file.content;
-        let match;
-        while ((match = pattern.regex.exec(text)) !== null) {
-          const method = pattern.method || match[pattern.pathGroup - 1] || match[1];
-          const path = match[pattern.pathGroup];
-          if (!path) continue;
+      // Only scan files in route-like directories or with route-like names
+      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp)) continue;
 
-          const routeId = `route:${file.filePath}:${method}:${path}`;
-          if (graph.getNode(routeId)) continue;
+      try {
+        const content = readFileSync(join(context.repoPath, fp), 'utf-8');
+        for (const fw of FRAMEWORK_PATTERNS) {
+          let match;
+          while ((match = fw.regex.exec(content)) !== null) {
+            const { method, path } = fw.extract(match);
+            const routeId = `route:${fp}:${method}:${path}`;
+            if (graph.getNode(routeId)) continue;
 
-          graph.addNode({
-            id: routeId,
-            label: 'Route',
-            properties: {
-              name: `${method} ${path}`,
-              filePath: file.filePath,
-              method,
-              path,
-              framework: pattern.framework,
-            },
-          });
-
-          graph.addRelationship({
-            id: `route:${routeId}:file:${file.id}`,
-            sourceId: file.id,
-            targetId: routeId,
-            type: 'HANDLES_ROUTE',
-            confidence: 0.7,
-            reason: `Route detected by ${pattern.framework} pattern in ${file.filePath}`,
-          });
-
-          routeCount++;
-          frameworks.add(pattern.framework);
+            graph.addNode({
+              id: routeId, label: 'Route',
+              properties: { name: `${method} ${path}`, filePath: fp, method, path, framework: fw.name },
+            });
+            graph.addRelationship({
+              id: `route:file:${routeId}:${node.id}`, sourceId: node.id, targetId: routeId,
+              type: 'HANDLES_ROUTE', confidence: 0.7,
+              reason: `Route detected by ${fw.name} pattern in ${fp}`,
+            });
+            routeCount++;
+            frameworks.add(fw.name);
+          }
         }
-      }
+      } catch { /* skip unreadable */ }
     }
 
     return { routeCount, frameworks: Array.from(frameworks) };
