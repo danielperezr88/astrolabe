@@ -64,6 +64,14 @@ export async function initParser(): Promise<void> {
 }
 
 /**
+ * Return the default WASM directory for tree-sitter grammars.
+ * Resolves from the package root (packages/core/wasm/).
+ */
+export function defaultWasmDir(): string {
+  return resolve(process.cwd(), 'wasm');
+}
+
+/**
  * Reset the parser module state (language cache, query cache, AST cache).
  * Useful for testing and cleanup.
  */
