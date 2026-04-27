@@ -71,7 +71,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
 
   execute(context: PhaseContext): StructureOutput {
     const scanOutput = getPhaseOutput<ScanOutput>(context, 'scan');
-    const { graph, repoPath } = context;
+    const { graph } = context;
 
     if (!scanOutput?.files?.length) {
       return { fileCount: 0, folderCount: 0, maxDepth: 0, packageCount: 0 };
@@ -100,7 +100,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       // Ensure all ancestor folders exist
       const dir = dirname(entry.path).replace(/\\/g, '/');
       if (dir === '.') continue;
-      ensureFolderPath(graph, dir, folderIds, repoPath);
+      ensureFolderPath(graph, dir, folderIds);
     }
 
     // ── Create CONTAINS edges ──────────────────────────────────────────────
@@ -215,7 +215,6 @@ function ensureFolderPath(
   graph: PhaseContext['graph'],
   folderPath: string,
   folderIds: Set<string>,
-  _repoPath: string,
 ): void {
   const parts = folderPath.split('/');
   let accumulated = '';

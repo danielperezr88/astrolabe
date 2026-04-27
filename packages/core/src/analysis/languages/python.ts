@@ -51,6 +51,15 @@ const importPatterns: QueryPattern[] = [
     outerCapture: 'import',
     isImport: true,
   },
+  // import foo as bar (aliased import)
+  {
+    query:
+      '(import_statement name: (aliased_import name: (dotted_name (identifier) @name) alias: (identifier) @alias)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
   // from foo import bar
   {
     query:

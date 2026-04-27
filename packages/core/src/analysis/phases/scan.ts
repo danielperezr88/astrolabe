@@ -83,7 +83,7 @@ function parseIgnoreFile(content: string): RegExp[] {
 
     // Convert gitignore glob to regex
     const regexStr = globToRegex(line, dirOnly);
-    patterns.push(new RegExp(regexStr, 'i'));
+    patterns.push(new RegExp(regexStr));
   }
   return patterns;
 }
