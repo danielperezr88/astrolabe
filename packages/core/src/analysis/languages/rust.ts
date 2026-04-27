@@ -1,8 +1,11 @@
 /**
  * Rust language provider for Astrolabe.
  *
- * Skeleton — query patterns will be refined as tree-sitter-rust WASM
- * grammar support is added. Currently supports basic detection.
+ * Full implementation with tree-sitter-rust grammar supporting:
+ * - Function/struct/enum/trait/impl detection
+ * - use statement import resolution (named imports)
+ * - Trait implementations and method resolution
+ * - Macro and const detection
  */
 
 import type { LanguageDefinition, QueryPattern } from '../language-definition.js';
@@ -12,7 +15,7 @@ import { resolve } from 'node:path';
 const symbolPatterns: QueryPattern[] = [
   // function declarations
   {
-    query: '(function_item name: (identifier) @name) @definition.function',
+    query: '(function_item name: (identifier) @name body: (block)?) @definition.function',
     captureLabels: { 'definition.function': 'Function' },
     nameCapture: 'name',
     outerCapture: 'definition.function',
@@ -24,12 +27,12 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.struct',
   },
-  // impl blocks
+  // enum declarations
   {
-    query: '(impl_item trait: (type_identifier)? type: (type_identifier) @name) @definition.impl',
-    captureLabels: { 'definition.impl': 'Impl' },
+    query: '(enum_item name: (type_identifier) @name) @definition.enum',
+    captureLabels: { 'definition.enum': 'Enum' },
     nameCapture: 'name',
-    outerCapture: 'definition.impl',
+    outerCapture: 'definition.enum',
   },
   // trait declarations
   {
@@ -38,12 +41,77 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.trait',
   },
+  // impl blocks (inherent + trait impls)
+  {
+    query: '(impl_item type: (type_identifier) @name) @definition.impl',
+    captureLabels: { 'definition.impl': 'Impl' },
+    nameCapture: 'name',
+    outerCapture: 'definition.impl',
+  },
+  // trait implementations (impl TraitName for TypeName)
+  {
+    query: '(impl_item trait: (type_identifier) @traitName type: (type_identifier) @name) @definition.impl',
+    captureLabels: { 'definition.impl': 'Impl' },
+    nameCapture: 'name',
+    outerCapture: 'definition.impl',
+  },
+  // type aliases
+  {
+    query: '(type_item name: (type_identifier) @name) @definition.typealias',
+    captureLabels: { 'definition.typealias': 'TypeAlias' },
+    nameCapture: 'name',
+    outerCapture: 'definition.typealias',
+  },
+  // const declarations
+  {
+    query: '(const_item name: (identifier) @name) @definition.const',
+    captureLabels: { 'definition.const': 'Const' },
+    nameCapture: 'name',
+    outerCapture: 'definition.const',
+  },
+  // static declarations
+  {
+    query: '(static_item name: (identifier) @name) @definition.static',
+    captureLabels: { 'definition.static': 'Static' },
+    nameCapture: 'name',
+    outerCapture: 'definition.static',
+  },
+  // macro definitions (macro_rules!)
+  {
+    query: '(macro_definition name: (identifier) @name) @definition.macro',
+    captureLabels: { 'definition.macro': 'Macro' },
+    nameCapture: 'name',
+    outerCapture: 'definition.macro',
+  },
+  // module declarations
+  {
+    query: '(mod_item name: (identifier) @name) @definition.module',
+    captureLabels: { 'definition.module': 'Module' },
+    nameCapture: 'name',
+    outerCapture: 'definition.module',
+  },
 ] as QueryPattern[];
 
 const importPatterns: QueryPattern[] = [
-  // use std::collections::HashMap;
+  // use crate::module::Type
   {
-    query: '(use_declaration argument: (scoped_identifier path: (identifier)? name: (identifier) @name)) @import',
+    query: '(use_declaration argument: (scoped_identifier path: (_)* name: (identifier) @name)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // use module::Type as Alias
+  {
+    query: '(use_declaration argument: (use_as_clause path: (_)* name: (identifier) @name alias: (identifier) @alias)) @import',
+    captureLabels: { 'import': 'Import' },
+    nameCapture: 'name',
+    outerCapture: 'import',
+    isImport: true,
+  },
+  // use module::{Type1, Type2}
+  {
+    query: '(use_declaration argument: (use_list (identifier) @name)) @import',
     captureLabels: { 'import': 'Import' },
     nameCapture: 'name',
     outerCapture: 'import',

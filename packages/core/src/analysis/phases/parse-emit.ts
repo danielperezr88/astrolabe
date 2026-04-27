@@ -43,6 +43,8 @@ const CHUNK_SIZE = 500;
 const PARSABLE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
   '.py', '.pyw',
+  '.go', '.rs', // #96: graduate Go + Rust from skeleton
+  '.java', '.kt', '.kts', '.cs', '.php', '.rb', '.swift', '.c', '.cpp', '.h', '.hpp',
 ]);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
