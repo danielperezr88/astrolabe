@@ -24,3 +24,5 @@ export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, File
 export { scanPhase, structurePhase } from './analysis/phases/index.js';
 export type { FileEntry, ScanOutput } from './analysis/phases/scan.js';
 export type { StructureOutput } from './analysis/phases/structure.js';
+export { createSqliteStore } from './persist/index.js';
+export type { SqliteStore } from './persist/sqlite.js';
