@@ -73,8 +73,14 @@ export function showGraphPanel(context: vscode.ExtensionContext, dbPath: string)
   html = html.replace(/\.\/assets\//g, assetsBase + '/');
   html = html.replace(/\/assets\//g, assetsBase + '/');
 
-  panel.webview.html = html;
+  // #222: Embed graph data in HTML as a global variable.
+  // This avoids the postMessage race condition — the webview's init()
+  // reads window.graphData immediately, no message listener timing needed.
+  const graphJson = JSON.stringify(serializeGraph(graph));
+  html = html.replace(
+    '</head>',
+    '<script>window.graphData = ' + graphJson + ';</script></head>',
+  );
 
-  // Send graph data
-  panel.webview.postMessage({ type: 'graphData', data: serializeGraph(graph) });
+  panel.webview.html = html;
 }

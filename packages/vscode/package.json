@@ -40,7 +40,7 @@
     ]
   },
   "scripts": {
-    "build": "npm --prefix webview install && tsc && npm run build:webview",
+    "build": "(if not exist webview\\node_modules npm --prefix webview install) && tsc && npm run build:webview",
     "build:webview": "cd webview && npm run build",
     "watch": "tsc --watch",
     "clean": "rm -rf dist"

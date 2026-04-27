@@ -35,9 +35,15 @@ function archStr() {
 
 const P = platStr(), A = archStr();
 
+// #221: Detect Node ABI dynamically so we don't break on Node.js upgrades.
+// Electron ABI is hardcoded to v140 (VS Code's Electron as of VS Code 1.111);
+// update this when VS Code bumps its Electron version.
+const NODE_ABI = 'node-v' + process.versions.modules;
+const ELECTRON_ABI = 'electron-v140';
+
 const BINARIES = [
-  { name: 'node-v137', file: 'better-sqlite3-v' + VERSION + '-node-v137-' + P + '-' + A + '.tar.gz', dest: '' },
-  { name: 'electron-v140', file: 'better-sqlite3-v' + VERSION + '-electron-v140-' + P + '-' + A + '.tar.gz', dest: 'electron' },
+  { name: NODE_ABI, file: 'better-sqlite3-v' + VERSION + '-' + NODE_ABI + '-' + P + '-' + A + '.tar.gz', dest: '' },
+  { name: ELECTRON_ABI, file: 'better-sqlite3-v' + VERSION + '-' + ELECTRON_ABI + '-' + P + '-' + A + '.tar.gz', dest: 'electron' },
 ];
 
 function findBetterSqlite3Dir() {
@@ -94,7 +100,9 @@ async function installBinary(bin) {
 
     const r = spawnSync('tar', ['-xzf', tarball, '-C', tmpDir], { stdio: 'pipe', timeout: 30000 });
     if (r.status !== 0 && PLATFORM === 'win32') {
-      spawnSync('powershell', ['-Command', "tar -xzf '" + tarball + "' -C '" + tmpDir + "'"], { stdio: 'pipe', shell: true });
+      // #219: Check PowerShell fallback result — don't silently swallow extraction failures
+      const r2 = spawnSync('powershell', ['-Command', "tar -xzf '" + tarball + "' -C '" + tmpDir + "'"], { stdio: 'pipe', shell: true });
+      if (r2.status !== 0) throw new Error('tar extraction failed: ' + (r2.stderr?.toString().trim() || r.status));
     }
 
     const src = findNode(tmpDir);
