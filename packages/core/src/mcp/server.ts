@@ -545,6 +545,138 @@ const TOOLS: Record<string, {
   },
 };
 
+// ── Resources ──────────────────────────────────────────────────────────────
+
+function getResources() {
+  return [
+    { uri: 'astrolabe://repos', name: 'All Indexed Repositories', description: 'List all indexed repositories with stats', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/context', name: 'Repo Context', description: 'Codebase overview, stats, staleness check', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/clusters', name: 'Clusters', description: 'All functional clusters with cohesion scores', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/processes', name: 'Processes', description: 'All execution flows', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/process/{processName}', name: 'Process Trace', description: 'Full process trace with steps', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/schema', name: 'Graph Schema', description: 'Node labels and relationship types', mimeType: 'text/plain' },
+  ];
+}
+
+function readResource(uri: string): string | null {
+  // astrolabe://repos
+  if (uri === 'astrolabe://repos') {
+    const repos = backend.listRepos();
+    return repos.length === 0 ? 'No indexed repositories.' : repos.map((r) => `- ${r.name} (${r.path}) — indexed ${new Date(r.indexedAt).toISOString()}`).join('\n');
+  }
+
+  // astrolabe://repo/{name}/context
+  const ctxMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/context$/);
+  if (ctxMatch) {
+    try {
+      const ctx = (backend as any).getRepo(ctxMatch[1]);
+      const graph = ctx.store.loadGraph();
+      return `Repository: ${ctx.entry.name}\nPath: ${ctx.entry.path}\nNodes: ${graph.nodeCount}\nRelationships: ${graph.relationshipCount}\nLast indexed: ${new Date(ctx.entry.indexedAt).toISOString()}\nLast commit: ${ctx.entry.lastCommit}`;
+    } catch { return null; }
+  }
+
+  // astrolabe://repo/{name}/clusters
+  const clMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/clusters$/);
+  if (clMatch) {
+    try {
+      const ctx = (backend as any).getRepo(clMatch[1]);
+      const graph = ctx.store.loadGraph();
+      const clusters: string[] = [];
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'Community') clusters.push(`- ${node.properties.name ?? node.id} (${node.properties.symbolCount ?? 0} symbols, cohesion: ${node.properties.cohesion ?? 0})`);
+      }
+      return clusters.length === 0 ? 'No clusters detected.' : clusters.join('\n');
+    } catch { return null; }
+  }
+
+  // astrolabe://repo/{name}/processes
+  const prMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/processes$/);
+  if (prMatch) {
+    try {
+      const ctx = (backend as any).getRepo(prMatch[1]);
+      const graph = ctx.store.loadGraph();
+      const processes: string[] = [];
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'Process') processes.push(`- ${node.properties.name ?? node.id} (${node.properties.stepCount ?? 0} steps, type: ${node.properties.processType ?? 'intra'})`);
+      }
+      return processes.length === 0 ? 'No processes detected.' : processes.join('\n');
+    } catch { return null; }
+  }
+
+  // astrolabe://repo/{name}/process/{processName}
+  const ptMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/process\/(.+)$/);
+  if (ptMatch) {
+    try {
+      const ctx = (backend as any).getRepo(ptMatch[1]);
+      const graph = ctx.store.loadGraph();
+      const steps: string[] = [];
+      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+        const proc = graph.getNode(rel.sourceId);
+        if (proc && (proc.properties.name === ptMatch[2] || proc.id === ptMatch[2])) {
+          const sym = graph.getNode(rel.targetId);
+          steps.push(`Step ${rel.step ?? '?'}: ${sym?.properties.name ?? rel.targetId} (${sym?.label ?? '?'} — ${sym?.properties.filePath ?? '?'})`);
+        }
+      }
+      return steps.length === 0 ? 'Process not found.' : steps.sort((a, b) => parseInt(a.match(/Step (\d+)/)?.[1] ?? '0') - parseInt(b.match(/Step (\d+)/)?.[1] ?? '0')).join('\n');
+    } catch { return null; }
+  }
+
+  // astrolabe://repo/{name}/schema
+  const scMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/schema$/);
+  if (scMatch) {
+    return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool\nRelationship Types: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF`;
+  }
+
+  return null;
+}
+
+// ── Prompts ────────────────────────────────────────────────────────────────
+
+function getPrompts() {
+  return [
+    { name: 'detect_impact', description: 'Pre-commit change analysis — scope, affected processes, risk level' },
+    { name: 'generate_map', description: 'Architecture documentation from the knowledge graph' },
+  ];
+}
+
+function getPromptMessages(name: string, args: Record<string, string>) {
+  if (name === 'detect_impact') {
+    return [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `Analyze the impact of current changes before committing. Steps:
+1. Call detect_changes({scope: "${args.scope ?? 'unstaged'}"})
+2. For each changed symbol, call context({name: "<symbol>"}) to understand its role
+3. Call impact({target: "<symbol>", direction: "upstream"}) for blast radius
+4. Summarize: which processes are affected, risk level, whether safe to commit`,
+        },
+      },
+    ];
+  }
+
+  if (name === 'generate_map') {
+    return [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text: `Generate architecture documentation for this repository:
+1. Read astrolabe://repos to discover indexed repos
+2. Read astrolabe://repo/{name}/context for overview
+3. Read astrolabe://repo/{name}/clusters for functional areas
+4. Read astrolabe://repo/{name}/processes for execution flows
+5. Create a mermaid architecture diagram showing: modules, key symbols, call chains, data flow
+6. Document each cluster's purpose, entry points, and key dependencies`,
+        },
+      },
+    ];
+  }
+
+  return null;
+}
+
 // ── Server ─────────────────────────────────────────────────────────────────
 
 function isNotification(method: string): boolean {
@@ -559,10 +691,42 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
         id: req.id,
         result: {
           protocolVersion: '2024-11-05',
-          capabilities: { tools: {}, resources: {} },
+          capabilities: { tools: {}, resources: { subscribe: false }, prompts: {} },
           serverInfo: { name: 'astrolabe', version: '0.2.0' },
         },
       };
+
+    case 'resources/list':
+      return {
+        jsonrpc: '2.0',
+        id: req.id,
+        result: { resources: getResources() },
+      };
+
+    case 'resources/read': {
+      const rParams = req.params as { uri: string } | undefined;
+      const content = readResource(rParams?.uri ?? '');
+      if (!content) {
+        return { jsonrpc: '2.0', id: req.id, error: { code: -32602, message: `Resource not found: ${rParams?.uri}` } };
+      }
+      return { jsonrpc: '2.0', id: req.id, result: { contents: [{ uri: rParams!.uri, mimeType: 'text/plain', text: content }] } };
+    }
+
+    case 'prompts/list':
+      return {
+        jsonrpc: '2.0',
+        id: req.id,
+        result: { prompts: getPrompts() },
+      };
+
+    case 'prompts/get': {
+      const pParams = req.params as { name: string; arguments?: Record<string, string> } | undefined;
+      const messages = getPromptMessages(pParams?.name ?? '', pParams?.arguments ?? {});
+      if (!messages) {
+        return { jsonrpc: '2.0', id: req.id, error: { code: -32602, message: `Prompt not found: ${pParams?.name}` } };
+      }
+      return { jsonrpc: '2.0', id: req.id, result: { messages } };
+    }
 
     case 'tools/list':
       return {
