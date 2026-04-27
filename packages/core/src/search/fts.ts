@@ -117,11 +117,12 @@ export function createFtsSearch(dbPath: string): FtsSearch {
     },
 
     search(query: string, limit = 20): SearchResult[] {
-      // Sanitize query for FTS5 (remove special chars)
-      const sanitized = query.replace(/['"*()^~!]/g, ' ').trim();
+      // Sanitize query for FTS5 (remove special chars, keep alphanumeric + underscore)
+      const sanitized = query.replace(/['"*()^~!@#$%&=+<>|]/g, ' ').replace(/\s+/g, ' ').trim();
       if (!sanitized) return [];
-      // FTS5 prefix search
-      const ftsQuery = sanitized.split(/\s+/).map((t) => `"${t}"*`).join(' AND ');
+      // FTS5 prefix search using NEAR for multi-word queries
+      const terms = sanitized.split(/\s+/).filter((t) => t.length > 0);
+      const ftsQuery = terms.map((t) => `${t}*`).join(' OR ');
 
       try {
         return stmts.search.all(ftsQuery, limit) as SearchResult[];

@@ -129,9 +129,9 @@ function topologicalSort(phases: PhaseDefinition[]): PhaseDefinition[] {
   for (const phase of phases) {
     for (const dep of phase.dependencies) {
       if (!nameToPhase.has(dep)) {
-        throw new Error(
-          `Pipeline cycle/error: phase "${phase.name}" depends on "${dep}" which does not exist.`,
-        );
+        // Dependency not in current phase list — may have been run in a
+        // previous pipeline call and stored in context.state. Allow it.
+        continue;
       }
       adjacency.get(dep)!.push(phase.name);
       inDegree.set(phase.name, (inDegree.get(phase.name) ?? 0) + 1);

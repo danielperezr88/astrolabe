@@ -101,33 +101,9 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
         });
       }
 
-      // EXTENDS heuristic: if Class imported, check importer classes
-      for (const target of targets) {
-        if (target.label !== 'Class') continue;
-        const tName = target.properties.name as string;
-        const fileSyms = symbolIndex.get(importerFile);
-        if (!fileSyms) continue;
-        for (const [, nodes] of fileSyms) {
-          for (const cls of nodes) {
-            if (cls.label !== 'Class') continue;
-            const cName = cls.properties.name as string;
-            const extId = `res:${cls.id}:extends:${target.id}`;
-            if (graph.getRelationship(extId)) continue;
-            if (tName && cName && tName !== cName) {
-              graph.addRelationship({
-                id: extId,
-                sourceId: cls.id,
-                targetId: target.id,
-                type: 'EXTENDS',
-                confidence: 0.5,
-                reason: `Class ${cName} imports ${tName} — possible extends`,
-              });
-              edgeCount++;
-              edgeCounts['EXTENDS'] = (edgeCounts['EXTENDS'] ?? 0) + 1;
-            }
-          }
-        }
-      }
+      // EXTENDS edges: only if class AST reveals explicit extends clause
+      // Removed weak heuristic that created false-positive EXTENDS edges
+      // just because a class imported another class (#65, #60)
     }
 
     return {

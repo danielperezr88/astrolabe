@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { mroPhase } from '../../../src/analysis/phases/mro.js';
 import type { MroOutput } from '../../../src/analysis/phases/mro.js';
+import { resolutionPhase } from '../../../src/analysis/phases/resolution.js';
 import { createPhaseContext, runPipeline, getPhaseOutput } from '../../../src/core/pipeline.js';
 import { createKnowledgeGraph } from '../../../src/core/graph.js';
 import type { GraphNode } from '../../../src/core/types.js';

@@ -100,7 +100,11 @@ const TOOLS: Record<string, {
 
 // ── Server implementation ───────────────────────────────────────────────────
 
-async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
+function isNotification(method: string): boolean {
+  return method.startsWith('notifications/');
+}
+
+async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
   switch (req.method) {
     case 'initialize':
       return {
@@ -149,10 +153,13 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
     }
 
     case 'notifications/initialized':
+    case 'notifications/cancelled':
+    case 'notifications/progress':
       // Do NOT respond to notifications per MCP spec
-      return undefined as any;
+      return null;
 
     default:
+      if (isNotification(req.method)) return null;
       return {
         jsonrpc: '2.0',
         id: req.id,
@@ -168,7 +175,9 @@ export async function startMcpServer(): Promise<void> {
     try {
       const req = JSON.parse(line) as JsonRpcRequest;
       const res = await handleRequest(req);
-      process.stdout.write(JSON.stringify(res) + '\n');
+      if (res !== null) {
+        process.stdout.write(JSON.stringify(res) + '\n');
+      }
     } catch {
       process.stderr.write('{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}\n');
     }

@@ -72,9 +72,9 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);
   CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
   CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);
-
-  PRAGMA user_version = 1;
 `;
+
+export const CURRENT_SCHEMA_VERSION = 1;
 
 // ── Implementation ──────────────────────────────────────────────────────────
 
@@ -83,6 +83,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
 
   // ── Prepared statements ───────────────────────────────────────────────
   const insertNode = db.prepare(

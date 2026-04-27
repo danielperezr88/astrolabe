@@ -56,7 +56,27 @@ const DEFAULT_IGNORE = [
   'coverage',
   '.nyc_output',
   '.astro',
+  'vendor',
+  '.venv',
+  'venv',
+  'target',
+  'bin',
+  'obj',
 ];
+
+/** Extensions to skip regardless of language support (binary, media, fonts). */
+const BINARY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.bmp', '.webp',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.zip', '.tar', '.gz', '.bz2', '.7z', '.rar',
+  '.exe', '.dll', '.so', '.dylib', '.bin',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.mp3', '.mp4', '.avi', '.mov', '.webm', '.ogg', '.wav', '.flac',
+  '.db', '.sqlite', '.sqlite3',
+]);
+
+/** Max file size in bytes to scan (512 KB default). */
+const MAX_FILE_SIZE = 512 * 1024;
 
 // ── .astrolabeignore parser ─────────────────────────────────────────────────
 
@@ -187,9 +207,16 @@ function discoverFiles(
     if (st.isDirectory()) {
       discoverFiles(fullPath, repoPath, patterns, files);
     } else if (st.isFile()) {
+      // Skip binary files by extension (#77)
       const ext = extname(entry).toLowerCase();
+      if (BINARY_EXTENSIONS.has(ext)) continue;
+      // Skip files without known code extensions (if they also have no recognized language)
       const langDef = languageForExtension(ext);
       const language = langDef ? langDef.name : null;
+      // Skip if neither a code extension nor a recognized language
+      if (!langDef && !['.md', '.mdx', '.json', '.yaml', '.yml', '.toml', '.xml', '.env', '.cfg', '.ini', '.conf', '.mod', '.sum', '.txt', '.css', '.scss', '.html', '.sql', '.graphql', '.proto', '.prisma'].includes(ext)) continue;
+      // Skip large files (#77)
+      if (st.size > MAX_FILE_SIZE) continue;
       const hash = computeHash(fullPath);
       files.push({
         path: relPath,

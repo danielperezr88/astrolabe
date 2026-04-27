@@ -522,6 +522,10 @@ export async function parseString(
   }
   const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
 
+  // Clean up parser resources (#87)
+  tree.delete();
+  parser.delete();
+
   return { filePath: normalisedPath, language: langDef.name, symbols, imports };
 }
 

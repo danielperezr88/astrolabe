@@ -142,7 +142,7 @@ export interface NodeProperties {
 export type RelationshipType =
   | 'CONTAINS'
   | 'CALLS'
-  | 'INHERITS'
+  | 'EXTENDS'
   | 'METHOD_OVERRIDES'
   | 'METHOD_IMPLEMENTS'
   | 'IMPORTS'
@@ -150,7 +150,6 @@ export type RelationshipType =
   | 'DEFINES'
   | 'DECORATES'
   | 'IMPLEMENTS'
-  | 'EXTENDS'
   | 'HAS_METHOD'
   | 'HAS_PROPERTY'
   | 'ACCESSES'
@@ -225,6 +224,10 @@ export interface KnowledgeGraph {
   // ── Lookup ─────────────────────────────────────────────────────────────
   getNode(id: string): GraphNode | undefined;
   getRelationship(id: string): GraphRelationship | undefined;
+
+  // ── Query ───────────────────────────────────────────────────────────────
+  findNodesByLabel(label: string): GraphNode[];
+  findNodesByProperty(key: string, value: unknown): GraphNode[];
 
   // ── Mutation ───────────────────────────────────────────────────────────
   addNode(node: GraphNode): void;

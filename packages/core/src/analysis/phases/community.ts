@@ -206,6 +206,18 @@ export const communityPhase: PhaseDefinition<CommunityOutput> = {
   execute(context: PhaseContext): CommunityOutput {
     const { graph } = context;
 
+    // Remove stale Community nodes and MEMBER_OF edges from prior pipeline runs (#73)
+    const staleCommunities: string[] = [];
+    const staleMemberEdges: string[] = [];
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'Community') staleCommunities.push(node.id);
+    }
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'MEMBER_OF') staleMemberEdges.push(rel.id);
+    }
+    for (const id of staleCommunities) graph.removeNode(id);
+    for (const id of staleMemberEdges) graph.removeRelationship(id);
+
     const { adj, totalWeight, allNodeIds } = buildAdjacency(graph);
     if (allNodeIds.length === 0) {
       return { communityCount: 0, communitySizes: {}, modularity: 0, iterations: 0 };

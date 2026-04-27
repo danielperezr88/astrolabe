@@ -69,9 +69,11 @@ describe('Pipeline', () => {
       await expect(runPipeline([phaseA, phaseB], context)).rejects.toThrow(/cycle/i);
     });
 
-    it('throws on missing dependency', async () => {
+    it('allows phase with dependency not in current pipeline (pre-run in separate pipeline call)', async () => {
       const graph = createKnowledgeGraph();
       const context = createPhaseContext('/test', graph, () => {});
+      // Pre-seed the context with a dependency output from a previous pipeline run
+      context.state.set('output:NONEXISTENT', {});
 
       const phaseA: PhaseDefinition = {
         name: 'A',
@@ -79,7 +81,9 @@ describe('Pipeline', () => {
         execute: async () => {},
       };
 
-      await expect(runPipeline([phaseA], context)).rejects.toThrow(/does not exist/i);
+      // Should succeed — dependency resolution was handled by a prior pipeline call
+      const result = await runPipeline([phaseA], context);
+      expect(result).toHaveLength(1);
     });
 
     it('handles single phase', async () => {

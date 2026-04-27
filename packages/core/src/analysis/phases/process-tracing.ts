@@ -117,7 +117,7 @@ function bfsTrace(
 
 export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
   name: 'process-tracing',
-  dependencies: [],
+  dependencies: ['resolution'],
 
   execute(context: PhaseContext): ProcessTracingOutput {
     const { graph } = context;
@@ -161,26 +161,20 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
         reason: `Entry point for process trace`,
       });
 
-      // STEP_IN_PROCESS edges in traversal order
-      let prevId = entryId;
-      let stepNum = 1;
-
-      for (const bfsNode of trace.slice(1)) {
+      // STEP_IN_PROCESS edges: Process -> each symbol in traversal order with step number (#79)
+      for (const [idx, bfsNode] of trace.entries()) {
         totalSteps++;
         if (bfsNode.depth > maxPathLength) maxPathLength = bfsNode.depth;
 
         graph.addRelationship({
-          id: `step:${processId}:${stepNum}:${bfsNode.id}`,
-          sourceId: prevId,
+          id: `step:${processId}:step${idx}:${bfsNode.id}`,
+          sourceId: processId,
           targetId: bfsNode.id,
           type: 'STEP_IN_PROCESS',
           confidence: 0.7,
-          reason: `Traced from ${graph.getNode(prevId)?.properties.name ?? prevId} to ${graph.getNode(bfsNode.id)?.properties.name ?? bfsNode.id}`,
-          step: stepNum,
+          reason: `Step ${idx} in process trace from ${graph.getNode(entryId)?.properties.name ?? entryId}`,
+          step: idx,
         });
-
-        prevId = bfsNode.id;
-        stepNum++;
       }
     }
 

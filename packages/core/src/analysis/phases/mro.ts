@@ -144,13 +144,25 @@ function findClassNodes(graph: PhaseContext['graph']): GraphNode[] {
 
 export const mroPhase: PhaseDefinition<MroOutput> = {
   name: 'mro',
-  dependencies: [],
+  dependencies: ['resolution'],
 
   execute(context: PhaseContext): MroOutput {
     const { graph } = context;
 
     const parentMap = buildParentMap(graph);
     const classNodes = findClassNodes(graph);
+
+    // Build method index: Map<filePath, methodNode[]> for O(1) lookup (#68)
+    const methodsByFile = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'Method') {
+        const fp = node.properties.filePath as string | undefined;
+        if (!fp) continue;
+        let bucket = methodsByFile.get(fp);
+        if (!bucket) { bucket = []; methodsByFile.set(fp, bucket); }
+        bucket.push(node);
+      }
+    }
 
     const cache = new Map<string, string[]>();
     let extendsEdgeCount = 0;
@@ -165,34 +177,33 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
       if (parentIds.length > 0) {
         const mro = c3Linearize(cls.id, parentMap, cache);
 
-        const depth = mro.length - 1; // Exclude self
+        const depth = mro.length - 1;
         if (depth > maxDepth) maxDepth = depth;
 
-        // Store MRO as node property
         cls.properties.mro = mro;
         cls.properties.mroDepth = depth;
 
         // Create HAS_METHOD edges for inherited methods
-        // For each ancestor in MRO (excluding self), link to its methods
         for (const ancestorId of mro.slice(1)) {
           const ancestor = graph.getNode(ancestorId);
           if (!ancestor) continue;
 
-          // Find methods defined directly on ancestor
-          for (const node of graph.iterNodes()) {
-            if (node.label === 'Method' && node.properties.filePath === ancestor.properties.filePath) {
-              const edgeId = `mro:${cls.id}:has_method:${node.id}`;
-              if (!graph.getRelationship(edgeId)) {
-                graph.addRelationship({
-                  id: edgeId,
-                  sourceId: cls.id,
-                  targetId: node.id,
-                  type: 'HAS_METHOD',
-                  confidence: 0.9,
-                  reason: `MRO: ${cls.properties.name} inherits ${node.properties.name} from ${ancestor.properties.name}`,
-                });
-                methodEdgeCount++;
-              }
+          const ancestorFp = ancestor.properties.filePath as string | undefined;
+          if (!ancestorFp) continue;
+
+          const methods = methodsByFile.get(ancestorFp) ?? [];
+          for (const method of methods) {
+            const edgeId = `mro:${cls.id}:has_method:${method.id}`;
+            if (!graph.getRelationship(edgeId)) {
+              graph.addRelationship({
+                id: edgeId,
+                sourceId: cls.id,
+                targetId: method.id,
+                type: 'HAS_METHOD',
+                confidence: 0.9,
+                reason: `MRO: ${cls.properties.name} inherits ${method.properties.name} from ${ancestor.properties.name}`,
+              });
+              methodEdgeCount++;
             }
           }
         }

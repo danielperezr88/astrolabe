@@ -77,8 +77,9 @@ describe('Scan Phase', () => {
       const txtFile = scanOut.files.find((f) => f.path === 'src/data.txt')!;
       expect(txtFile.language).toBeNull();
 
-      const noExt = scanOut.files.find((f) => f.path === 'src/nothing')!;
-      expect(noExt.language).toBeNull();
+      // Files with no extension should be excluded (not in allowed extension list)
+      const noExt = scanOut.files.find((f) => f.path === 'src/nothing');
+      expect(noExt).toBeUndefined();
 
       rmSync(repo, { recursive: true, force: true });
     });

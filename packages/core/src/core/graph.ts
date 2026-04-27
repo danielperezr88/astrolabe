@@ -66,6 +66,22 @@ export function createKnowledgeGraph(): KnowledgeGraph {
     iterNodes: () => nodeMap.values(),
     iterRelationships: () => relMap.values(),
 
+    findNodesByLabel(label: string): GraphNode[] {
+      const result: GraphNode[] = [];
+      for (const node of nodeMap.values()) {
+        if (node.label === label) result.push(node);
+      }
+      return result;
+    },
+
+    findNodesByProperty(key: string, value: unknown): GraphNode[] {
+      const result: GraphNode[] = [];
+      for (const node of nodeMap.values()) {
+        if (node.properties[key] === value) result.push(node);
+      }
+      return result;
+    },
+
     *iterRelationshipsByType(type: RelationshipType): IterableIterator<GraphRelationship> {
       const bucket = relTypeIndex.get(type);
       if (!bucket) return;

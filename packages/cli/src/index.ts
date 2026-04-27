@@ -8,7 +8,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, parseEmitPhase,
-  resolutionPhase, initParser, createSqliteStore, createFtsSearch,
+  resolutionPhase, mroPhase, communityPhase, processTracingPhase,
+  initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
 } from '@astrolabe/core';
 
@@ -32,8 +33,12 @@ program
       await initParser();
       const graph = createKnowledgeGraph();
       const context = createPhaseContext(repoPath, graph, () => undefined);
-      // Run all phases in ONE pipeline call so dependencies are satisfied (#54)
-      await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
+      // Run ALL phases in ONE pipeline call so dependencies are satisfied (#54)
+      // Full DAG: scan -> structure -> parse-emit -> resolution -> mro -> community -> process-tracing
+      await runPipeline([
+        scanPhase, structurePhase, parseEmitPhase, resolutionPhase,
+        mroPhase, communityPhase, processTracingPhase,
+      ], context);
       // Ensure output directory exists (#58)
       const outDir = dirname(opts.output);
       if (outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
