@@ -21,6 +21,12 @@ export function createKnowledgeGraph(): KnowledgeGraph {
    */
   const relTypeIndex = new Map<RelationshipType, Set<string>>();
 
+  /**
+   * Per-file reverse index for O(1) bulk-remove.
+   * Maps filePath → Set of node IDs belonging to that file.
+   */
+  const fileIndex = new Map<string, Set<string>>();
+
   // ── Internal helpers ──────────────────────────────────────────────────
 
   function indexRelByType(rel: GraphRelationship): void {
@@ -85,6 +91,13 @@ export function createKnowledgeGraph(): KnowledgeGraph {
     addNode(node: GraphNode): void {
       if (!nodeMap.has(node.id)) {
         nodeMap.set(node.id, node);
+        // Maintain per-file index for O(1) removal
+        const fp = node.properties.filePath;
+        if (fp) {
+          let bucket = fileIndex.get(fp);
+          if (!bucket) { bucket = new Set(); fileIndex.set(fp, bucket); }
+          bucket.add(node.id);
+        }
       }
     },
 
@@ -97,6 +110,13 @@ export function createKnowledgeGraph(): KnowledgeGraph {
 
     removeNode(nodeId: string): boolean {
       if (!nodeMap.has(nodeId)) return false;
+
+      // Clean up file index
+      const node = nodeMap.get(nodeId)!;
+      const fp = node.properties.filePath;
+      if (fp) {
+        fileIndex.get(fp)?.delete(nodeId);
+      }
 
       // Remove all relationships involving this node
       const toRemove: string[] = [];
@@ -115,14 +135,14 @@ export function createKnowledgeGraph(): KnowledgeGraph {
     },
 
     removeNodesByFile(filePath: string): number {
-      let removed = 0;
-      for (const [nodeId, node] of nodeMap) {
-        if (node.properties.filePath === filePath) {
-          this.removeNode(nodeId);
-          removed++;
-        }
+      const bucket = fileIndex.get(filePath);
+      if (!bucket) return 0;
+      const ids = Array.from(bucket);
+      for (const id of ids) {
+        this.removeNode(id);
       }
-      return removed;
+      fileIndex.delete(filePath);
+      return ids.length;
     },
 
     removeRelationship(relId: string): boolean {

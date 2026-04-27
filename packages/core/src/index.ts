@@ -18,7 +18,7 @@ export {
 
 export { createKnowledgeGraph } from './core/graph.js';
 export { runPipeline, createPhaseContext, getPhaseOutput, type PhaseDefinition, type PhaseContext } from './core/pipeline.js';
-export { initParser, parseFile, parseFiles, resetParser, AstCache, defaultWasmDir, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
+export { initParser, parseFile, parseFiles, parseString, resetParser, AstCache, defaultWasmDir, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
 export { symbolId, captureText, captureRange } from './analysis/language-definition.js';
 export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult } from './analysis/language-definition.js';
 export { scanPhase, structurePhase, parseEmitPhase, resolutionPhase } from './analysis/phases/index.js';

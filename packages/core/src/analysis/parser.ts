@@ -24,7 +24,7 @@ import type {
   ParsedImport,
 } from './language-definition.js';
 import { symbolId } from './language-definition.js';
-import { languageForExtension } from './languages/index.js';
+import { languageForExtension, languageForFile } from './languages/index.js';
 import { AstCache } from './ast-cache.js';
 import type { NodeLabel } from '@astrolabe/shared';
 
@@ -437,6 +437,72 @@ export async function parseFiles(
   wasmDir: string,
 ): Promise<FileParseResult[]> {
   return Promise.all(filePaths.map((fp) => parseFile(fp, wasmDir)));
+}
+
+/**
+ * Parse source code provided as a string (not from a file).
+ * Uses a dummy file path for language detection and cache key.
+ *
+ * @param source    Source code as a string.
+ * @param filePath  Logical file path for language detection (e.g. "src/foo.ts").
+ * @param wasmDir   Directory containing tree-sitter WASM grammars.
+ */
+export async function parseString(
+  source: string,
+  filePath: string,
+  wasmDir: string,
+): Promise<FileParseResult> {
+  if (!_initialized) {
+    throw new Error('Parser not initialised. Call initParser() before parseString().');
+  }
+
+  const normalisedPath = filePath.replace(/\\/g, '/');
+  const langDef = languageForFile(filePath);
+  if (!langDef) {
+    return {
+      filePath: normalisedPath,
+      language: 'typescript' as never,
+      symbols: [],
+      imports: [],
+      error: `Unsupported file extension for ${filePath}`,
+    };
+  }
+
+  const language = await loadLanguage(langDef, wasmDir);
+  const parser = new WtsParser();
+  parser.setLanguage(language);
+  const tree = parser.parse(source);
+  if (!tree) {
+    return { filePath: normalisedPath, language: langDef.name, symbols: [], imports: [], error: 'Parse returned null tree' };
+  }
+
+  const root = tree.rootNode;
+
+  // Symbol extraction
+  const allSymbolMatches: QueryMatch[] = [];
+  for (let pi = 0; pi < langDef.symbolPatterns.length; pi++) {
+    const pattern = langDef.symbolPatterns[pi];
+    const query = getQuery(language, pattern.query, langDef.wasmFile);
+    for (const m of query.matches(root)) {
+      (m as any)._patternIndex = pi;
+      allSymbolMatches.push(m);
+    }
+  }
+  const symbols = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
+
+  // Import extraction
+  const allImportMatches: QueryMatch[] = [];
+  for (let pi = 0; pi < langDef.importPatterns.length; pi++) {
+    const pattern = langDef.importPatterns[pi];
+    const query = getQuery(language, pattern.query, langDef.wasmFile);
+    for (const m of query.matches(root)) {
+      (m as any)._patternIndex = pi;
+      allImportMatches.push(m);
+    }
+  }
+  const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
+
+  return { filePath: normalisedPath, language: langDef.name, symbols, imports };
 }
 
 // ── Re-exports for convenience ─────────────────────────────────────────────
