@@ -47,7 +47,7 @@ class LocalBackend {
   private evictMs = 5 * 60 * 1000; // 5 min
   private lastAccess = new Map<string, number>();
 
-  private getRepo(repoParam?: string): RepoContext {
+  getRepo(repoParam?: string): RepoContext {
     const entries = loadRegistry();
     const name = repoParam ?? entries[0]?.name;
     if (!name) throw new Error('No indexed repositories. Run `astrolabe analyze` first.');
@@ -567,7 +567,7 @@ function readResource(uri: string): string | null {
   const ctxMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/context$/);
   if (ctxMatch) {
     try {
-      const ctx = (backend as any).getRepo(ctxMatch[1]);
+      const ctx = backend.getRepo(ctxMatch[1]);
       const graph = ctx.store.loadGraph();
       return `Repository: ${ctx.entry.name}\nPath: ${ctx.entry.path}\nNodes: ${graph.nodeCount}\nRelationships: ${graph.relationshipCount}\nLast indexed: ${new Date(ctx.entry.indexedAt).toISOString()}\nLast commit: ${ctx.entry.lastCommit}`;
     } catch { return null; }
@@ -577,7 +577,7 @@ function readResource(uri: string): string | null {
   const clMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/clusters$/);
   if (clMatch) {
     try {
-      const ctx = (backend as any).getRepo(clMatch[1]);
+      const ctx = backend.getRepo(clMatch[1]);
       const graph = ctx.store.loadGraph();
       const clusters: string[] = [];
       for (const node of graph.iterNodes()) {
@@ -591,7 +591,7 @@ function readResource(uri: string): string | null {
   const prMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/processes$/);
   if (prMatch) {
     try {
-      const ctx = (backend as any).getRepo(prMatch[1]);
+      const ctx = backend.getRepo(prMatch[1]);
       const graph = ctx.store.loadGraph();
       const processes: string[] = [];
       for (const node of graph.iterNodes()) {
@@ -605,7 +605,7 @@ function readResource(uri: string): string | null {
   const ptMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/process\/(.+)$/);
   if (ptMatch) {
     try {
-      const ctx = (backend as any).getRepo(ptMatch[1]);
+      const ctx = backend.getRepo(ptMatch[1]);
       const graph = ctx.store.loadGraph();
       const steps: string[] = [];
       for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {

@@ -109,9 +109,9 @@ function findEntryPoints(
     // Export status
     if (node.properties.isExported) score += 0.3;
 
-    // Call graph position: no callers (leaf) — good entry point
+    // Call graph position: no callers (only if call graph is non-empty) (#122)
     const incoming = callers.get(node.id);
-    if (!incoming || incoming.length === 0) score += 0.3;
+    if (callGraph.size > 0 && (!incoming || incoming.length === 0)) score += 0.3;
 
     // Many outgoing calls (orchestrator pattern)
     const outgoing = callGraph.get(node.id);
