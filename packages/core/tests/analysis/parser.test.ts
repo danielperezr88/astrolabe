@@ -96,7 +96,7 @@ describe('Parser', () => {
   describe('parseFile - error cases', () => {
     it('returns error result for unsupported file extension', async () => {
       const result = await parseFile(
-        join(tmpDir, 'unsupported.java'),
+        join(tmpDir, 'unsupported.xyz'),
         wasmDir,
       );
       expect(result.error).toBeDefined();
@@ -601,7 +601,7 @@ describe('Parser', () => {
 
     it('handles mixed valid and unsupported files', async () => {
       const f1 = writeFixture('pf-valid.js', 'function valid() {}\n');
-      const f2 = join(tmpDir, 'pf-invalid.java');
+      const f2 = join(tmpDir, 'pf-invalid.xyz');
       writeFileSync(f2, 'class Invalid {}\n', 'utf-8');
 
       const results = await parseFiles([f1, f2], wasmDir);
