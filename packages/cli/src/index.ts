@@ -8,7 +8,7 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import {
-  createKnowledgeGraph, scanPhase, structurePhase, markdownPhase, parseEmitPhase,
+  createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
   mroPhase, communityPhase, processTracingPhase,
   initParser, createSqliteStore, createFtsSearch,
@@ -42,9 +42,9 @@ program
       const graph = createKnowledgeGraph();
       const context = createPhaseContext(repoPath, graph, () => undefined);
       // Run ALL phases in ONE pipeline call so dependencies are satisfied (#54)
-      // Full 12-phase pipeline DAG (#136)
+      // Full 13-phase pipeline DAG (#136, #152)
       await runPipeline([
-        scanPhase, structurePhase, markdownPhase, parseEmitPhase,
+        scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
         resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
         mroPhase, communityPhase, processTracingPhase,
       ], context);

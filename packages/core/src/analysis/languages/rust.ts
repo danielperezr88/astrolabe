@@ -13,7 +13,14 @@ import { Language as WtsLanguage } from 'web-tree-sitter';
 import { resolve } from 'node:path';
 
 const symbolPatterns: QueryPattern[] = [
-  // function declarations
+  // Methods inside impl blocks — must be BEFORE top-level function_item (#135)
+  {
+    query: '(impl_item (function_item name: (identifier) @name body: (block)?) @definition.method)',
+    captureLabels: { 'definition.method': 'Method' },
+    nameCapture: 'name',
+    outerCapture: 'definition.method',
+  },
+  // function declarations (top-level, non-impl)
   {
     query: '(function_item name: (identifier) @name body: (block)?) @definition.function',
     captureLabels: { 'definition.function': 'Function' },
