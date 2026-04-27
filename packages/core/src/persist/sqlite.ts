@@ -5,14 +5,32 @@
  * transaction, WAL mode for concurrent reads, and file-hash tracking
  * for incremental re-indexing.
  *
- * For VS Code extension development: the bundled Electron uses a different
- * Node.js ABI than the system Node.js. Run `npm run setup-vscode` after
- * `npm install` to install the Electron-compatible native binary.
+ * Native binary handling: VS Code's Electron bundles a different Node.js
+ * ABI than the system Node.js. The postinstall script downloads both
+ * binaries (node-v137 for system, electron-v140 as sidecar). At runtime,
+ * we detect Electron and load the appropriate binary automatically.
  */
 
-import Database from 'better-sqlite3';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadBetterSqlite3(): any {
+  const isElectron = 'electron' in process.versions;
+  if (isElectron) {
+    const req = createRequire(import.meta.url);
+    const sidecar = req.resolve('better-sqlite3/build/Release/electron/better_sqlite3.node');
+    if (sidecar && existsSync(sidecar)) {
+      try { return req(sidecar) as never; } catch { /* fall through */ }
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('better-sqlite3') as never;
+}
+
+const Database = loadBetterSqlite3();
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
