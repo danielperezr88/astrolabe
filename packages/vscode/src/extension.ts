@@ -46,6 +46,7 @@ function ensureDbDir(db: string): void {
 let statusBarItem: vscode.StatusBarItem;
 let analyzing = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let lastHead = ''; // #216: shared between runAnalysis and HEAD polling
 const SAVE_DEBOUNCE_MS = 30_000; // 30s after last save
 const HEAD_POLL_MS = 60_000;     // every 60s
 
@@ -150,6 +151,9 @@ async function runAnalysis(
     if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
     saveRegistry(repos);
 
+    // #216: Sync lastHead after successful analysis so HEAD polling doesn't double-fire
+    lastHead = getGitCommit(repoPath);
+
     log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount });
     if (!silent) {
       vscode.window.showInformationMessage(
@@ -238,15 +242,16 @@ export function activate(context: vscode.ExtensionContext): void {
           // #213: Navigate to symbol line number
           try {
             const store = createSqliteStore(db);
-            const graph = store.loadGraph();
-            store.close();
-            const node = graph.getNode(result.nodeId);
-            const line = node?.properties.startLine as number | undefined;
-            if (line && line > 0) {
-              const pos = new vscode.Position(line - 1, 0);
-              editor.selection = new vscode.Selection(pos, pos);
-              editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-            }
+            try {
+              const graph = store.loadGraph();
+              const node = graph.getNode(result.nodeId);
+              const line = node?.properties.startLine as number | undefined;
+              if (line && line > 0) {
+                const pos = new vscode.Position(line - 1, 0);
+                editor.selection = new vscode.Selection(pos, pos);
+                editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+              }
+            } finally { store.close(); } // #217: close in finally, not try
           } catch { /* skip line navigation on error */ }
         }
       }
@@ -406,10 +411,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const repoPath = folder.uri.fsPath;
 
-  // Auto-analyze on startup if never analyzed
+  // #218: Auto-analyze on startup with progress notification (was silent)
   const db = dbPath(repoPath);
   if (!existsSync(db)) {
-    runAnalysis(repoPath, null, true);
+    vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Astrolabe: First-time analysis...', cancellable: false },
+      (progress) => runAnalysis(repoPath, progress, false),
+    );
   }
 
   // Trigger: debounced save (30s window batches multiple saves into one re-analysis)
@@ -433,7 +441,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // Trigger: git HEAD polling (catches branch switches, pulls, merges)
-  let lastHead = getGitCommit(repoPath);
+  lastHead = getGitCommit(repoPath); // #216: shared module var, also updated by runAnalysis
   const headInterval = setInterval(() => {
     const currentHead = getGitCommit(repoPath);
     if (currentHead !== 'unknown' && currentHead !== lastHead) {
