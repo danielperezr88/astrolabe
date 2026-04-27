@@ -173,7 +173,7 @@ const tsxSymbolPatterns: QueryPattern[] = [
 ];
 
 export const tsxLanguage: LanguageDefinition = {
-  name: 'typescript',
+  name: 'tsx',
   extensions: ['.tsx'],
   wasmFile: 'tree-sitter-tsx.wasm',
 

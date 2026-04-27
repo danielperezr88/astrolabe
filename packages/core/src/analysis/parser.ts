@@ -152,12 +152,8 @@ function isExported(match: QueryMatch, outerCapture: string): boolean {
   for (const c of match.captures) {
     if (c.name === outerCapture) {
       const parent = c.node.parent;
+      // Check if the symbol is directly wrapped in an export statement
       if (parent && parent.type === 'export_statement') return true;
-      // Also check for `export default`
-      if (parent && parent.type === 'export_statement') {
-        const grandparent = parent.parent;
-        if (grandparent && grandparent.type === 'program') return true;
-      }
       return false;
     }
   }

@@ -11,6 +11,7 @@
 export const SUPPORTED_LANGUAGES = [
   'typescript',
   'javascript',
+  'tsx',
   'python',
   'java',
   'csharp',

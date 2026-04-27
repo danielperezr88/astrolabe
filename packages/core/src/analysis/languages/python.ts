@@ -27,13 +27,7 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.class',
   },
-  // async def foo():
-  {
-    query: '(function_definition name: (identifier) @name) @definition.function',
-    captureLabels: { 'definition.function': 'Function' },
-    nameCapture: 'name',
-    outerCapture: 'definition.function',
-  },
+  // async def and def both match function_definition — single pattern covers both
 ];
 
 // ── Import query patterns ──────────────────────────────────────────────────

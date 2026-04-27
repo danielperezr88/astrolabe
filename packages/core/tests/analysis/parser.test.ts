@@ -413,7 +413,7 @@ describe('Parser', () => {
 
     it('sets correct language field for .tsx files', async () => {
       const result = await parseFile(tsxSymbolsFile, wasmDir);
-      expect(result.language).toBe('typescript');
+      expect(result.language).toBe('tsx');
     });
   });
 
