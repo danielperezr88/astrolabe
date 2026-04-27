@@ -28,3 +28,5 @@ export type { ParseEmitOutput } from './analysis/phases/parse-emit.js';
 export type { ResolutionOutput } from './analysis/phases/resolution.js';
 export { createSqliteStore } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
+export { createFtsSearch } from './search/index.js';
+export type { FtsSearch, SearchResult } from './search/fts.js';
