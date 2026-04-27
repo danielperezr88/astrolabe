@@ -4,42 +4,12 @@
  * Provides save/load with prepared-statement batch inserts inside a
  * transaction, WAL mode for concurrent reads, and file-hash tracking
  * for incremental re-indexing.
- *
- * Native binary handling: VS Code's Electron bundles a different Node.js
- * ABI than the system Node.js. The postinstall script downloads both
- * binaries (node-v137 for system, electron-v140 as sidecar). When running
- * in Electron, we copy the electron binary into place before the first
- * require('better-sqlite3') call.
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import './native-preload.js'; // must be first — swaps binary for Electron
+import Database from 'better-sqlite3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _Database: any = undefined;
-
-function getDatabase(): any {
-  if (!_Database) {
-    // In Electron, swap in the electron-compiled binary before loading
-    if ('electron' in process.versions) {
-      const req = createRequire(import.meta.url);
-      try {
-        const sidecar = req.resolve('better-sqlite3/build/Release/electron/better_sqlite3.node');
-        const defaultBin = req.resolve('better-sqlite3/build/Release/better_sqlite3.node');
-        if (sidecar && existsSync(sidecar) && defaultBin) {
-          copyFileSync(sidecar, defaultBin);
-        }
-      } catch { /* ok if failed */ }
-    }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _Database = require('better-sqlite3');
-  }
-  return _Database;
-}
-
-const Database = getDatabase();
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@
  * virtual table for fast ranked retrieval using the BM25 algorithm.
  */
 
+import '../persist/native-preload.js'; // must be first — swaps binary for Electron
 import Database from 'better-sqlite3';
 import type { SqliteStore } from '../persist/sqlite.js';
 
