@@ -168,6 +168,18 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
   execute(context: PhaseContext): ProcessTracingOutput {
     const { graph } = context;
 
+    // Remove stale Process nodes and their edges from prior runs (#123)
+    const staleProcesses: string[] = [];
+    const staleEdges: string[] = [];
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'Process') staleProcesses.push(node.id);
+    }
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'ENTRY_POINT_OF') staleEdges.push(rel.id);
+    }
+    for (const id of staleEdges) graph.removeRelationship(id);
+    for (const id of staleProcesses) graph.removeNode(id);
+
     const callGraph = buildCallGraph(graph);
     const callers = buildCallers(callGraph);
     const entryPoints = findEntryPoints(graph, callers, callGraph);
@@ -176,14 +188,23 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
     let totalSteps = 0;
     let maxPathLength = 0;
 
-    const MAX_DEPTH = 50; // Prevent infinite loops from cycles
+    const MAX_DEPTH = 50;
 
     for (const entryId of entryPoints) {
       const trace = bfsTrace(entryId, callGraph, MAX_DEPTH);
-      if (trace.length <= 1) continue; // No downstream calls
+      if (trace.length <= 1) continue;
 
       processCount++;
       const processId = `process:${entryId}`;
+
+      // Detect cross-community process (#124)
+      const communities = new Set<string>();
+      for (const step of trace) {
+        for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+          if (rel.targetId === step.id) communities.add(rel.sourceId);
+        }
+      }
+      const processType = communities.size > 1 ? 'cross_community' as const : 'intra_community' as const;
 
       graph.addNode({
         id: processId,
@@ -193,7 +214,7 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
           entryPointId: entryId,
           terminalId: trace[trace.length - 1]?.id,
           stepCount: trace.length,
-          processType: 'intra_community' as const,
+          processType,
         },
       });
 
@@ -207,8 +228,9 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
         reason: `Entry point for process trace`,
       });
 
-      // STEP_IN_PROCESS edges: Process -> each symbol in traversal order with step number (#79)
-      for (const [idx, bfsNode] of trace.entries()) {
+      // STEP_IN_PROCESS: Process -> each symbol, skip entry point at step 0 (#125)
+      for (let idx = 1; idx < trace.length; idx++) {
+        const bfsNode = trace[idx];
         totalSteps++;
         if (bfsNode.depth > maxPathLength) maxPathLength = bfsNode.depth;
 

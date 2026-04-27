@@ -36,5 +36,6 @@ export { createFtsSearch } from './search/index.js';
 export type { FtsSearch, SearchResult } from './search/fts.js';
 export { createLogger } from './logging/index.js';
 export type { Logger, LogLevel, LogEntry } from './logging/logger.js';
-export { startMcpServer } from './mcp/index.js';
+export { startMcpServer, loadRegistry, saveRegistry } from './mcp/index.js';
+export type { RegistryEntry } from './mcp/registry.js';
 export { generateSkill } from './skill/index.js';

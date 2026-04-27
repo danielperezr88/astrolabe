@@ -9,15 +9,13 @@
  */
 
 import { createInterface } from 'node:readline';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
 import type { FtsSearch } from '../search/fts.js';
 import type { GraphNode } from '../core/types.js';
-import { execSync } from 'node:child_process';
+import { loadRegistry, type RegistryEntry } from './registry.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -35,37 +33,10 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-interface RegistryEntry {
-  name: string;
-  path: string;
-  dbPath: string;
-  lastCommit: string;
-  indexedAt: number;
-}
-
 interface RepoContext {
   store: SqliteStore;
   fts: FtsSearch;
   entry: RegistryEntry;
-}
-
-// ── Global Registry ────────────────────────────────────────────────────────
-
-const REGISTRY_DIR = join(homedir(), '.astrolabe');
-const REGISTRY_FILE = join(REGISTRY_DIR, 'registry.json');
-
-function loadRegistry(): RegistryEntry[] {
-  try {
-    if (!existsSync(REGISTRY_FILE)) return [];
-    return JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8'));
-  } catch {
-    return [];
-  }
-}
-
-function saveRegistry(entries: RegistryEntry[]): void {
-  mkdirSync(REGISTRY_DIR, { recursive: true });
-  writeFileSync(REGISTRY_FILE, JSON.stringify(entries, null, 2));
 }
 
 // ── Backend ────────────────────────────────────────────────────────────────
@@ -327,21 +298,23 @@ class LocalBackend {
 
     const graph = ctx.store.loadGraph();
 
-    // Find changed symbols
     const changedSymbols: string[] = [];
     const affectedProcesses: string[] = [];
 
+    // Find changed symbols by matching changed files to node filePath (#127)
+    const changedNodeIds = new Set<string>();
     for (const node of graph.iterNodes()) {
       const fp = node.properties.filePath as string | undefined;
       if (fp && diffFiles.includes(fp)) {
+        changedNodeIds.add(node.id);
         changedSymbols.push(node.properties.name ?? node.id);
       }
     }
 
-    // Find affected processes
+    // Find affected processes by matching STEP_IN_PROCESS targets by node ID
     for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-      const proc = graph.getNode(rel.sourceId);
-      if (changedSymbols.includes(graph.getNode(rel.targetId)?.properties.name ?? '')) {
+      if (changedNodeIds.has(rel.targetId)) {
+        const proc = graph.getNode(rel.sourceId);
         if (proc && !affectedProcesses.includes(proc.properties.name ?? proc.id)) {
           affectedProcesses.push(proc.properties.name ?? proc.id);
         }

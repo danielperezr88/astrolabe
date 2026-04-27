@@ -3,32 +3,20 @@
  * @astrolabe/cli — CLI entry point with full command suite.
  */
 import { program } from 'commander';
-import { readFileSync, existsSync, statSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
-import { homedir } from 'node:os';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, parseEmitPhase,
   resolutionPhase, crossFilePhase, mroPhase, communityPhase, processTracingPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
+  loadRegistry, saveRegistry,
 } from '@astrolabe/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
-const REGISTRY_DIR = join(homedir(), '.astrolabe');
-const REGISTRY_FILE = join(REGISTRY_DIR, 'registry.json');
-
-function loadRegistry(): Array<{ name: string; path: string; dbPath: string; lastCommit: string; indexedAt: number }> {
-  try { if (!existsSync(REGISTRY_FILE)) return []; return JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8')); }
-  catch { return []; }
-}
-
-function saveRegistry(entries: Array<{ name: string; path: string; dbPath: string; lastCommit: string; indexedAt: number }>): void {
-  mkdirSync(REGISTRY_DIR, { recursive: true });
-  writeFileSync(REGISTRY_FILE, JSON.stringify(entries, null, 2));
-}
 
 function getGitCommit(repoPath: string): string {
   try { return execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); }
@@ -65,6 +53,12 @@ program
       store.saveGraph(graph);
       const nodeCount = graph.nodeCount;
       const edgeCount = graph.relationshipCount;
+
+      // Build FTS index so query/context commands work (#132)
+      const fts = createFtsSearch(opts.output);
+      fts.indexGraph(store);
+      fts.close();
+
       store.close();
 
       // Register repo in global registry for multi-repo MCP support
