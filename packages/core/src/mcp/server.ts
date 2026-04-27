@@ -222,7 +222,9 @@ class LocalBackend {
 
       const processes = processMap.get(symbol.id) ?? [];
 
-      // #164: Include resolved type information from cross-file analysis
+      // TODO(#164): Include resolved type information once parser captures
+      // returnType/declaredType on Function/Method nodes and cross-file
+      // phase produces resolved_returnType.
       const symbolInfo: Record<string, unknown> = {
         uid: symbol.id,
         kind: symbol.label,
@@ -230,12 +232,6 @@ class LocalBackend {
         filePath: symbol.properties.filePath ?? '',
         startLine: symbol.properties.startLine ?? 0,
       };
-      if (symbol.properties.resolved_returnType) {
-        symbolInfo.resolvedReturnType = symbol.properties.resolved_returnType;
-      }
-      if (symbol.properties.resolved_declaredType) {
-        symbolInfo.resolvedType = symbol.properties.resolved_declaredType;
-      }
 
       return {
         symbol: symbolInfo,

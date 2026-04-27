@@ -1,12 +1,13 @@
 /**
  * Pipeline Phase: Cross-File Type Propagation
  *
- * Re-processes imports and calls with type information propagated
- * across file boundaries. Files are processed in topological import
- * order (leaves first) so upstream types are available when needed.
+ * Builds type maps and topological import order across files.
+ * Type reference resolution (resolved_returnType etc.) is deferred
+ * until the parser captures returnType/declaredType on Function/Method
+ * nodes — see #164 for details.
  *
  * Dependencies: parse-emit, resolution (both must complete first)
- * Output: Refined CALLS edges with propagated type information
+ * Output: Per-file type maps and topological sorted file order
  */
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
@@ -175,14 +176,12 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
         if (fp !== filePath) continue;
         if (node.label !== 'Function' && node.label !== 'Method') continue;
 
-        // Resolve all type-reference properties, not just returnType (#163)
-        const typeProps: string[] = ['returnType', 'declaredType', 'parameterTypes', 'fieldType'];
-        for (const prop of typeProps) {
-          const refType = node.properties[prop] as string | undefined;
-          if (refType && availableTypes.has(refType)) {
-            node.properties[`resolved_${prop}`] = refType;
-          }
-        }
+        // TODO(#164): Type reference resolution — requires parser support for
+        // capturing returnType/declaredType/parameterTypes/fieldType on
+        // Function/Method nodes. Once the parser populates these properties,
+        // re-enable:
+        //   node.properties[`resolved_${prop}`] = refType;
+        // and wire consumption in MCP context tool.
       }
 
       propagatedEdges++;

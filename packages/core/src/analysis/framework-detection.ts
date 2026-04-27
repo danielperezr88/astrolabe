@@ -208,7 +208,8 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
 
   // Create Framework nodes and USES_FRAMEWORK edges (#180)
   for (const fw of unique) {
-    const fwId = `framework:${fw.ecosystem}:${fw.name}`;
+    // #201: Include scope in node ID to prevent different-scope frameworks from overwriting
+    const fwId = `framework:${fw.ecosystem}:${fw.name}:${fw.scope || 'root'}`;
     graph.addNode({
       id: fwId,
       label: 'Framework',
@@ -235,15 +236,27 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
         });
       }
     } else {
-      // Root-level framework: link to Project node
-      let projNodeId: string | null = null;
+      // #204: Root-level framework — link to root structural node.
+      // Priority: root Package node → root Folder → fallback Package → skip
+      let rootNodeId: string | null = null;
       for (const node of graph.iterNodes()) {
-        if (node.label === 'Project') { projNodeId = node.id; break; }
+        if (node.label !== 'Package' && node.label !== 'Folder') continue;
+        const fp = node.properties.filePath as string | undefined;
+        if (!fp || fp === '.' || fp === '') {
+          // Prefer root Package over root Folder
+          if (node.label === 'Package' || !rootNodeId) rootNodeId = node.id;
+        }
       }
-      if (projNodeId) {
+      if (!rootNodeId) {
+        // Fallback: use any Package node
+        for (const node of graph.iterNodes()) {
+          if (node.label === 'Package') { rootNodeId = node.id; break; }
+        }
+      }
+      if (rootNodeId) {
         graph.addRelationship({
-          id: `uses_fw:${projNodeId}:${fwId}`,
-          sourceId: projNodeId,
+          id: `uses_fw:${rootNodeId}:${fwId}`,
+          sourceId: rootNodeId,
           targetId: fwId,
           type: 'USES_FRAMEWORK',
           confidence: 0.9,
