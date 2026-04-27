@@ -157,17 +157,26 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       );
       if (alreadyPackage) continue;
 
-      const pkgId = `pkg:${pkgDir}`;
+      const pkgId = `pkg:${pkgDir}:${fileName}`;
+      const existing = graph.getNode(pkgId);
+      if (existing) {
+        // Already captured this manifest — skip
+        continue;
+      }
+
+      const pkgType = fileName === 'package.json' ? 'npm'
+        : fileName === 'Cargo.toml' ? 'cargo'
+        : fileName === 'go.mod' ? 'gomod'
+        : (fileName === 'pyproject.toml' || fileName === 'setup.py') ? 'python'
+        : 'unknown';
+
       const pkgNode: GraphNode = {
         id: pkgId,
         label: 'Package',
         properties: {
           name: pkgDir.split('/').pop() || 'root',
           filePath: pkgDir,
-          ...(fileName === 'package.json' ? { packageType: 'npm' } : {}),
-          ...(fileName === 'Cargo.toml' ? { packageType: 'cargo' } : {}),
-          ...(fileName === 'go.mod' ? { packageType: 'gomod' } : {}),
-          ...(fileName === 'pyproject.toml' || fileName === 'setup.py' ? { packageType: 'python' } : {}),
+          packageType: pkgType,
         },
       };
       graph.addNode(pkgNode);

@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scanPhase } from '../../../src/analysis/phases/scan.js';
 import { structurePhase } from '../../../src/analysis/phases/structure.js';
@@ -17,8 +17,7 @@ function makeRepo(fixtures: Record<string, string>): string {
   const tmp = mkdtempSync(join(tmpdir(), 'astrolabe-structure-'));
   for (const [path, content] of Object.entries(fixtures)) {
     const fullPath = join(tmp, path);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf('\\'));
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(fullPath), { recursive: true });
     writeFileSync(fullPath, content);
   }
   return tmp;
@@ -140,9 +139,12 @@ describe('Structure Phase', () => {
       const out = getPhaseOutput<StructureOutput>(context, 'structure');
 
       expect(out.packageCount).toBe(1);
-      const pkgNode = graph.getNode('pkg:.');
+      const pkgNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Package' && n.properties.filePath === '.'
+      );
       expect(pkgNode).toBeDefined();
       expect(pkgNode?.label).toBe('Package');
+      expect(pkgNode?.properties.packageType).toBe('npm');
 
       rmSync(repo, { recursive: true, force: true });
     });
@@ -159,7 +161,9 @@ describe('Structure Phase', () => {
       const out = getPhaseOutput<StructureOutput>(context, 'structure');
 
       expect(out.packageCount).toBe(1);
-      const pkg = graph.getNode('pkg:.');
+      const pkg = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Package' && n.properties.packageType === 'cargo'
+      );
       expect(pkg?.properties.packageType).toBe('cargo');
 
       rmSync(repo, { recursive: true, force: true });
@@ -177,7 +181,9 @@ describe('Structure Phase', () => {
       const out = getPhaseOutput<StructureOutput>(context, 'structure');
 
       expect(out.packageCount).toBe(1);
-      const pkg = graph.getNode('pkg:.');
+      const pkg = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Package' && n.properties.packageType === 'gomod'
+      );
       expect(pkg?.properties.packageType).toBe('gomod');
 
       rmSync(repo, { recursive: true, force: true });
@@ -195,7 +201,9 @@ describe('Structure Phase', () => {
       const out = getPhaseOutput<StructureOutput>(context, 'structure');
 
       expect(out.packageCount).toBe(1);
-      const pkg = graph.getNode('pkg:.');
+      const pkg = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Package' && n.properties.packageType === 'python'
+      );
       expect(pkg?.properties.packageType).toBe('python');
 
       rmSync(repo, { recursive: true, force: true });

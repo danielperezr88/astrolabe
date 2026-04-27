@@ -111,6 +111,7 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
 
 /**
  * Create a graph node from a parsed symbol.
+ * Also creates a DEFINES edge: File → Symbol.
  * Uses addNode which is idempotent — duplicate symbols are safe.
  */
 function emitSymbol(
@@ -118,9 +119,12 @@ function emitSymbol(
   sym: ParsedSymbol,
   relPath: string,
 ): void {
+  // Extract the :L<line> suffix from the parser's ID for uniqueness
+  const lineSuffix = sym.id.includes(':L') ? sym.id.substring(sym.id.lastIndexOf(':L')) : '';
+
+  const nodeId = `${sym.label}:${relPath}:${sym.name}${lineSuffix}`;
   const node: GraphNode = {
-    // Rebuild id with repo-relative path
-    id: `${sym.label}:${relPath}:${sym.name}`,
+    id: nodeId,
     label: sym.label,
     properties: {
       name: sym.name,
@@ -131,6 +135,16 @@ function emitSymbol(
     },
   };
   graph.addNode(node);
+
+  // DEFINES edge: File → Symbol
+  graph.addRelationship({
+    id: `defines:${relPath}:${nodeId}`,
+    sourceId: `file:${relPath}`,
+    targetId: nodeId,
+    type: 'DEFINES',
+    confidence: 1,
+    reason: 'declared-in-file',
+  });
 }
 
 /**
@@ -150,8 +164,6 @@ function emitImport(
   imp: ParsedImport,
   relPath: string,
 ): number {
-  let edgeCount = 0;
-
   // Create Import node for the source module
   const importNode: GraphNode = {
     id: imp.id,
@@ -164,20 +176,18 @@ function emitImport(
   };
   graph.addNode(importNode);
 
-  // IMPORTS: File → Import node
+  // IMPORTS: File → Import node (uses repo-relative path)
   const fileToImport: GraphRelationship = {
-    id: `imports:${imp.filePath}:to:${imp.source}:L${imp.startLine}`,
-    sourceId: `file:${imp.filePath}`,
+    id: `imports:${relPath}:to:${imp.source}:L${imp.startLine}`,
+    sourceId: `file:${relPath}`,
     targetId: imp.id,
     type: 'IMPORTS',
     confidence: 1,
     reason: `import '${imp.source}'`,
   };
   graph.addRelationship(fileToImport);
-  edgeCount++;
 
-  // For each imported name: IMPORTS edges are resolved in the resolution phase
-  edgeCount += imp.names.length;
-
-  return edgeCount;
+  // Per-name IMPORTS edges are resolved in the resolution phase.
+  // Return the count of actually created edges.
+  return 1;
 }

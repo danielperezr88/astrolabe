@@ -14,7 +14,8 @@
 import { Parser as WtsParser, Query as WtsQuery, Language as WtsLanguage } from 'web-tree-sitter';
 import type { QueryMatch } from 'web-tree-sitter';
 import { readFileSync, statSync } from 'node:fs';
-import { resolve, extname } from 'node:path';
+import { resolve, extname, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type {
   LanguageDefinition,
@@ -63,12 +64,32 @@ export async function initParser(): Promise<void> {
   _initialized = true;
 }
 
+// ── WASM directory resolution ──────────────────────────────────────────────
+
+// Cache to avoid repeated path computation.
+let _wasmDir: string | undefined;
+
 /**
  * Return the default WASM directory for tree-sitter grammars.
- * Resolves from the package root (packages/core/wasm/).
+ *
+ * Resolves relative to this source file's location (not process.cwd()),
+ * so it works when consumed as a library by the CLI or VSCode extension.
+ *
+ * Source: packages/core/src/analysis/parser.ts
+ * WASM:   packages/core/wasm/
  */
 export function defaultWasmDir(): string {
-  return resolve(process.cwd(), 'wasm');
+  if (_wasmDir !== undefined) return _wasmDir;
+
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    _wasmDir = resolve(__dirname, '..', '..', 'wasm');
+  } catch {
+    // Fallback for environments where import.meta.url is unavailable (CJS/require)
+    _wasmDir = resolve(process.cwd(), 'wasm');
+  }
+  return _wasmDir;
 }
 
 /**

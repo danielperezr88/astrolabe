@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scanPhase } from '../../../src/analysis/phases/scan.js';
 import { structurePhase } from '../../../src/analysis/phases/structure.js';
@@ -30,8 +30,7 @@ function makeRepo(fixtures: Record<string, string>): string {
   const tmp = mkdtempSync(join(testDir, 'repo-'));
   for (const [relPath, content] of Object.entries(fixtures)) {
     const fullPath = join(tmp, relPath);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf('\\'));
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(fullPath), { recursive: true });
     writeFileSync(fullPath, content);
   }
   return tmp;
@@ -71,10 +70,14 @@ export function main(): string {
       const usesEdges = Array.from(graph.iterRelationshipsByType('USES'));
       expect(usesEdges.length).toBeGreaterThanOrEqual(2);
 
-      // Verify target nodes exist
-      const helperNode = graph.getNode('Function:src/utils.ts:helper');
+      // Verify target nodes exist (find by name, not hardcoded ID)
+      const helperNode = Array.from(graph.iterNodes()).find(
+        (n) => n.properties.name === 'helper' && n.properties.filePath === 'src/utils.ts'
+      );
       expect(helperNode).toBeDefined();
-      const formatNode = graph.getNode('Function:src/utils.ts:format');
+      const formatNode = Array.from(graph.iterNodes()).find(
+        (n) => n.properties.name === 'format' && n.properties.filePath === 'src/utils.ts'
+      );
       expect(formatNode).toBeDefined();
 
       rmSync(repo, { recursive: true, force: true });
@@ -148,7 +151,9 @@ export class Dog {
       expect(out.edgeCounts).toBeDefined();
 
       // Dog class should exist
-      const dogNode = graph.getNode('Class:src/derived.ts:Dog');
+      const dogNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Class' && n.properties.name === 'Dog'
+      );
       expect(dogNode).toBeDefined();
 
       rmSync(repo, { recursive: true, force: true });

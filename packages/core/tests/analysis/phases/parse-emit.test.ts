@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scanPhase } from '../../../src/analysis/phases/scan.js';
 import { structurePhase } from '../../../src/analysis/phases/structure.js';
@@ -31,8 +31,7 @@ function makeRepo(fixtures: Record<string, string>): string {
   const tmp = mkdtempSync(join(testDir, 'repo-'));
   for (const [relPath, content] of Object.entries(fixtures)) {
     const fullPath = join(tmp, relPath);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf('\\'));
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(fullPath), { recursive: true });
     writeFileSync(fullPath, content);
   }
   return tmp;
@@ -67,15 +66,21 @@ export function createUser(data: UserData): User {
       expect(out.fileCount).toBe(1);
       expect(out.errorCount).toBe(0);
 
-      // Class node
-      const classNode = graph.getNode('Class:src/app.ts:UserService');
+      // Class node (find by label+name, not hardcoded ID)
+      const classNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Class' && n.properties.name === 'UserService'
+      );
       expect(classNode).toBeDefined();
       expect(classNode?.label).toBe('Class');
       expect(classNode?.properties.name).toBe('UserService');
       expect(classNode?.properties.isExported).toBe(true);
+      // ID should include startLine for uniqueness
+      expect(classNode!.id).toMatch(/^Class:src\/app\.ts:UserService:L\d+$/);
 
       // Function node
-      const funcNode = graph.getNode('Function:src/app.ts:createUser');
+      const funcNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Function' && n.properties.name === 'createUser'
+      );
       expect(funcNode).toBeDefined();
       expect(funcNode?.label).toBe('Function');
       expect(funcNode?.properties.isExported).toBe(true);
@@ -104,15 +109,21 @@ export type ID = string;
       const context = createPhaseContext(repo, graph, () => {});
       await runPipeline([scanPhase, structurePhase, parseEmitPhase], context);
 
-      const iface = graph.getNode('Interface:src/types.ts:User');
+      const iface = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Interface' && n.properties.name === 'User'
+      );
       expect(iface).toBeDefined();
       expect(iface?.label).toBe('Interface');
 
-      const enumNode = graph.getNode('Enum:src/types.ts:Status');
+      const enumNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Enum' && n.properties.name === 'Status'
+      );
       expect(enumNode).toBeDefined();
       expect(enumNode?.label).toBe('Enum');
 
-      const typeAlias = graph.getNode('TypeAlias:src/types.ts:ID');
+      const typeAlias = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'TypeAlias' && n.properties.name === 'ID'
+      );
       expect(typeAlias).toBeDefined();
 
       rmSync(repo, { recursive: true, force: true });
@@ -133,7 +144,9 @@ function doWork() {
       const context = createPhaseContext(repo, graph, () => {});
       await runPipeline([scanPhase, structurePhase, parseEmitPhase], context);
 
-      const funcNode = graph.getNode('Function:src/internal.ts:doWork');
+      const funcNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Function' && n.properties.name === 'doWork'
+      );
       expect(funcNode).toBeDefined();
       expect(funcNode?.properties.isExported).toBe(false);
 
@@ -195,10 +208,14 @@ def greet(name):
       expect(out.symbolCount).toBeGreaterThanOrEqual(3); // Class + 2 methods + function
       expect(out.errorCount).toBe(0);
 
-      const classNode = graph.getNode('Class:src/main.py:Calculator');
+      const classNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Class' && n.properties.name === 'Calculator'
+      );
       expect(classNode).toBeDefined();
 
-      const funcNode = graph.getNode('Function:src/main.py:greet');
+      const funcNode = Array.from(graph.iterNodes()).find(
+        (n) => n.label === 'Function' && n.properties.name === 'greet'
+      );
       expect(funcNode).toBeDefined();
 
       rmSync(repo, { recursive: true, force: true });

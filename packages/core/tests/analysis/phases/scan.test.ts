@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { scanPhase } from '../../../src/analysis/phases/scan.js';
 import type { ScanOutput } from '../../../src/analysis/phases/scan.js';
@@ -15,8 +15,7 @@ function makeRepo(fixtures: Record<string, string>, ignoreContent?: string): str
   const tmp = mkdtempSync(join(tmpdir(), 'astrolabe-scan-'));
   for (const [path, content] of Object.entries(fixtures)) {
     const fullPath = join(tmp, path);
-    const dir = fullPath.substring(0, fullPath.lastIndexOf('\\'));
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(fullPath), { recursive: true });
     writeFileSync(fullPath, content);
   }
   if (ignoreContent) {
