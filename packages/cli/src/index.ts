@@ -99,4 +99,136 @@ program
     await startMcpServer();
   });
 
-program.parse();
+// ── status ────────────────────────────────────────────────────────────────────
+
+program
+  .command('status')
+  .description('Show analysis status for the current repository')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .action((opts: { db: string }) => {
+    const { existsSync, statSync } = require('node:fs');
+    if (!existsSync(opts.db)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+    const stats = statSync(opts.db);
+    console.log(`Database: ${opts.db}`);
+    console.log(`Size: ${(stats.size / 1024).toFixed(1)} KB`);
+    console.log(`Last modified: ${stats.mtime.toISOString()}`);
+    try {
+      const { createSqliteStore } = require('@astrolabe/core');
+      const store = createSqliteStore(opts.db);
+      try {
+        console.log(`Nodes: ${store.getNodeCount()}`);
+        console.log(`Relationships: ${store.getRelationshipCount()}`);
+      } finally {
+        store.close();
+      }
+    } catch {
+      console.log('Unable to read database. Run `astrolabe analyze <repo>` to rebuild.');
+    }
+  });
+
+// ── clean ──────────────────────────────────────────────────────────────────────
+
+program
+  .command('clean')
+  .description('Remove analysis artifacts (.astrolabe directory)')
+  .action(() => {
+    const { rmSync, existsSync } = require('node:fs');
+    const path = '.astrolabe';
+    if (existsSync(path)) {
+      rmSync(path, { recursive: true, force: true });
+      console.log('Removed .astrolabe directory.');
+    } else {
+      console.log('No .astrolabe directory found.');
+    }
+  });
+
+// ── context ────────────────────────────────────────────────────────────────────
+
+program
+  .command('context <symbol-name>')
+  .description('Show the definition context for a symbol (file, imports, exports)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .action((symbolName: string, opts: { db: string }) => {
+    const fts = createFtsSearch(opts.db);
+    try {
+      const results = fts.search(symbolName, 5);
+      if (results.length === 0) {
+        console.log(`No symbols found matching "${symbolName}".`);
+      } else {
+        console.log(`Context for "${symbolName}":`);
+        for (const r of results) {
+          console.log(`  ${r.label} ${r.name}  (${r.filePath})`);
+        }
+      }
+    } finally {
+      fts.close();
+    }
+  });
+
+// ── impact ─────────────────────────────────────────────────────────────────────
+
+program
+  .command('impact <symbol-name>')
+  .description('Show code impact analysis for a symbol (callers, dependents)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .action((symbolName: string, opts: { db: string }) => {
+    const { createSqliteStore } = require('@astrolabe/core');
+    const store = createSqliteStore(opts.db);
+    try {
+      const graph = store.loadGraph();
+      let found = 0;
+      for (const node of graph.iterNodes()) {
+        if (node.properties.name === symbolName) {
+          found++;
+          console.log(`${node.label}: ${node.id}`);
+          // Show relationships
+          for (const rel of graph.iterRelationships()) {
+            if (rel.sourceId === node.id || rel.targetId === node.id) {
+              const otherId = rel.sourceId === node.id ? rel.targetId : rel.sourceId;
+              const other = graph.getNode(otherId);
+              const dir = rel.sourceId === node.id ? '→' : '←';
+              console.log(`  ${dir} ${rel.type} ${other?.properties.name ?? otherId}`);
+            }
+          }
+        }
+      }
+      if (found === 0) {
+        console.log(`Symbol "${symbolName}" not found in the knowledge graph.`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── list ───────────────────────────────────────────────────────────────────────
+
+program
+  .command('list')
+  .description('List all symbols in the knowledge graph')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--label <label>', 'Filter by node label (Function, Class, etc.)')
+  .action((opts: { db: string; label?: string }) => {
+    const { createSqliteStore } = require('@astrolabe/core');
+    const store = createSqliteStore(opts.db);
+    try {
+      const graph = store.loadGraph();
+      let count = 0;
+      for (const node of graph.iterNodes()) {
+        if (opts.label && node.label !== opts.label) continue;
+        count++;
+        console.log(`${node.label.padEnd(12)} ${node.properties.name ?? '?'}  (${node.properties.filePath ?? '?'})`);
+        if (count >= 100) {
+          console.log('... (truncated at 100 results. Use `--label` to filter or `query` to search.)');
+          break;
+        }
+      }
+      if (count === 0) {
+        console.log('No symbols found. Run `astrolabe analyze` first.');
+      }
+    } finally {
+      store.close();
+    }
+  });

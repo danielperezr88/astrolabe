@@ -10,6 +10,8 @@ import type { LanguageDefinition } from '../language-definition.js';
 import { javascriptLanguage } from './javascript.js';
 import { typescriptLanguage, tsxLanguage } from './typescript.js';
 import { pythonLanguage } from './python.js';
+import { goLanguage } from './go.js';
+import { rustLanguage } from './rust.js';
 
 /**
  * All registered language definitions.
@@ -20,6 +22,8 @@ const allLanguages: LanguageDefinition[] = [
   typescriptLanguage,
   tsxLanguage,
   pythonLanguage,
+  goLanguage,
+  rustLanguage,
 ];
 
 /**
