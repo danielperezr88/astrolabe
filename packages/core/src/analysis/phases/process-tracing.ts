@@ -185,9 +185,10 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
     const entryPoints = findEntryPoints(graph, callers, callGraph);
 
     // Pre-build node-to-community map for O(1) lookup (#153)
+    // MEMBER_OF: sourceId=symbol, targetId=community → map symbol→community (#192)
     const nodeCommunity = new Map<string, string>();
     for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
-      nodeCommunity.set(rel.targetId, rel.sourceId);
+      nodeCommunity.set(rel.sourceId, rel.targetId);
     }
 
     let processCount = 0;

@@ -139,7 +139,10 @@ function refinePartition(
   let refined = false;
   const newCommunities = new Map<number, Set<string>>();
   const newNodeToCommunity = new Map<string, number>();
-  let nextCommId = Math.max(...Array.from(state.communities.keys()), 0) + 1;
+  // Find max community ID safely without spread (#187)
+  let maxId = 0;
+  for (const k of state.communities.keys()) { if (k > maxId) maxId = k; }
+  let nextCommId = maxId + 1;
 
   for (const [commId, members] of state.communities) {
     if (members.size <= 1) {
@@ -244,14 +247,19 @@ function louvainPass(
 function computeModularity(state: CommunityState, adj: Map<string, Map<string, number>>, totalWeight: number): number {
   let Q = 0;
   const m = totalWeight > 0 ? totalWeight : 1;
+  // Pre-compute node degrees to avoid O(E × maxDegree) (#190)
+  const nodeDegree = new Map<string, number>();
+  for (const [nodeId, neighbors] of adj) {
+    nodeDegree.set(nodeId, Array.from(neighbors.values()).reduce((s, w) => s + w, 0));
+  }
 
   for (const [nodeId, comm] of state.nodeToCommunity) {
     const neighbors = adj.get(nodeId);
     if (!neighbors) continue;
+    const k_i = nodeDegree.get(nodeId) ?? 0;
     for (const [neighbor, weight] of neighbors) {
       if (state.nodeToCommunity.get(neighbor) === comm) {
-        const k_i = Array.from(neighbors.values()).reduce((s, w) => s + w, 0);
-        const k_j = adj.get(neighbor) ? Array.from(adj.get(neighbor)!.values()).reduce((s, w) => s + w, 0) : 0;
+        const k_j = nodeDegree.get(neighbor) ?? 0;
         Q += weight - (k_i * k_j) / m;
       }
     }

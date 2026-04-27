@@ -120,17 +120,14 @@ export function searchTfIdf(
 
   const queryWeights = new Map<string, number>();
   let queryNormSq = 0;
-  // Compute IDF from the corpus DF for proper TF-IDF query weighting (#67)
+  // Compute IDF only for query terms to avoid O(corpus×terms) (#186)
   const idfCache = new Map<string, number>();
-  for (const [, vec] of index) {
-    for (const term of vec.weights.keys()) {
-      if (!idfCache.has(term)) {
-        // Estimate IDF from corpus: average document frequency
-        let docsWithTerm = 0;
-        for (const [, v] of index) if (v.weights.has(term)) docsWithTerm++;
-        idfCache.set(term, Math.log((index.size + 1) / (docsWithTerm + 1)));
-      }
+  for (const t of new Set(queryTokens)) {
+    let docsWithTerm = 0;
+    for (const [, vec] of index) {
+      if (vec.weights.has(t)) docsWithTerm++;
     }
+    idfCache.set(t, Math.log((index.size + 1) / (docsWithTerm + 1)));
   }
 
   for (const t of queryTokens) {

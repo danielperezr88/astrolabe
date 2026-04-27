@@ -34,6 +34,8 @@ export const toolsPhase: PhaseDefinition<ToolsOutput> = {
       try {
         const content = readFileSync(join(context.repoPath, fp), 'utf-8');
         for (const pat of PATTERNS) {
+          // Skip proto-only patterns for non-.proto files (#185)
+          if (pat.protoOnly && !fp.endsWith('.proto')) continue;
           let match;
           while ((match = pat.regex.exec(content)) !== null) {
             const toolName = pat.nameGroup ? match[pat.nameGroup] : match[0];

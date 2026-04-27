@@ -179,6 +179,10 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       const rel = relMap.get(relId);
       if (!rel) return false;
       unindexRelByType(rel);
+      // Clean up node-to-relationship reverse index (#188)
+      for (const nid of [rel.sourceId, rel.targetId]) {
+        nodeRelIndex.get(nid)?.delete(relId);
+      }
       relMap.delete(relId);
       return true;
     },
