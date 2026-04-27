@@ -21,3 +21,6 @@ export { runPipeline, createPhaseContext, getPhaseOutput, type PhaseDefinition, 
 export { initParser, parseFile, parseFiles, resetParser, AstCache, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
 export { symbolId, captureText, captureRange } from './analysis/language-definition.js';
 export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult } from './analysis/language-definition.js';
+export { scanPhase, structurePhase } from './analysis/phases/index.js';
+export type { FileEntry, ScanOutput } from './analysis/phases/scan.js';
+export type { StructureOutput } from './analysis/phases/structure.js';
