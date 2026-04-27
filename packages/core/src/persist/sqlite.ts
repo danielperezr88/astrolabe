@@ -4,6 +4,10 @@
  * Provides save/load with prepared-statement batch inserts inside a
  * transaction, WAL mode for concurrent reads, and file-hash tracking
  * for incremental re-indexing.
+ *
+ * For VS Code extension development: the bundled Electron uses a different
+ * Node.js ABI than the system Node.js. Run `npm run setup-vscode` after
+ * `npm install` to install the Electron-compatible native binary.
  */
 
 import Database from 'better-sqlite3';
