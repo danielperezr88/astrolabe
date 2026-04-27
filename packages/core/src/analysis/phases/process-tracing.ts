@@ -184,6 +184,12 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
     const callers = buildCallers(callGraph);
     const entryPoints = findEntryPoints(graph, callers, callGraph);
 
+    // Pre-build node-to-community map for O(1) lookup (#153)
+    const nodeCommunity = new Map<string, string>();
+    for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+      nodeCommunity.set(rel.targetId, rel.sourceId);
+    }
+
     let processCount = 0;
     let totalSteps = 0;
     let maxPathLength = 0;
@@ -197,12 +203,11 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
       processCount++;
       const processId = `process:${entryId}`;
 
-      // Detect cross-community process (#124)
+      // Detect cross-community using pre-built map (#153)
       const communities = new Set<string>();
       for (const step of trace) {
-        for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
-          if (rel.targetId === step.id) communities.add(rel.sourceId);
-        }
+        const comm = nodeCommunity.get(step.id);
+        if (comm) communities.add(comm);
       }
       const processType = communities.size > 1 ? 'cross_community' as const : 'intra_community' as const;
 

@@ -55,6 +55,8 @@ function buildAdjacency(graph: PhaseContext['graph']): {
 
   for (const rel of graph.iterRelationships()) {
     if (!couplingTypes.has(rel.type)) continue;
+    // Skip relationships involving structural nodes (#161)
+    if (!allNodeIds.has(rel.sourceId) || !allNodeIds.has(rel.targetId)) continue;
     const weight = rel.confidence;
 
     // source → target
