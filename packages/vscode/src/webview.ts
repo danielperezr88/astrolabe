@@ -21,24 +21,42 @@ interface SerializableEdge {
   sourceId: string; targetId: string; type: string;
 }
 
+// #225: Cap to top 1000 most-connected nodes (regression from #214 D3 rewrite)
+const NODE_CAP = 1000;
+
 function serializeGraph(graph: KnowledgeGraph): { nodes: SerializableNode[]; edges: SerializableEdge[] } {
-  const nodes: SerializableNode[] = [];
+  // Compute degree for every node
+  const degree = new Map<string, number>();
+  for (const rel of graph.iterRelationships()) {
+    degree.set(rel.sourceId, (degree.get(rel.sourceId) ?? 0) + 1);
+    degree.set(rel.targetId, (degree.get(rel.targetId) ?? 0) + 1);
+  }
+
+  // Take top NODE_CAP by degree
+  const allNodes: SerializableNode[] = [];
   for (const node of graph.iterNodes()) {
-    const n: SerializableNode = {
+    allNodes.push({
       id: node.id,
       label: node.label,
       name: (node.properties.name as string) ?? node.id,
       filePath: (node.properties.filePath as string) ?? '',
-    };
-    if (node.properties.startLine) n.startLine = node.properties.startLine as number;
-    if (node.properties.endLine) n.endLine = node.properties.endLine as number;
-    nodes.push(n);
+      startLine: node.properties.startLine as number | undefined,
+      endLine: node.properties.endLine as number | undefined,
+    });
   }
+  allNodes.sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
+  const capped = allNodes.slice(0, NODE_CAP);
+
+  // Only pass edges between capped nodes
+  const capSet = new Set(capped.map((n) => n.id));
   const edges: SerializableEdge[] = [];
   for (const rel of graph.iterRelationships()) {
-    edges.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
+    if (capSet.has(rel.sourceId) && capSet.has(rel.targetId)) {
+      edges.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
+    }
   }
-  return { nodes, edges };
+
+  return { nodes: capped, edges };
 }
 
 // ── Panel provider ───────────────────────────────────────────────────────────
