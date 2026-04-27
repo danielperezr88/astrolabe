@@ -14,6 +14,9 @@ import { goLanguage } from './go.js';
 import { rustLanguage } from './rust.js';
 import { javaLanguage } from './java.js';
 import { kotlinLanguage } from './kotlin.js';
+import { csharpLanguage } from './csharp.js';
+import { phpLanguage } from './php.js';
+import { rubyLanguage } from './ruby.js';
 
 /**
  * All registered language definitions.
@@ -28,6 +31,9 @@ const allLanguages: LanguageDefinition[] = [
   rustLanguage,
   javaLanguage,
   kotlinLanguage,
+  csharpLanguage,
+  phpLanguage,
+  rubyLanguage,
 ];
 
 /**
