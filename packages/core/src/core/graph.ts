@@ -27,6 +27,9 @@ export function createKnowledgeGraph(): KnowledgeGraph {
    */
   const fileIndex = new Map<string, Set<string>>();
 
+  /** Node-to-relationship reverse index for O(1) removeNode (#156). */
+  const nodeRelIndex = new Map<string, Set<string>>();
+
   // ── Internal helpers ──────────────────────────────────────────────────
 
   function indexRelByType(rel: GraphRelationship): void {
@@ -121,29 +124,36 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       if (!relMap.has(rel.id)) {
         relMap.set(rel.id, rel);
         indexRelByType(rel);
+        // Maintain node-to-rel reverse index (#156)
+        for (const nid of [rel.sourceId, rel.targetId]) {
+          let bucket = nodeRelIndex.get(nid);
+          if (!bucket) { bucket = new Set(); nodeRelIndex.set(nid, bucket); }
+          bucket.add(rel.id);
+        }
       }
     },
 
     removeNode(nodeId: string): boolean {
       if (!nodeMap.has(nodeId)) return false;
 
-      // Clean up file index
       const node = nodeMap.get(nodeId)!;
       const fp = node.properties.filePath;
-      if (fp) {
-        fileIndex.get(fp)?.delete(nodeId);
-      }
+      if (fp) fileIndex.get(fp)?.delete(nodeId);
 
-      // Remove all relationships involving this node
-      const toRemove: string[] = [];
-      for (const [relId, rel] of relMap) {
-        if (rel.sourceId === nodeId || rel.targetId === nodeId) {
-          toRemove.push(relId);
-          unindexRelByType(rel);
+      // O(1) per relationship using reverse index (#156)
+      const relIds = nodeRelIndex.get(nodeId);
+      if (relIds) {
+        for (const relId of relIds) {
+          const rel = relMap.get(relId);
+          if (rel) {
+            unindexRelByType(rel);
+            // Remove from peer node's reverse index too
+            const peerId = rel.sourceId === nodeId ? rel.targetId : rel.sourceId;
+            nodeRelIndex.get(peerId)?.delete(relId);
+          }
+          relMap.delete(relId);
         }
-      }
-      for (const relId of toRemove) {
-        relMap.delete(relId);
+        nodeRelIndex.delete(nodeId);
       }
 
       nodeMap.delete(nodeId);

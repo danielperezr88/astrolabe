@@ -83,7 +83,12 @@ export function createSqliteStore(dbPath: string): SqliteStore {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
-  db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+
+  // Read existing schema version; apply migrations if behind (#158)
+  const currentVer = db.pragma('user_version', { simple: true }) as number;
+  if (currentVer < CURRENT_SCHEMA_VERSION) {
+    db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }
 
   // ── Prepared statements ───────────────────────────────────────────────
   const insertNode = db.prepare(
