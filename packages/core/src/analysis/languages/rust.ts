@@ -6,6 +6,8 @@
  */
 
 import type { LanguageDefinition, QueryPattern } from '../language-definition.js';
+import { Language as WtsLanguage } from 'web-tree-sitter';
+import { resolve } from 'node:path';
 
 const symbolPatterns: QueryPattern[] = [
   // function declarations
@@ -57,9 +59,7 @@ export const rustLanguage: LanguageDefinition = {
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },
 
-  async load(wasmDir: string) {
-    const { resolve } = await import('node:path');
-    const { default: WtsLang } = await import('web-tree-sitter');
-    return (WtsLang as any).load(resolve(wasmDir, this.wasmFile));
+  async load(wasmDir: string): Promise<WtsLanguage> {
+    return WtsLanguage.load(resolve(wasmDir, this.wasmFile));
   },
 };
