@@ -17,6 +17,9 @@ import { kotlinLanguage } from './kotlin.js';
 import { csharpLanguage } from './csharp.js';
 import { phpLanguage } from './php.js';
 import { rubyLanguage } from './ruby.js';
+import { swiftLanguage } from './swift.js';
+import { cLanguage } from './c.js';
+import { cppLanguage } from './cpp.js';
 
 /**
  * All registered language definitions.
@@ -34,6 +37,9 @@ const allLanguages: LanguageDefinition[] = [
   csharpLanguage,
   phpLanguage,
   rubyLanguage,
+  swiftLanguage,
+  cLanguage,
+  cppLanguage,
 ];
 
 /**
