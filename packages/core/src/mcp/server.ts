@@ -66,7 +66,6 @@ function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEn
 class LocalBackend {
   private repos = new Map<string, RepoContext>();
   private maxConns = 5;
-  private evictMs = 5 * 60 * 1000; // 5 min
   private lastAccess = new Map<string, number>();
 
   getRepo(repoParam?: string): RepoContext {
