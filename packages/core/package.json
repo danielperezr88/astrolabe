@@ -1,0 +1,40 @@
+{
+  "name": "@astrolabe/core",
+  "version": "0.1.0",
+  "description": "Codebase knowledge graph engine — multi-language static analysis with graph persistence",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "wasm",
+    "!dist/**/*.test.*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "license": "MIT",
+  "keywords": [
+    "code-analysis",
+    "knowledge-graph",
+    "static-analysis",
+    "dependency-graph",
+    "tree-sitter"
+  ],
+  "dependencies": {
+    "@astrolabe/shared": "^0.1.0",
+    "better-sqlite3": "^11.0.0",
+    "web-tree-sitter": "^0.26.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
+  }
+}

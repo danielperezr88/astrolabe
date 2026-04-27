@@ -9,7 +9,7 @@
  * Inspired by GitNexus's 12-phase ingestion pipeline.
  */
 
-import type { KnowledgeGraph } from './types.js';
+import type { KnowledgeGraph } from '@astrolabe/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

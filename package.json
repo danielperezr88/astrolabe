@@ -2,23 +2,18 @@
   "name": "astrolabe",
   "version": "0.1.0",
   "description": "Codebase knowledge graph engine — multi-language static analysis with graph persistence, community detection, and hybrid search",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "astrolabe": "dist/cli/index.js"
-  },
-  "files": [
-    "dist",
-    "!dist/**/*.test.*"
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "packages/core",
+    "packages/cli",
+    "packages/vscode"
   ],
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspace packages/core --if-present",
+    "lint": "npm run lint --workspace packages/core --if-present",
+    "clean": "npm run clean --workspaces --if-present"
   },
   "license": "MIT",
   "keywords": [
@@ -28,16 +23,7 @@
     "dependency-graph",
     "tree-sitter"
   ],
-  "dependencies": {
-    "better-sqlite3": "^11.0.0",
-    "commander": "^12.0.0",
-    "graphology": "^0.25.4",
-    "web-tree-sitter": "^0.26.8"
-  },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^2.0.0"
+    "typescript": "^5.7.0"
   }
 }

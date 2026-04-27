@@ -1,0 +1,41 @@
+{
+  "name": "astrolabe-vscode",
+  "version": "0.1.0",
+  "description": "VSCode extension for Astrolabe — interactive codebase knowledge graph exploration",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "activationEvents": [
+    "onLanguage",
+    "onCommand:astrolabe.analyze"
+  ],
+  "main": "dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "astrolabe.analyze",
+        "title": "Astrolabe: Analyze Codebase"
+      },
+      {
+        "command": "astrolabe.showGraph",
+        "title": "Astrolabe: Show Knowledge Graph"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@astrolabe/core": "^0.1.0",
+    "@astrolabe/shared": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.7.0"
+  }
+}

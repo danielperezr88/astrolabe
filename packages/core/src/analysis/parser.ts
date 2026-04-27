@@ -25,7 +25,7 @@ import type {
 import { symbolId } from './language-definition.js';
 import { languageForExtension } from './languages/index.js';
 import { AstCache } from './ast-cache.js';
-import type { NodeLabel, RelationshipType } from '../core/types.js';
+import type { NodeLabel } from '@astrolabe/shared';
 
 // ── Module-level state ─────────────────────────────────────────────────────
 

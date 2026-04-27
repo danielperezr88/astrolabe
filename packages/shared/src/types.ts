@@ -1,8 +1,9 @@
 /**
- * Astrolabe — Core type definitions.
+ * Astrolabe — Shared type definitions.
  *
  * Single source of truth for the knowledge graph data model.
  * All node labels, relationship types, and interfaces are defined here.
+ * Consumed by all packages via `@astrolabe/shared`.
  */
 
 // ── Supported languages ────────────────────────────────────────────────────

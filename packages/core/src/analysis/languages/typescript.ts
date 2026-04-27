@@ -100,7 +100,7 @@ const importPatterns: QueryPattern[] = [
   // import type { Foo } from './bar'
   {
     query:
-      '(import_statement (import_clause (named_imports (import_specifier name: (identifier) @name))) source: (string (string_fragment) @source)) @import',
+      '(import_statement (import_clause (named_imports (import_specifier name: (identifier) @name))) (string (string_fragment) @source)) @import',
     captureLabels: { 'import': 'Import' },
     nameCapture: 'name',
     outerCapture: 'import',
@@ -109,7 +109,7 @@ const importPatterns: QueryPattern[] = [
   // import Foo from './bar'
   {
     query:
-      '(import_statement (import_clause (identifier) @default_name) source: (string (string_fragment) @source)) @import',
+      '(import_statement (import_clause (identifier) @default_name) (string (string_fragment) @source)) @import',
     captureLabels: { 'import': 'Import' },
     nameCapture: 'default_name',
     outerCapture: 'import',
@@ -118,7 +118,7 @@ const importPatterns: QueryPattern[] = [
   // import Foo, { Bar } from './baz'
   {
     query:
-      '(import_statement (import_clause (identifier) @default_name (named_imports (import_specifier name: (identifier) @name))) source: (string (string_fragment) @source)) @import',
+      '(import_statement (import_clause (identifier) @default_name (named_imports (import_specifier name: (identifier) @name))) (string (string_fragment) @source)) @import',
     captureLabels: { 'import': 'Import' },
     nameCapture: 'name',
     outerCapture: 'import',
@@ -127,21 +127,16 @@ const importPatterns: QueryPattern[] = [
   // import * as Foo from './bar'
   {
     query:
-      '(import_statement (import_clause (namespace_import (identifier) @name)) source: (string (string_fragment) @source)) @import',
+      '(import_statement (import_clause (namespace_import (identifier) @name)) (string (string_fragment) @source)) @import',
     captureLabels: { 'import': 'Import' },
     nameCapture: 'name',
     outerCapture: 'import',
     isImport: true,
   },
   // import './side-effect' (no import_clause)
-  {
-    query:
-      '(import_statement !(import_clause) source: (string (string_fragment) @source)) @import',
-    captureLabels: { 'import': 'Import' },
-    nameCapture: 'source',
-    outerCapture: 'import',
-    isImport: true,
-  },
+  // NOTE: handled as a fallback in extractImports() because tree-sitter
+  // WASM does not support the !(negation) query operator.
+  //{ query: '...', ... }
 ];
 
 // ── Language definition ────────────────────────────────────────────────────
