@@ -39,19 +39,20 @@ export interface ParseEmitOutput {
 /** Files per chunk — process in batches to avoid memory pressure. */
 const CHUNK_SIZE = 500;
 
-/** File extensions that we can parse (language supported). */
-const PARSABLE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-  '.py', '.pyw',
-  '.go', '.rs', // #96: graduate Go + Rust from skeleton
-  '.java', '.kt', '.kts', '.cs', '.php', '.rb', '.swift', '.c', '.cpp', '.h', '.hpp',
-]);
+/** File extensions that we can parse (derived from language registry to avoid desync) (#166). */
+import { getAllExtensions } from '../parser.js';
+
+function getParsableExtensions(): Set<string> {
+  const exts = new Set<string>();
+  for (const ext of getAllExtensions()) exts.add(ext);
+  return exts;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Determine if a file entry should be parsed. */
 function isParsable(entry: FileEntry): boolean {
-  return PARSABLE_EXTENSIONS.has(entry.extension.toLowerCase());
+  return getParsableExtensions().has(entry.extension.toLowerCase());
 }
 
 // ── Phase definition ────────────────────────────────────────────────────────

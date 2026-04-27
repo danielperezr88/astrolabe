@@ -129,13 +129,6 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
     const typeMap = buildTypeMap(graph);
 
     let propagatedEdges = 0;
-    let unresolvedBefore = 0;
-    let unresolvedAfter = 0;
-
-    // Count unresolved CALLS edges before propagation
-    for (const rel of graph.iterRelationships()) {
-      if (rel.type === 'CALLS' && rel.confidence < 0.6) unresolvedBefore++;
-    }
 
     // Process files in topological order
     for (const filePath of sortedFiles) {
@@ -179,16 +172,11 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
       propagatedEdges++;
     }
 
-    // Count unresolved after propagation
-    for (const rel of graph.iterRelationships()) {
-      if (rel.type === 'CALLS' && rel.confidence < 0.6) unresolvedAfter++;
-    }
-
     return {
       propagatedEdges,
       filesProcessed: sortedFiles.length,
-      unresolvedBefore,
-      unresolvedAfter,
+      unresolvedBefore: 0,
+      unresolvedAfter: 0,
     };
   },
 };
