@@ -11,7 +11,7 @@ import { resolve, relative, extname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { SupportedLanguage } from '../../core/types.js';
-import { languageForExtension } from '../parser.js';
+import { languageForExtension, getAllExtensions } from '../parser.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +77,22 @@ const BINARY_EXTENSIONS = new Set([
 
 /** Max file size in bytes to scan (512 KB default). */
 const MAX_FILE_SIZE = 512 * 1024;
+
+/** Config/metadata extensions to include even without a language provider. */
+const CONFIG_EXTENSIONS = new Set([
+  '.md', '.mdx', '.json', '.yaml', '.yml', '.toml', '.xml',
+  '.env', '.cfg', '.ini', '.conf', '.mod', '.sum', '.txt',
+  '.css', '.scss', '.html', '.sql', '.graphql', '.proto', '.prisma',
+]);
+
+/** Allowed extensions derived from language registry + config (#115). */
+let _allowedExtensions: Set<string> | undefined;
+function getAllowedExtensions(): Set<string> {
+  if (_allowedExtensions) return _allowedExtensions;
+  _allowedExtensions = new Set(CONFIG_EXTENSIONS);
+  for (const ext of getAllExtensions()) _allowedExtensions.add(ext);
+  return _allowedExtensions;
+}
 
 // ── .astrolabeignore parser ─────────────────────────────────────────────────
 
@@ -213,8 +229,8 @@ function discoverFiles(
       // Skip files without known code extensions (if they also have no recognized language)
       const langDef = languageForExtension(ext);
       const language = langDef ? langDef.name : null;
-      // Skip if neither a code extension nor a recognized language
-      if (!langDef && !['.md', '.mdx', '.json', '.yaml', '.yml', '.toml', '.xml', '.env', '.cfg', '.ini', '.conf', '.mod', '.sum', '.txt', '.css', '.scss', '.html', '.sql', '.graphql', '.proto', '.prisma'].includes(ext)) continue;
+      // Skip if neither a code extension nor a recognized config extension (#115)
+      if (!langDef && !getAllowedExtensions().has(ext)) continue;
       // Skip large files (#77)
       if (st.size > MAX_FILE_SIZE) continue;
       const hash = computeHash(fullPath);

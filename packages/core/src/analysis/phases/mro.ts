@@ -192,7 +192,12 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
           if (!ancestorFp) continue;
 
           const methods = methodsByFile.get(ancestorFp) ?? [];
-          for (const method of methods) {
+          // Filter methods to just those belonging to this ancestor class (#121)
+          const ancestorName = ancestor.properties.name as string;
+          const ownMethods = ancestorName
+            ? methods.filter((m) => (m.properties.parentClass as string) === ancestorName || !m.properties.parentClass)
+            : methods;
+          for (const method of ownMethods) {
             const edgeId = `mro:${cls.id}:has_method:${method.id}`;
             if (!graph.getRelationship(edgeId)) {
               graph.addRelationship({

@@ -171,61 +171,63 @@ class LocalBackend {
     const ctx = this.getRepo(repo);
     const graph = ctx.store.loadGraph();
 
-    // Find symbol
-    let symbol: GraphNode | undefined;
+    // Find ALL matching symbols (handle overloads) (#116)
+    const symbols: GraphNode[] = [];
     for (const node of graph.iterNodes()) {
       if (node.id === nameOrUid || node.properties.name === nameOrUid) {
-        symbol = node;
-        break;
+        symbols.push(node);
       }
     }
-    if (!symbol) return { error: `Symbol "${nameOrUid}" not found.` };
+    if (symbols.length === 0) return { error: `Symbol "${nameOrUid}" not found.` };
 
-    // Find incoming/outgoing relationships
-    const incoming: Record<string, string[]> = {};
-    const outgoing: Record<string, string[]> = {};
-    const processes: { name: string; step: number; total: number }[] = [];
+    const results = symbols.map((symbol) => {
+      const incoming: Record<string, string[]> = {};
+      const outgoing: Record<string, string[]> = {};
+      const processes: { name: string; step: number; total: number }[] = [];
 
-    for (const rel of graph.iterRelationships()) {
-      if (rel.targetId === symbol.id) {
-        const caller = graph.getNode(rel.sourceId);
-        const relType = rel.type.toLowerCase();
-        if (!incoming[relType]) incoming[relType] = [];
-        incoming[relType].push(caller?.properties.name ?? rel.sourceId);
-      }
-      if (rel.sourceId === symbol.id) {
-        const callee = graph.getNode(rel.targetId);
-        const relType = rel.type.toLowerCase();
-        if (!outgoing[relType]) outgoing[relType] = [];
-        outgoing[relType].push(callee?.properties.name ?? rel.targetId);
-      }
-    }
-
-    // Find process participations
-    for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-      if (rel.targetId === symbol.id) {
-        const proc = graph.getNode(rel.sourceId);
-        if (proc) {
-          processes.push({
-            name: (proc.properties.name as string) ?? proc.id,
-            step: rel.step ?? 0,
-            total: (proc.properties.stepCount as number) ?? 0,
-          });
+      for (const rel of graph.iterRelationships()) {
+        if (rel.targetId === symbol.id) {
+          const caller = graph.getNode(rel.sourceId);
+          const relType = rel.type.toLowerCase();
+          if (!incoming[relType]) incoming[relType] = [];
+          incoming[relType].push(caller?.properties.name ?? rel.sourceId);
+        }
+        if (rel.sourceId === symbol.id) {
+          const callee = graph.getNode(rel.targetId);
+          const relType = rel.type.toLowerCase();
+          if (!outgoing[relType]) outgoing[relType] = [];
+          outgoing[relType].push(callee?.properties.name ?? rel.targetId);
         }
       }
-    }
 
-    return {
-      symbol: {
-        uid: symbol.id,
-        kind: symbol.label,
-        filePath: symbol.properties.filePath ?? '',
-        startLine: symbol.properties.startLine ?? 0,
-      },
-      incoming,
-      outgoing,
-      processes,
-    };
+      // Find process participations
+      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+        if (rel.targetId === symbol.id) {
+          const proc = graph.getNode(rel.sourceId);
+          if (proc) {
+            processes.push({
+              name: (proc.properties.name as string) ?? proc.id,
+              step: rel.step ?? 0,
+              total: (proc.properties.stepCount as number) ?? 0,
+            });
+          }
+        }
+      }
+
+      return {
+        symbol: {
+          uid: symbol.id,
+          kind: symbol.label,
+          filePath: symbol.properties.filePath ?? '',
+          startLine: symbol.properties.startLine ?? 0,
+        },
+        incoming,
+        outgoing,
+        processes,
+      };
+    });
+
+    return { match_count: results.length, matches: results };
   }
 
   impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3) {
@@ -242,7 +244,24 @@ class LocalBackend {
     }
     if (!targetNode) return { error: `Target "${target}" not found.` };
 
-    // BFS traversal
+    // Pre-build adjacency index: Map<nodeId, { neighborId, type, confidence }[]> (#119)
+    const adj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
+    for (const rel of graph.iterRelationships()) {
+      if (rel.confidence < minConfidence) continue;
+      // Upstream: target <- source (who calls me)
+      if (direction === 'upstream') {
+        let bucket = adj.get(rel.targetId);
+        if (!bucket) { bucket = []; adj.set(rel.targetId, bucket); }
+        bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence });
+      } else {
+        // Downstream: source -> target (who I call)
+        let bucket = adj.get(rel.sourceId);
+        if (!bucket) { bucket = []; adj.set(rel.sourceId, bucket); }
+        bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence });
+      }
+    }
+
+    // BFS traversal using adjacency index
     const affected: Array<{ depth: number; name: string; type: string; filePath: string; relationType: string; confidence: number }> = [];
     const visited = new Set<string>([targetNode.id]);
     const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
@@ -251,29 +270,20 @@ class LocalBackend {
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
-      for (const rel of graph.iterRelationships()) {
-        if (rel.confidence < minConfidence) continue;
-        const isRelevant =
-          direction === 'upstream'
-            ? rel.targetId === current.id
-            : rel.sourceId === current.id;
-
-        const neighborId =
-          direction === 'upstream' ? rel.sourceId : rel.targetId;
-
-        if (isRelevant && !visited.has(neighborId)) {
-          visited.add(neighborId);
-          const node = graph.getNode(neighborId);
-          queue.push({ id: neighborId, depth: current.depth + 1 });
-          affected.push({
-            depth: current.depth + 1,
-            name: node?.properties.name ?? neighborId,
-            type: node?.label ?? 'unknown',
-            filePath: (node?.properties.filePath as string) ?? '',
-            relationType: rel.type,
-            confidence: rel.confidence,
-          });
-        }
+      const neighbors = adj.get(current.id) ?? [];
+      for (const { neighborId, type, confidence } of neighbors) {
+        if (visited.has(neighborId)) continue;
+        visited.add(neighborId);
+        const node = graph.getNode(neighborId);
+        queue.push({ id: neighborId, depth: current.depth + 1 });
+        affected.push({
+          depth: current.depth + 1,
+          name: node?.properties.name ?? neighborId,
+          type: node?.label ?? 'unknown',
+          filePath: (node?.properties.filePath as string) ?? '',
+          relationType: type,
+          confidence,
+        });
       }
     }
 
@@ -296,15 +306,19 @@ class LocalBackend {
   }
 
   detectChanges(scope: 'unstaged' | 'staged' | 'all' = 'unstaged', repo?: string) {
+    // Validate scope parameter (#118)
+    const validScopes = ['unstaged', 'staged', 'all'];
+    if (!validScopes.includes(scope)) {
+      return { error: `Invalid scope "${scope}". Use: ${validScopes.join(', ')}` };
+    }
+
     const ctx = this.getRepo(repo);
     const repoPath = ctx.entry.path;
 
     let diffFiles: string[] = [];
     try {
-      const args = scope === 'staged' ? ['diff', '--cached', '--name-only'] :
-                   scope === 'all' ? ['diff', 'HEAD', '--name-only'] :
-                   ['diff', '--name-only'];
-      const output = execSync(`git ${args.join(' ')}`, { cwd: repoPath, encoding: 'utf-8' });
+      const diffArg = scope === 'staged' ? ' --cached' : scope === 'all' ? ' HEAD' : '';
+      const output = execSync(`git diff --name-only${diffArg}`, { cwd: repoPath, encoding: 'utf-8' });
       diffFiles = output.trim().split('\n').filter(Boolean);
     } catch {
       return { error: 'Git diff failed. Is this a git repository?' };
@@ -375,12 +389,22 @@ class LocalBackend {
     };
   }
 
-  cypher(_query: string, repo?: string) {
+  cypher(query: string, repo?: string) {
     const ctx = this.getRepo(repo);
     const graph = ctx.store.loadGraph();
 
+    // Parse MATCH patterns from query (#120)
+    if (!query || !query.toLowerCase().includes('match')) {
+      return { error: 'Only MATCH queries supported. Example: MATCH (n:Function) RETURN n' };
+    }
+
+    // Extract label filter: (n:LabelName) or (n:LabelName) where...
+    const labelMatch = query.match(/\(\w*\s*:\s*(\w+)\s*\)/);
+    const targetLabel = labelMatch ? labelMatch[1] : null;
+
     const results: Array<Record<string, unknown>> = [];
     for (const node of graph.iterNodes()) {
+      if (targetLabel && node.label !== targetLabel) continue;
       results.push({
         id: node.id,
         label: node.label,
@@ -388,7 +412,8 @@ class LocalBackend {
         filePath: node.properties.filePath,
       });
     }
-    return { columns: ['id', 'label', 'name', 'filePath'], rows: results };}
+    return { columns: ['id', 'label', 'name', 'filePath'], rows: results };
+  }
 
   shutdown(): void {
     for (const ctx of this.repos.values()) {
