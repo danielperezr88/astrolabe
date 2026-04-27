@@ -50,6 +50,7 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
     }
 
     // Detect Django models
+    let djangoModelCount = 0;
     for (const node of graph.iterNodes()) {
       if (node.label !== 'Class') continue;
       const fp = node.properties.filePath as string | undefined;
@@ -64,9 +65,9 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
         label: 'CodeElement',
         properties: { name, filePath: fp, kind: 'model', orm: 'django' },
       });
-      modelCount++;
+      djangoModelCount++;
     }
-    if (modelCount > 0) frameworks.add('django');
+    if (djangoModelCount > 0) frameworks.add('django');
 
     // Detect ORM usage patterns in symbol names
     for (const node of graph.iterNodes()) {
