@@ -59,27 +59,73 @@ function buildCallers(callGraph: Map<string, string[]>): Map<string, string[]> {
 }
 
 /**
- * Identify entry points: nodes with no incoming CALLS edges
- * that are exported functions or public methods.
+ * Multi-factor entry point detection with framework-aware scoring (#83).
+ *
+ * Scores each function/method on multiple dimensions:
+ * - Route/Tool handler: +0.9
+ * - Name-based (main/start/init/run/handle): +0.5-0.6
+ * - File position (routes/handlers/commands dir): +0.3
+ * - Call graph position (no callers, many callees): +0.3
+ * - Export status: +0.3
+ *
+ * Returns node IDs sorted by score descending, filtered to > 0.5 threshold.
  */
 function findEntryPoints(
   graph: PhaseContext['graph'],
   callers: Map<string, string[]>,
+  callGraph: Map<string, string[]>,
 ): string[] {
-  const entries: string[] = [];
+  const candidates: Array<{ id: string; score: number }> = [];
+
+  // Pre-collect route/tool target IDs for handler detection
+  const routeTargets = new Set<string>();
+  const toolTargets = new Set<string>();
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type === 'HANDLES_ROUTE') routeTargets.add(rel.targetId);
+    if (rel.type === 'HANDLES_TOOL') toolTargets.add(rel.targetId);
+  }
 
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Function' && node.label !== 'Method') continue;
-    if (!node.properties.isExported) continue;
 
-    // Entry point: no callers, or only called from test files
+    let score = 0;
+    const name = (node.properties.name as string) ?? '';
+    const fp = (node.properties.filePath as string) ?? '';
+
+    // Route/Tool handler: +0.9
+    if (routeTargets.has(node.id) || toolTargets.has(node.id)) {
+      score += 0.9;
+    }
+
+    // Name-based scoring
+    if (/^(main|start|init|run)$/i.test(name)) score += 0.6;
+    else if (/^(handle|process|serve|execute)/i.test(name)) score += 0.5;
+
+    // File position: in known handler directories
+    if (/routes?\b/i.test(fp) || /api\b/i.test(fp) || /handler/i.test(fp) || /command/i.test(fp)) {
+      score += 0.3;
+    }
+
+    // Export status
+    if (node.properties.isExported) score += 0.3;
+
+    // Call graph position: no callers (leaf) — good entry point
     const incoming = callers.get(node.id);
-    if (!incoming || incoming.length === 0) {
-      entries.push(node.id);
+    if (!incoming || incoming.length === 0) score += 0.3;
+
+    // Many outgoing calls (orchestrator pattern)
+    const outgoing = callGraph.get(node.id);
+    if (outgoing && outgoing.length >= 3) score += 0.2;
+
+    if (score > 0.5) {
+      candidates.push({ id: node.id, score });
+      node.properties.entryPointScore = score;
+      node.properties.entryPointReason = `Multi-factor score: ${score.toFixed(2)}`;
     }
   }
 
-  return entries;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.map((c) => c.id);
 }
 
 /**
@@ -124,7 +170,7 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
 
     const callGraph = buildCallGraph(graph);
     const callers = buildCallers(callGraph);
-    const entryPoints = findEntryPoints(graph, callers);
+    const entryPoints = findEntryPoints(graph, callers, callGraph);
 
     let processCount = 0;
     let totalSteps = 0;
