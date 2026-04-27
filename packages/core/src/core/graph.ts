@@ -108,15 +108,19 @@ export function createKnowledgeGraph(): KnowledgeGraph {
 
     // ── Mutation ───────────────────────────────────────────────────────
     addNode(node: GraphNode): void {
-      if (!nodeMap.has(node.id)) {
-        nodeMap.set(node.id, node);
-        // Maintain per-file index for O(1) removal
-        const fp = node.properties.filePath;
-        if (fp) {
-          let bucket = fileIndex.get(fp);
-          if (!bucket) { bucket = new Set(); fileIndex.set(fp, bucket); }
-          bucket.add(node.id);
-        }
+      if (nodeMap.has(node.id)) {
+        // Node already exists — update properties to allow idempotent re-adds (#159)
+        const existing = nodeMap.get(node.id)!;
+        Object.assign(existing.properties, node.properties);
+        return;
+      }
+      nodeMap.set(node.id, node);
+      // Maintain per-file index for O(1) removal
+      const fp = node.properties.filePath;
+      if (fp) {
+        let bucket = fileIndex.get(fp);
+        if (!bucket) { bucket = new Set(); fileIndex.set(fp, bucket); }
+        bucket.add(node.id);
       }
     },
 

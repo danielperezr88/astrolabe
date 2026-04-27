@@ -50,12 +50,13 @@ describe('KnowledgeGraph', () => {
       expect(g.getNode('fn:foo:bar')?.properties.name).toBe('bar');
     });
 
-    it('is idempotent (does not overwrite)', () => {
+    it('allows property updates on re-add (#159)', () => {
       const g = createKnowledgeGraph();
       g.addNode(makeNode({ id: 'x', properties: { name: 'first' } }));
       g.addNode(makeNode({ id: 'x', properties: { name: 'second' } }));
       expect(g.nodeCount).toBe(1);
-      expect(g.getNode('x')?.properties.name).toBe('first');
+      // Re-adding the same node ID updates properties (#159)
+      expect(g.getNode('x')?.properties.name).toBe('second');
     });
 
     it('shows up in iterNodes and forEachNode', () => {
