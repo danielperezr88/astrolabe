@@ -2,6 +2,7 @@
   "name": "astrolabe-vscode",
   "version": "0.1.0",
   "description": "VSCode extension for Astrolabe — interactive codebase knowledge graph exploration",
+  "icon": "icon.png",
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
