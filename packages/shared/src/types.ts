@@ -74,7 +74,8 @@ export type NodeLabel =
   | 'Template'
   | 'Section'
   | 'Route'
-  | 'Tool';
+  | 'Tool'
+  | 'Framework';
 
 // ── Node properties ────────────────────────────────────────────────────────
 
