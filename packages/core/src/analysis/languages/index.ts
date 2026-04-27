@@ -12,6 +12,8 @@ import { typescriptLanguage, tsxLanguage } from './typescript.js';
 import { pythonLanguage } from './python.js';
 import { goLanguage } from './go.js';
 import { rustLanguage } from './rust.js';
+import { javaLanguage } from './java.js';
+import { kotlinLanguage } from './kotlin.js';
 
 /**
  * All registered language definitions.
@@ -24,6 +26,8 @@ const allLanguages: LanguageDefinition[] = [
   pythonLanguage,
   goLanguage,
   rustLanguage,
+  javaLanguage,
+  kotlinLanguage,
 ];
 
 /**
