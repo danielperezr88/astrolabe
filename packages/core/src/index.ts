@@ -30,3 +30,5 @@ export { createSqliteStore } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
 export { createFtsSearch } from './search/index.js';
 export type { FtsSearch, SearchResult } from './search/fts.js';
+export { createLogger } from './logging/index.js';
+export type { Logger, LogLevel, LogEntry } from './logging/logger.js';
