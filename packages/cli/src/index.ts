@@ -10,7 +10,7 @@ import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, parseEmitPhase,
-  resolutionPhase, mroPhase, communityPhase, processTracingPhase,
+  resolutionPhase, crossFilePhase, mroPhase, communityPhase, processTracingPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
 } from '@astrolabe/core';
@@ -53,10 +53,10 @@ program
       const graph = createKnowledgeGraph();
       const context = createPhaseContext(repoPath, graph, () => undefined);
       // Run ALL phases in ONE pipeline call so dependencies are satisfied (#54)
-      // Full DAG: scan -> structure -> parse-emit -> resolution -> mro -> community -> process-tracing
+      // Full DAG: scan -> structure -> parse-emit -> resolution -> cross-file -> mro -> community -> process-tracing
       await runPipeline([
         scanPhase, structurePhase, parseEmitPhase, resolutionPhase,
-        mroPhase, communityPhase, processTracingPhase,
+        crossFilePhase, mroPhase, communityPhase, processTracingPhase,
       ], context);
       // Ensure output directory exists (#58)
       const outDir = dirname(opts.output);
