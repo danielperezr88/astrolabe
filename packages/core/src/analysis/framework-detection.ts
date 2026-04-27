@@ -17,15 +17,17 @@ export interface FrameworkInfo {
   ecosystem: string;
   version?: string;
   detectedFrom: string;
+  scope?: string;
 }
 
-type FrameworkDetector = (repoPath: string, graph: KnowledgeGraph) => FrameworkInfo[];
+type FrameworkDetector = (repoPath: string, graph: KnowledgeGraph, packageDir?: string) => FrameworkInfo[];
 
 // ── JS/TS detectors ────────────────────────────────────────────────────────
 
-function detectJsFrameworks(repoPath: string, _graph: KnowledgeGraph): FrameworkInfo[] {
+function detectJsFrameworks(repoPath: string, _graph: KnowledgeGraph, packageDir?: string): FrameworkInfo[] {
   const results: FrameworkInfo[] = [];
-  const pkgPath = join(repoPath, 'package.json');
+  const baseDir = packageDir ? join(repoPath, packageDir) : repoPath;
+  const pkgPath = join(baseDir, 'package.json');
   if (!existsSync(pkgPath)) return results;
 
   try {
@@ -44,7 +46,7 @@ function detectJsFrameworks(repoPath: string, _graph: KnowledgeGraph): Framework
       { name: 'trpc', dep: '@trpc/server' },
     ];
     for (const fw of frameworks) {
-      if (deps[fw.dep]) results.push({ name: fw.name, ecosystem: 'javascript', version: deps[fw.dep], detectedFrom: 'package.json' });
+      if (deps[fw.dep]) results.push({ name: fw.name, ecosystem: 'javascript', version: deps[fw.dep], detectedFrom: 'package.json', scope: packageDir });
     }
 
     const orms = [
@@ -56,7 +58,7 @@ function detectJsFrameworks(repoPath: string, _graph: KnowledgeGraph): Framework
       { name: 'mongoose', dep: 'mongoose' },
     ];
     for (const orm of orms) {
-      if (deps[orm.dep]) results.push({ name: orm.name, ecosystem: 'javascript', version: deps[orm.dep], detectedFrom: 'package.json' });
+      if (deps[orm.dep]) results.push({ name: orm.name, ecosystem: 'javascript', version: deps[orm.dep], detectedFrom: 'package.json', scope: packageDir });
     }
   } catch { /* skip */ }
   return results;
@@ -64,11 +66,12 @@ function detectJsFrameworks(repoPath: string, _graph: KnowledgeGraph): Framework
 
 // ── Python detectors ───────────────────────────────────────────────────────
 
-function detectPythonFrameworks(repoPath: string, _graph: KnowledgeGraph): FrameworkInfo[] {
+function detectPythonFrameworks(repoPath: string, _graph: KnowledgeGraph, packageDir?: string): FrameworkInfo[] {
   const results: FrameworkInfo[] = [];
+  const baseDir = packageDir ? join(repoPath, packageDir) : repoPath;
 
   // Check requirements.txt
-  const reqPath = join(repoPath, 'requirements.txt');
+  const reqPath = join(baseDir, 'requirements.txt');
   if (existsSync(reqPath)) {
     try {
       const content = readFileSync(reqPath, 'utf-8');
@@ -76,31 +79,35 @@ function detectPythonFrameworks(repoPath: string, _graph: KnowledgeGraph): Frame
       const pyFrameworks = ['flask', 'fastapi', 'django', 'aiohttp', 'sanic', 'starlette'];
       const pyOrms = ['sqlalchemy', 'django.db', 'peewee', 'tortoise', 'pony'];
       for (const line of lines) {
-        const lowered = line.toLowerCase();
+        const lowered = line.toLowerCase().trim();
+        if (!lowered || lowered.startsWith('#')) continue;
         for (const fw of pyFrameworks) {
-          if (lowered.startsWith(fw)) results.push({ name: fw, ecosystem: 'python', detectedFrom: 'requirements.txt' });
+          // #181: Word-boundary matching to avoid false positives
+          const esc = fw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`\\b${esc}\\b`).test(lowered)) results.push({ name: fw, ecosystem: 'python', detectedFrom: 'requirements.txt', scope: packageDir });
         }
         for (const orm of pyOrms) {
-          if (lowered.startsWith(orm)) results.push({ name: orm, ecosystem: 'python', detectedFrom: 'requirements.txt' });
+          const esc = orm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`\\b${esc}\\b`).test(lowered)) results.push({ name: orm, ecosystem: 'python', detectedFrom: 'requirements.txt', scope: packageDir });
         }
       }
     } catch { /* skip */ }
   }
 
   // Check pyproject.toml
-  const pyprojectPath = join(repoPath, 'pyproject.toml');
+  const pyprojectPath = join(baseDir, 'pyproject.toml');
   if (existsSync(pyprojectPath)) {
     try {
       const content = readFileSync(pyprojectPath, 'utf-8');
-      if (content.includes('flask')) results.push({ name: 'flask', ecosystem: 'python', detectedFrom: 'pyproject.toml' });
-      if (content.includes('fastapi')) results.push({ name: 'fastapi', ecosystem: 'python', detectedFrom: 'pyproject.toml' });
-      if (content.includes('django')) results.push({ name: 'django', ecosystem: 'python', detectedFrom: 'pyproject.toml' });
+      if (content.includes('flask')) results.push({ name: 'flask', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
+      if (content.includes('fastapi')) results.push({ name: 'fastapi', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
+      if (content.includes('django')) results.push({ name: 'django', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
     } catch { /* skip */ }
   }
 
   // Check if manage.py exists (Django)
-  if (existsSync(join(repoPath, 'manage.py'))) {
-    if (!results.some((r) => r.name === 'django')) results.push({ name: 'django', ecosystem: 'python', detectedFrom: 'manage.py' });
+  if (existsSync(join(baseDir, 'manage.py'))) {
+    if (!results.some((r) => r.name === 'django')) results.push({ name: 'django', ecosystem: 'python', detectedFrom: 'manage.py', scope: packageDir });
   }
 
   return results;
@@ -108,9 +115,10 @@ function detectPythonFrameworks(repoPath: string, _graph: KnowledgeGraph): Frame
 
 // ── Go detectors ───────────────────────────────────────────────────────────
 
-function detectGoFrameworks(repoPath: string, _graph: KnowledgeGraph): FrameworkInfo[] {
+function detectGoFrameworks(repoPath: string, _graph: KnowledgeGraph, packageDir?: string): FrameworkInfo[] {
   const results: FrameworkInfo[] = [];
-  const modPath = join(repoPath, 'go.mod');
+  const baseDir = packageDir ? join(repoPath, packageDir) : repoPath;
+  const modPath = join(baseDir, 'go.mod');
   if (!existsSync(modPath)) return results;
 
   try {
@@ -123,7 +131,7 @@ function detectGoFrameworks(repoPath: string, _graph: KnowledgeGraph): Framework
       { name: 'fiber', pattern: 'gofiber/fiber' },
     ];
     for (const fw of goFrameworks) {
-      if (content.includes(fw.pattern)) results.push({ name: fw.name, ecosystem: 'go', detectedFrom: 'go.mod' });
+      if (content.includes(fw.pattern)) results.push({ name: fw.name, ecosystem: 'go', detectedFrom: 'go.mod', scope: packageDir });
     }
   } catch { /* skip */ }
   return results;
@@ -131,16 +139,17 @@ function detectGoFrameworks(repoPath: string, _graph: KnowledgeGraph): Framework
 
 // ── Rust detectors ─────────────────────────────────────────────────────────
 
-function detectRustFrameworks(repoPath: string, _graph: KnowledgeGraph): FrameworkInfo[] {
+function detectRustFrameworks(repoPath: string, _graph: KnowledgeGraph, packageDir?: string): FrameworkInfo[] {
   const results: FrameworkInfo[] = [];
-  const cargoPath = join(repoPath, 'Cargo.toml');
+  const baseDir = packageDir ? join(repoPath, packageDir) : repoPath;
+  const cargoPath = join(baseDir, 'Cargo.toml');
   if (!existsSync(cargoPath)) return results;
 
   try {
     const content = readFileSync(cargoPath, 'utf-8');
     const rustFrameworks = ['actix-web', 'rocket', 'axum', 'warp', 'tide', 'tokio'];
     for (const fw of rustFrameworks) {
-      if (content.includes(fw)) results.push({ name: fw, ecosystem: 'rust', detectedFrom: 'Cargo.toml' });
+      if (content.includes(fw)) results.push({ name: fw, ecosystem: 'rust', detectedFrom: 'Cargo.toml', scope: packageDir });
     }
   } catch { /* skip */ }
   return results;
@@ -163,9 +172,20 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
   }
   for (const id of staleFrameworks) graph.removeNode(id);
 
+  // Detect at repo root
   const allFrameworks: FrameworkInfo[] = [];
   for (const detector of ALL_DETECTORS) {
     allFrameworks.push(...detector(repoPath, graph));
+  }
+
+  // #179: Also detect in monorepo sub-packages using Package nodes from the graph
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Package') continue;
+    const pkgDir = node.properties.filePath as string | undefined;
+    if (!pkgDir || pkgDir === '.') continue;
+    for (const detector of ALL_DETECTORS) {
+      allFrameworks.push(...detector(repoPath, graph, pkgDir));
+    }
   }
 
   // Deduplicate by name
@@ -185,6 +205,29 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
       label: 'Framework',
       properties: { name: fw.name, ecosystem: fw.ecosystem, version: fw.version, detectedFrom: fw.detectedFrom },
     });
+
+    // #180: Create USES_FRAMEWORK edge from the Package node (if scoped)
+    if (fw.scope) {
+      let pkgNodeId: string | null = null;
+      for (const pkgNode of graph.iterNodes()) {
+        if (pkgNode.label !== 'Package') continue;
+        const fp = pkgNode.properties.filePath as string;
+        if (fp === fw.scope) {
+          pkgNodeId = pkgNode.id;
+          break;
+        }
+      }
+      if (pkgNodeId) {
+        graph.addRelationship({
+          id: `uses_fw:${pkgNodeId}:${fwId}`,
+          sourceId: pkgNodeId,
+          targetId: fwId,
+          type: 'USES_FRAMEWORK',
+          confidence: 0.9,
+          reason: `Package depends on ${fw.name}`,
+        });
+      }
+    }
   }
 
   return unique;

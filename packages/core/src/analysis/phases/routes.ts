@@ -17,10 +17,12 @@ export interface RoutesOutput {
 const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegExpExecArray) => { method: string; path: string } }> = [
   { name: 'express', regex: /\b(app|router)\.(get|post|put|delete|patch|use)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[2], path: m[3] }) },
   { name: 'fastapi', regex: /@\w+\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1], path: m[2] }) },
-  { name: 'flask', regex: /@\w+\.route\s*\(\s*['"]([^'"]+)['"](?:.|\n)*?methods\s*=\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[2]?.trim() ?? 'GET', path: m[1] }) },
+  // #196: Avoid catastrophic backtracking by keeping regex within decorator parens
+  { name: 'flask', regex: /@\w+\.route\s*\(\s*['"]([^'"]+)['"][^)]*?(?:methods\s*=\s*\[([^\]]+)\])?/g, extract: (m) => ({ method: m[2]?.trim() ?? 'GET', path: m[1] }) },
   { name: 'laravel', regex: /\bRoute::(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1], path: m[2] }) },
   { name: 'django', regex: /\bpath\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'ANY', path: m[1] }) },
-  { name: 'nextjs', regex: /export\s+async\s+function\s+(GET|POST|PUT|DELETE|PATCH)\b/g, extract: (m) => ({ method: m[1], path: '[inferred]' }) },
+  // #197: Support non-async, arrow functions, and const exports
+  { name: 'nextjs', regex: /export\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|DELETE|PATCH)\b/g, extract: (m) => ({ method: m[1], path: '[inferred]' }) },
 ];
 
 export const routesPhase: PhaseDefinition<RoutesOutput> = {
@@ -37,8 +39,8 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       const fp = node.properties.filePath as string | undefined;
       if (!fp) continue;
 
-      // Only scan files in route-like directories or with route-like names
-      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp)) continue;
+      // Scan related directories and common entry point files (#198)
+      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp)) continue;
 
       try {
         const content = readFileSync(join(context.repoPath, fp), 'utf-8');

@@ -161,7 +161,8 @@ export type RelationshipType =
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
-  | 'QUERIES';
+  | 'QUERIES'
+  | 'USES_FRAMEWORK';
 
 // ── Evidence for edge provenance ───────────────────────────────────────────
 

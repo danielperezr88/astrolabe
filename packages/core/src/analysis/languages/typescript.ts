@@ -41,6 +41,22 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.class',
   },
+  // class Foo extends Bar { … }
+  {
+    query: '(class_declaration name: (type_identifier) @name (class_heritage (extends_clause (identifier) @base))) @definition.class',
+    captureLabels: { 'definition.class': 'Class' },
+    nameCapture: 'name',
+    outerCapture: 'definition.class',
+    relationshipCaptures: { 'base': 'EXTENDS' },
+  },
+  // class Foo implements Bar { … }
+  {
+    query: '(class_declaration name: (type_identifier) @name (class_heritage (implements_clause (type_identifier) @implements))) @definition.class',
+    captureLabels: { 'definition.class': 'Class' },
+    nameCapture: 'name',
+    outerCapture: 'definition.class',
+    relationshipCaptures: { 'implements': 'IMPLEMENTS' },
+  },
   // abstract class Foo { … }
   {
     query: '(abstract_class_declaration name: (type_identifier) @name) @definition.class',

@@ -27,6 +27,14 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.class',
   },
+  // class Foo(Bar):
+  {
+    query: '(class_definition name: (identifier) @name superclasses: (argument_list (identifier) @base)) @definition.class',
+    captureLabels: { 'definition.class': 'Class' },
+    nameCapture: 'name',
+    outerCapture: 'definition.class',
+    relationshipCaptures: { 'base': 'EXTENDS' },
+  },
   // async def and def both match function_definition — single pattern covers both
 ];
 

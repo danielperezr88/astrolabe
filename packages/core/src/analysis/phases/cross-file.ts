@@ -130,16 +130,27 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
 
     let propagatedEdges = 0;
 
+    // Track resolved types per file for transitive propagation (#165)
+    const resolvedTypes = new Map<string, Map<string, string>>();
+
     // Process files in topological order
     for (const filePath of sortedFiles) {
-      // Collect types available from this file + its transitive imports
+      // Collect types available from this file + its imports (transitive)
       const availableTypes = new Map<string, string>();
       const importDeps = importGraph.get(filePath) ?? [];
 
       for (const dep of importDeps) {
+        // Direct types from the imported file
         const depTypes = typeMap.get(dep);
         if (depTypes) {
           for (const [name, label] of depTypes) {
+            if (!availableTypes.has(name)) availableTypes.set(name, label);
+          }
+        }
+        // Transitive types from already-resolved deps (#165)
+        const depResolved = resolvedTypes.get(dep);
+        if (depResolved) {
+          for (const [name, label] of depResolved) {
             if (!availableTypes.has(name)) availableTypes.set(name, label);
           }
         }
@@ -155,17 +166,22 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
 
       if (availableTypes.size === 0) continue;
 
-      // Find nodes in this file with unresolved calls
+      // Track resolved types for this file (for transitive propagation)
+      resolvedTypes.set(filePath, new Map(availableTypes));
+
+      // Find nodes in this file with type references
       for (const node of graph.iterNodes()) {
         const fp = node.properties.filePath as string | undefined;
         if (fp !== filePath) continue;
         if (node.label !== 'Function' && node.label !== 'Method') continue;
 
-        // Check if this node's properties reference types we now know about
-        const refType = node.properties.returnType as string | undefined;
-        if (refType && availableTypes.has(refType)) {
-          // This node returns a known type — mark for downstream use
-          node.properties.resolvedReturnType = refType;
+        // Resolve all type-reference properties, not just returnType (#163)
+        const typeProps: string[] = ['returnType', 'declaredType', 'parameterTypes', 'fieldType'];
+        for (const prop of typeProps) {
+          const refType = node.properties[prop] as string | undefined;
+          if (refType && availableTypes.has(refType)) {
+            node.properties[`resolved_${prop}`] = refType;
+          }
         }
       }
 

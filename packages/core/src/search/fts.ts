@@ -82,12 +82,18 @@ export interface FtsSearch {
 }
 
 /**
- * Create an FTS5 search index backed by the same SQLite database
- * used by the persistence layer.
+ * Create an FTS5 search index.
+ *
+ * Accepts either a Database instance (to share the connection with the
+ * persistence layer) or a file path (creates a new connection).
  */
-export function createFtsSearch(dbPath: string): FtsSearch {
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+export function createFtsSearch(dbOrPath: Database.Database | string, _store?: SqliteStore): FtsSearch {
+  const db = typeof dbOrPath === 'string' ? new Database(dbOrPath) : dbOrPath;
+  const ownsConnection = typeof dbOrPath === 'string';
+  if (ownsConnection) {
+    db.pragma('journal_mode = WAL');
+  }
+  // Don't set journal_mode on a shared connection — the owner controls it.
   db.exec(FTS_SCHEMA);
 
   const stmts = prepare(db);
@@ -95,12 +101,10 @@ export function createFtsSearch(dbPath: string): FtsSearch {
   return {
     indexGraph(store: SqliteStore): void {
       const graph = store.loadGraph();
-      const clearTx = db.transaction(() => {
+      // Combine clear + reindex into a single transaction to avoid a window
+      // where concurrent searches return zero results.
+      const tx = db.transaction(() => {
         stmts.clear.run();
-      });
-      clearTx();
-
-      const indexTx = db.transaction(() => {
         for (const node of graph.iterNodes()) {
           if (!node.properties.name) continue;
           const keywords = (node.properties.keywords as string[])?.join(' ') ?? '';
@@ -113,16 +117,17 @@ export function createFtsSearch(dbPath: string): FtsSearch {
           );
         }
       });
-      indexTx();
+      tx();
     },
 
     search(query: string, limit = 20): SearchResult[] {
       // Sanitize query for FTS5 (remove special chars, keep alphanumeric + underscore)
       const sanitized = query.replace(/['"*()^~!@#$%&=+<>|]/g, ' ').replace(/\s+/g, ' ').trim();
       if (!sanitized) return [];
-      // FTS5 prefix search using NEAR for multi-word queries
+      // Use AND between terms so multi-word queries require all terms to match.
+      // Single-word queries use prefix matching for partial completion.
       const terms = sanitized.split(/\s+/).filter((t) => t.length > 0);
-      const ftsQuery = terms.map((t) => `${t}*`).join(' OR ');
+      const ftsQuery = terms.map((t) => `"${t}"*`).join(' AND ');
 
       try {
         return stmts.search.all(ftsQuery, limit) as SearchResult[];

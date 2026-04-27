@@ -77,25 +77,38 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
       const baseDir = dirname(importerFile);
       const resolved = resolveModule(baseDir, sourceModule);
 
+      // Named imports: only match symbols with imported names (#182)
+      const importedNames = impNode.properties.importedNames as string[] | undefined;
+      const isNamedImport = importedNames && importedNames.length > 0;
+      const nameFilter = isNamedImport ? new Set(importedNames) : null;
+
       // Gather targets from matching files in symbol index
       const targets: GraphNode[] = [];
       for (const [fp, syms] of symbolIndex) {
         const fpNoExt = fp.replace(/\.[^.]+$/, '');
         const resNoExt = resolved.replace(/\.[^.]+$/, '');
-        if (fp === resolved || fpNoExt === resNoExt || fp.startsWith(resolved + '/')) {
+
+        // Exact file match (with or without extension)
+        if (fp === resolved || fpNoExt === resNoExt) {
           for (const [, nodes] of syms) targets.push(...nodes);
+          continue;
+        }
+
+        // Directory import: only match files directly in that directory,
+        // not recursive — avoids massive edge inflation (#171)
+        if (fp.startsWith(resolved + '/')) {
+          const subPath = fp.slice(resolved.length + 1);
+          if (!subPath.includes('/')) {
+            for (const [, nodes] of syms) targets.push(...nodes);
+          }
         }
       }
 
       for (const target of targets) {
-        // Filter: if import is a named import, only match symbols with that name (#145)
         const targetName = target.properties.name as string;
-        const importName = impNode.properties.name as string;
-        if (importName && targetName) {
-          // Check if any target in this file matches the import name
-          const hasNameMatch = targets.some((t) => t.properties.name === importName);
-          if (hasNameMatch && targetName !== importName) continue;
-        }
+
+        // Named import filter: only link to symbols with matching names (#182)
+        if (nameFilter && targetName && !nameFilter.has(targetName)) continue;
 
         const edgeId = `res:${impNode.id}:to:${target.id}`;
         if (graph.getRelationship(edgeId)) continue;

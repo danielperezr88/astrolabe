@@ -104,6 +104,15 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
     }
 
     // ── Create CONTAINS edges ──────────────────────────────────────────────
+    // Build file-by-folder index for O(Files) instead of O(Folders × Files) (#172)
+    const filesByDir = new Map<string, typeof scanOutput.files>();
+    for (const entry of scanOutput.files) {
+      const dir = dirname(entry.path).replace(/\\/g, '/');
+      let arr = filesByDir.get(dir);
+      if (!arr) { arr = []; filesByDir.set(dir, arr); }
+      arr.push(entry);
+    }
+
     const allFolders = Array.from(folderIds);
 
     for (const folderPath of allFolders) {
@@ -111,9 +120,9 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       const parentDir = dirname(folderPath).replace(/\\/g, '/');
 
       // CONTAINS for files directly in this folder
-      for (const entry of scanOutput.files) {
-        const fileDir = dirname(entry.path).replace(/\\/g, '/');
-        if (fileDir === folderPath) {
+      const entries = filesByDir.get(folderPath);
+      if (entries) {
+        for (const entry of entries) {
           const edge: GraphRelationship = {
             id: `contains:${folderPath}:file:${entry.path}`,
             sourceId: folderId,
@@ -151,11 +160,6 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       if (!PACKAGE_MANIFESTS.includes(fileName)) continue;
 
       const pkgDir = dirname(entry.path).replace(/\\/g, '/');
-      // Skip if this manifest is in a sub-folder of another package (already captured)
-      const alreadyPackage = allFolders.some(
-        (fp) => fp !== pkgDir && pkgDir.startsWith(fp + '/'),
-      );
-      if (alreadyPackage) continue;
 
       const pkgId = `pkg:${pkgDir}:${fileName}`;
       const existing = graph.getNode(pkgId);

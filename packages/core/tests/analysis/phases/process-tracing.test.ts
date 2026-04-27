@@ -17,6 +17,14 @@ function callsRel(sourceId: string, targetId: string) {
   return { id: `call:${sourceId}:${targetId}`, sourceId, targetId, type: 'CALLS' as const, confidence: 1, reason: 'test' };
 }
 
+function memberRel(sourceId: string, targetId: string) {
+  return { id: `m:${sourceId}:${targetId}`, sourceId, targetId, type: 'MEMBER_OF' as const, confidence: 0.7, reason: 'test' };
+}
+
+function comm(id: string, name: string): GraphNode {
+  return { id, label: 'Community', properties: { name, symbolCount: 1 } };
+}
+
 describe('Process Tracing Phase', () => {
   it('traces call path from entry point to leaf', async () => {
     const graph = createKnowledgeGraph();
@@ -137,5 +145,27 @@ describe('Process Tracing Phase', () => {
 
     // Stale process should be removed
     expect(graph.getNode('process:stale')).toBeUndefined();
+  });
+
+  it('detects cross-community processes when trace spans multiple communities (#193)', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:entry', 'handler', 'src/routes/api.ts'));
+    graph.addNode(fn('fn:service', 'processData', 'src/service/data.ts'));
+    graph.addRelationship(callsRel('fn:entry', 'fn:service'));
+
+    // Create communities with MEMBER_OF edges (sourceId=symbol, targetId=community)
+    graph.addNode(comm('community:1', 'routes'));
+    graph.addNode(comm('community:2', 'services'));
+    graph.addRelationship(memberRel('fn:entry', 'community:1'));
+    graph.addRelationship(memberRel('fn:service', 'community:2'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    (context.state as any).resolution = {};
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    expect(procNodes[0]?.properties.processType).toBe('cross_community');
+    expect(procNodes[0]?.properties.name).toContain('handler');
   });
 });

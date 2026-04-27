@@ -37,6 +37,28 @@ interface RepoContext {
   store: SqliteStore;
   fts: FtsSearch;
   entry: RegistryEntry;
+  /** Cached knowledge graph — invalidate with invalidateGraph() on changes (#176). */
+  graph?: import('../core/types.js').KnowledgeGraph;
+  loadGraph(): import('../core/types.js').KnowledgeGraph;
+  invalidateGraph(): void;
+}
+
+function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry): RepoContext {
+  return {
+    store,
+    fts,
+    entry,
+    graph: undefined,
+    loadGraph() {
+      if (!this.graph) {
+        this.graph = store.loadGraph();
+      }
+      return this.graph;
+    },
+    invalidateGraph() {
+      this.graph = undefined;
+    },
+  };
 }
 
 // ── Backend ────────────────────────────────────────────────────────────────
@@ -80,7 +102,7 @@ class LocalBackend {
     // Open connection
     const store = createSqliteStore(entry.dbPath);
     const fts = createFtsSearch(entry.dbPath);
-    ctx = { store, fts, entry };
+    ctx = createRepoContext(store, fts, entry);
     this.repos.set(name, ctx);
     this.lastAccess.set(name, Date.now());
     return ctx;
@@ -96,7 +118,7 @@ class LocalBackend {
     if (results.length === 0) return { definitions: [], processes: [], process_symbols: [] };
 
     // Load graph for process grouping
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     // Group by process membership
     const nodeSet = new Set(results.map((r) => r.nodeId));
@@ -140,7 +162,7 @@ class LocalBackend {
 
   context(nameOrUid: string, repo?: string) {
     const ctx = this.getRepo(repo);
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     // Find ALL matching symbols (handle overloads) (#116)
     const symbols: GraphNode[] = [];
@@ -151,39 +173,54 @@ class LocalBackend {
     }
     if (symbols.length === 0) return { error: `Symbol "${nameOrUid}" not found.` };
 
+    // #177: Build adjacency index ONCE for all symbols (O(R) not O(S × R))
+    const incomingMap = new Map<string, Map<string, string[]>>();
+    const outgoingMap = new Map<string, Map<string, string[]>>();
+
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type !== 'STEP_IN_PROCESS') {
+        // Incoming edge
+        let inc = incomingMap.get(rel.targetId);
+        if (!inc) { inc = new Map(); incomingMap.set(rel.targetId, inc); }
+        const incType = rel.type.toLowerCase();
+        let incNames = inc.get(incType);
+        if (!incNames) { incNames = []; inc.set(incType, incNames); }
+        incNames.push(graph.getNode(rel.sourceId)?.properties.name as string ?? rel.sourceId);
+
+        // Outgoing edge
+        let out = outgoingMap.get(rel.sourceId);
+        if (!out) { out = new Map(); outgoingMap.set(rel.sourceId, out); }
+        const outType = rel.type.toLowerCase();
+        let outNames = out.get(outType);
+        if (!outNames) { outNames = []; out.set(outType, outNames); }
+        outNames.push(graph.getNode(rel.targetId)?.properties.name as string ?? rel.targetId);
+      }
+    }
+
+    // Process index: build once for all symbols
+    const processMap = new Map<string, Array<{ name: string; step: number; total: number }>>();
+    for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+      const proc = graph.getNode(rel.sourceId);
+      if (!proc) continue;
+      let arr = processMap.get(rel.targetId);
+      if (!arr) { arr = []; processMap.set(rel.targetId, arr); }
+      arr.push({
+        name: (proc.properties.name as string) ?? proc.id,
+        step: rel.step ?? 0,
+        total: (proc.properties.stepCount as number) ?? 0,
+      });
+    }
+
     const results = symbols.map((symbol) => {
+      const inc = incomingMap.get(symbol.id);
       const incoming: Record<string, string[]> = {};
+      if (inc) { for (const [t, names] of inc) incoming[t] = names; }
+
+      const out = outgoingMap.get(symbol.id);
       const outgoing: Record<string, string[]> = {};
-      const processes: { name: string; step: number; total: number }[] = [];
+      if (out) { for (const [t, names] of out) outgoing[t] = names; }
 
-      for (const rel of graph.iterRelationships()) {
-        if (rel.targetId === symbol.id) {
-          const caller = graph.getNode(rel.sourceId);
-          const relType = rel.type.toLowerCase();
-          if (!incoming[relType]) incoming[relType] = [];
-          incoming[relType].push(caller?.properties.name ?? rel.sourceId);
-        }
-        if (rel.sourceId === symbol.id) {
-          const callee = graph.getNode(rel.targetId);
-          const relType = rel.type.toLowerCase();
-          if (!outgoing[relType]) outgoing[relType] = [];
-          outgoing[relType].push(callee?.properties.name ?? rel.targetId);
-        }
-      }
-
-      // Find process participations
-      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-        if (rel.targetId === symbol.id) {
-          const proc = graph.getNode(rel.sourceId);
-          if (proc) {
-            processes.push({
-              name: (proc.properties.name as string) ?? proc.id,
-              step: rel.step ?? 0,
-              total: (proc.properties.stepCount as number) ?? 0,
-            });
-          }
-        }
-      }
+      const processes = processMap.get(symbol.id) ?? [];
 
       return {
         symbol: {
@@ -203,7 +240,7 @@ class LocalBackend {
 
   impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3) {
     const ctx = this.getRepo(repo);
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     // Find target symbol
     let targetNode: GraphNode | undefined;
@@ -284,6 +321,8 @@ class LocalBackend {
     }
 
     const ctx = this.getRepo(repo);
+    // Invalidate cached graph since changes may have occurred (#176)
+    ctx.invalidateGraph();
     const repoPath = ctx.entry.path;
 
     let diffFiles: string[] = [];
@@ -296,7 +335,7 @@ class LocalBackend {
     }
     if (diffFiles.length === 0) return { changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' };
 
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     const changedSymbols: string[] = [];
     const affectedProcesses: string[] = [];
@@ -332,8 +371,13 @@ class LocalBackend {
   }
 
   renameSymbol(symbolName: string, newName: string, filePath?: string, dryRun = true, repo?: string) {
+    // #174: Actual renaming is not implemented yet
+    if (!dryRun) {
+      throw new Error('Live renaming is not implemented yet. Use dry_run=true for preview only.');
+    }
+
     const ctx = this.getRepo(repo);
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     // Find all references
     const refs: Array<{ name: string; id: string; filePath: string; matchType: 'graph' | 'text_search' }> = [];
@@ -346,7 +390,7 @@ class LocalBackend {
     }
 
     return {
-      status: 'success',
+      status: 'preview',
       files_affected: new Set(refs.map((r) => r.filePath)).size,
       total_edits: refs.length,
       graph_edits: refs.filter((r) => r.matchType === 'graph').length,
@@ -364,7 +408,7 @@ class LocalBackend {
 
   cypher(query: string, repo?: string) {
     const ctx = this.getRepo(repo);
-    const graph = ctx.store.loadGraph();
+    const graph = ctx.loadGraph();
 
     // Parse MATCH patterns from query (#120)
     if (!query || !query.toLowerCase().includes('match')) {
@@ -568,7 +612,7 @@ function readResource(uri: string): string | null {
   if (ctxMatch) {
     try {
       const ctx = backend.getRepo(ctxMatch[1]);
-      const graph = ctx.store.loadGraph();
+      const graph = ctx.loadGraph();
       return `Repository: ${ctx.entry.name}\nPath: ${ctx.entry.path}\nNodes: ${graph.nodeCount}\nRelationships: ${graph.relationshipCount}\nLast indexed: ${new Date(ctx.entry.indexedAt).toISOString()}\nLast commit: ${ctx.entry.lastCommit}`;
     } catch { return null; }
   }
@@ -578,7 +622,7 @@ function readResource(uri: string): string | null {
   if (clMatch) {
     try {
       const ctx = backend.getRepo(clMatch[1]);
-      const graph = ctx.store.loadGraph();
+      const graph = ctx.loadGraph();
       const clusters: string[] = [];
       for (const node of graph.iterNodes()) {
         if (node.label === 'Community') clusters.push(`- ${node.properties.name ?? node.id} (${node.properties.symbolCount ?? 0} symbols, cohesion: ${node.properties.cohesion ?? 0})`);
@@ -592,7 +636,7 @@ function readResource(uri: string): string | null {
   if (prMatch) {
     try {
       const ctx = backend.getRepo(prMatch[1]);
-      const graph = ctx.store.loadGraph();
+      const graph = ctx.loadGraph();
       const processes: string[] = [];
       for (const node of graph.iterNodes()) {
         if (node.label === 'Process') processes.push(`- ${node.properties.name ?? node.id} (${node.properties.stepCount ?? 0} steps, type: ${node.properties.processType ?? 'intra'})`);
@@ -606,7 +650,7 @@ function readResource(uri: string): string | null {
   if (ptMatch) {
     try {
       const ctx = backend.getRepo(ptMatch[1]);
-      const graph = ctx.store.loadGraph();
+      const graph = ctx.loadGraph();
       const steps: string[] = [];
       for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
         const proc = graph.getNode(rel.sourceId);
@@ -622,7 +666,18 @@ function readResource(uri: string): string | null {
   // astrolabe://repo/{name}/schema
   const scMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/schema$/);
   if (scMatch) {
-    return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool\nRelationship Types: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF`;
+    const name = scMatch[1];
+    try {
+      const ctx = backend.getRepo(name);
+      const graph = ctx.loadGraph();
+      const labels = new Set<string>();
+      const types = new Set<string>();
+      for (const node of graph.iterNodes()) labels.add(node.label);
+      for (const rel of graph.iterRelationships()) types.add(rel.type);
+      return `Node Labels: ${Array.from(labels).sort().join(', ')}\nRelationship Types: ${Array.from(types).sort().join(', ')}`;
+    } catch {
+      return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool, Section, Framework\nRelationship Types: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, HAS_PROPERTY, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF, USES_FRAMEWORK`;
+    }
   }
 
   return null;

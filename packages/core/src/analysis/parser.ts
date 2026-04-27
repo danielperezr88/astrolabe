@@ -22,6 +22,7 @@ import type {
   FileParseResult,
   ParsedSymbol,
   ParsedImport,
+  ParsedRelationship,
 } from './language-definition.js';
 import { symbolId } from './language-definition.js';
 import { languageForExtension, languageForFile } from './languages/index.js';
@@ -44,6 +45,25 @@ const languageCache = new Map<string, WtsLanguage>();
  * as long as the language object is the same.
  */
 const queryCache = new Map<string, WtsQuery>();
+
+/**
+ * Cache of WtsParser instances keyed by WASM file path.
+ * Reusing parsers avoids allocation overhead per file (#168).
+ */
+const parserCache = new Map<string, WtsParser>();
+
+/**
+ * Get or create a cached parser for the given language.
+ */
+function getParser(language: WtsLanguage, wasmFile: string): WtsParser {
+  let parser = parserCache.get(wasmFile);
+  if (!parser) {
+    parser = new WtsParser();
+    parser.setLanguage(language);
+    parserCache.set(wasmFile, parser);
+  }
+  return parser;
+}
 
 /**
  * Parse-result cache keyed by file path.
@@ -99,6 +119,7 @@ export function defaultWasmDir(): string {
 export function resetParser(): void {
   languageCache.clear();
   queryCache.clear();
+  parserCache.clear();
   astCache.clear();
   _initialized = false;
 }
@@ -161,6 +182,41 @@ function isExported(match: QueryMatch, outerCapture: string): boolean {
 }
 
 /**
+ * Label priority for deduplication. More specific labels beat less
+ * specific ones. E.g. a Method inside an impl block beats a Function
+ * match for the same node (#178).
+ */
+const LABEL_PRIORITY: Partial<Record<string, number>> = {
+  Constructor: 4,
+  Property: 3,
+  Method: 3,
+  Function: 1,
+  Class: 1,
+  Interface: 1,
+  Enum: 1,
+  Struct: 1,
+  Trait: 1,
+};
+
+function shouldReplaceDedup(
+  existing: ParsedSymbol | undefined,
+  candidate: ParsedSymbol,
+): boolean {
+  if (!existing) return true;
+  // Exported always beats non-exported
+  if (!existing.isExported && candidate.isExported) return true;
+  if (existing.isExported && !candidate.isExported) return false;
+  // Different labels: more specific (higher priority) wins
+  if (existing.label !== candidate.label) {
+    const existingPrio = LABEL_PRIORITY[existing.label] ?? 1;
+    const candidatePrio = LABEL_PRIORITY[candidate.label] ?? 1;
+    return candidatePrio >= existingPrio;
+  }
+  // Same label: keep existing (dedup)
+  return false;
+}
+
+/**
  * Extract symbol declarations from query matches.
  * Deduplicates by symbol ID — if the same symbol is captured by two
  * patterns (e.g. exported and non-exported versions), only one entry
@@ -170,8 +226,9 @@ function extractSymbols(
   matches: QueryMatch[],
   patterns: LanguageDefinition['symbolPatterns'],
   filePath: string,
-): ParsedSymbol[] {
+): { symbols: ParsedSymbol[]; relationships: ParsedRelationship[] } {
   const seen = new Map<string, ParsedSymbol>();
+  const relationships: ParsedRelationship[] = [];
 
   for (let pi = 0; pi < matches.length; pi++) {
     const match = matches[pi];
@@ -198,11 +255,12 @@ function extractSymbols(
     const id = symbolId(label, filePath, name, startLine);
     // Dedup by filePath|name|startLine (exclude label) so the same node
     // matched by multiple patterns produces only one entry.
-    // Prefer isExported=true; if same, later pattern wins (more specific).
+    // Use label priority: more specific labels (Method, Constructor) beat
+    // less specific ones (Function) to fix Rust impl method dedup (#178).
     const dedupKey = `${filePath}|${name}|${startLine}`;
     const existing = seen.get(dedupKey);
 
-    if (!existing || (!existing.isExported && exported) || existing.label !== label) {
+    if (shouldReplaceDedup(existing, { id, filePath, name, label, startLine, endLine, isExported: exported })) {
       seen.set(dedupKey, {
         id,
         filePath,
@@ -213,9 +271,25 @@ function extractSymbols(
         isExported: exported,
       });
     }
+
+    // Collect relationship captures (EXTENDS, IMPLEMENTS, etc.) (#170)
+    if (pattern.relationshipCaptures) {
+      for (const [captureName, relType] of Object.entries(pattern.relationshipCaptures)) {
+        const relNode = match.captures.find((c) => c.name === captureName);
+        if (relNode) {
+          relationships.push({
+            filePath,
+            sourceName: name,
+            sourceStartLine: startLine,
+            targetName: relNode.node.text,
+            type: relType,
+          });
+        }
+      }
+    }
   }
 
-  return Array.from(seen.values());
+  return { symbols: Array.from(seen.values()), relationships };
 }
 
 /**
@@ -331,9 +405,10 @@ export async function parseFile(
   if (!langDef) {
     const result: FileParseResult = {
       filePath: normalisedPath,
-      language: 'typescript' as never, // fallback
+      language: 'typescript' as never, // unreachable: parse-emit phase filters via isParsable()
       symbols: [],
       imports: [],
+      relationships: [],
       error: `Unsupported file extension: ${ext}`,
     };
     return result;
@@ -352,13 +427,13 @@ export async function parseFile(
       language: langDef.name,
       symbols: [],
       imports: [],
+      relationships: [],
       error: `Failed to read file: ${(err as Error).message}`,
     };
   }
 
-  // Parse
-  const parser = new WtsParser();
-  parser.setLanguage(language);
+  // Parse — reuse cached parser per language (#168)
+  const parser = getParser(language, langDef.wasmFile);
   const tree = parser.parse(content);
   if (!tree) {
     return {
@@ -366,6 +441,7 @@ export async function parseFile(
       language: langDef.name,
       symbols: [],
       imports: [],
+      relationships: [],
       error: 'Parse returned null tree',
     };
   }
@@ -386,7 +462,7 @@ export async function parseFile(
     }
   }
 
-  const symbols = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
+  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
 
   // ── Import extraction
   const allImportMatches: QueryMatch[] = [];
@@ -402,9 +478,8 @@ export async function parseFile(
 
   const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
 
-  // Clean up
+  // Clean up tree — parser is cached and reused (#168)
   tree.delete();
-  parser.delete();
 
   // Build result
   const result: FileParseResult = {
@@ -412,6 +487,7 @@ export async function parseFile(
     language: langDef.name,
     symbols,
     imports,
+    relationships,
   };
 
   // Cache
@@ -484,16 +560,16 @@ export async function parseString(
       language: 'typescript' as never,
       symbols: [],
       imports: [],
+      relationships: [],
       error: `Unsupported file extension for ${filePath}`,
     };
   }
 
   const language = await loadLanguage(langDef, wasmDir);
-  const parser = new WtsParser();
-  parser.setLanguage(language);
+  const parser = getParser(language, langDef.wasmFile);
   const tree = parser.parse(source);
   if (!tree) {
-    return { filePath: normalisedPath, language: langDef.name, symbols: [], imports: [], error: 'Parse returned null tree' };
+    return { filePath: normalisedPath, language: langDef.name, symbols: [], imports: [], relationships: [], error: 'Parse returned null tree' };
   }
 
   const root = tree.rootNode;
@@ -508,7 +584,7 @@ export async function parseString(
       allSymbolMatches.push(m);
     }
   }
-  const symbols = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
+  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
 
   // Import extraction
   const allImportMatches: QueryMatch[] = [];
@@ -522,11 +598,10 @@ export async function parseString(
   }
   const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
 
-  // Clean up parser resources (#87)
+  // Clean up tree — parser is cached and reused (#168)
   tree.delete();
-  parser.delete();
 
-  return { filePath: normalisedPath, language: langDef.name, symbols, imports };
+  return { filePath: normalisedPath, language: langDef.name, symbols, imports, relationships };
 }
 
 // ── Re-exports for convenience ─────────────────────────────────────────────

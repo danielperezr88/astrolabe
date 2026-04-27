@@ -15,7 +15,7 @@ import { relative } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import { getPhaseOutput } from '../../core/pipeline.js';
 import type { ScanOutput, FileEntry } from '../phases/scan.js';
-import type { ParsedSymbol, ParsedImport } from '../language-definition.js';
+import type { ParsedSymbol, ParsedImport, ParsedRelationship } from '../language-definition.js';
 import { parseFile, defaultWasmDir } from '../parser.js';
 import type { GraphNode, GraphRelationship } from '../../core/types.js';
 
@@ -100,6 +100,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
           const edgeCount = emitImport(graph, imp, relPath);
           importCount += edgeCount;
         }
+
+        // ── Emit tree-sitter relationships (EXTENDS, IMPLEMENTS) (#170) ──
+        for (const rel of result.relationships) {
+          emitRelationship(graph, rel, relPath);
+        }
       }
 
       // Yield event-loop for very large repos
@@ -175,6 +180,7 @@ function emitImport(
       name: imp.source,
       filePath: relPath,
       startLine: imp.startLine,
+      importedNames: imp.names.map((n) => n.name),
     },
   };
   graph.addNode(importNode);
@@ -193,4 +199,60 @@ function emitImport(
   // Per-name IMPORTS edges are resolved in the resolution phase.
   // Return the count of actually created edges.
   return 1;
+}
+
+/**
+ * Create EXTENDS / IMPLEMENTS edge from a tree-sitter relationship capture.
+ *
+ * The ParsedRelationship has sourceName + sourceStartLine + targetName within
+ * the same file. We look up the source and target symbol nodes in the graph
+ * and create the edge with moderate confidence (names match within file, but
+ * cross-file resolution hasn't happened yet).
+ */
+function emitRelationship(
+  graph: PhaseContext['graph'],
+  rel: ParsedRelationship,
+  relPath: string,
+): void {
+  // Find source node: match by filePath + name + startLine
+  let sourceId: string | undefined;
+  let targetId: string | undefined;
+
+  for (const node of graph.iterNodes()) {
+    if (node.properties.filePath !== relPath) continue;
+    if (node.properties.name === rel.sourceName && node.properties.startLine === rel.sourceStartLine) {
+      sourceId = node.id;
+      if (targetId) break;
+    }
+    if (node.properties.name === rel.targetName && !node.properties.startLine) {
+      // Target might be defined with a startLine too; try with and without
+      targetId = node.id;
+    }
+  }
+
+  // Fallback: try target by name only (no startLine match on purpose — target
+  // may be defined elsewhere in file)
+  if (!targetId) {
+    for (const node of graph.iterNodes()) {
+      if (node.properties.filePath !== relPath) continue;
+      if (node.properties.name === rel.targetName) {
+        targetId = node.id;
+        break;
+      }
+    }
+  }
+
+  if (!sourceId || !targetId) return;
+
+  const edgeId = `rel:${sourceId}:${rel.type.toLowerCase()}:${targetId}`;
+  if (graph.getRelationship(edgeId)) return;
+
+  graph.addRelationship({
+    id: edgeId,
+    sourceId,
+    targetId,
+    type: rel.type as GraphRelationship['type'],
+    confidence: 0.7,
+    reason: `tree-sitter ${rel.type.toLowerCase()} capture`,
+  });
 }

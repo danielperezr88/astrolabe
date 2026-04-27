@@ -126,6 +126,20 @@ export interface ParsedImport {
   startLine: number;
 }
 
+/** A relationship extracted from a tree-sitter match (e.g. EXTENDS, IMPLEMENTS). */
+export interface ParsedRelationship {
+  /** Source file path. */
+  filePath: string;
+  /** Source symbol name. */
+  sourceName: string;
+  /** Source symbol start line (for deduplication). */
+  sourceStartLine: number;
+  /** Target symbol name (within same file). */
+  targetName: string;
+  /** Relationship type (e.g. 'EXTENDS', 'IMPLEMENTS'). */
+  type: string;
+}
+
 /** Full parse result for a single file. */
 export interface FileParseResult {
   filePath: string;
@@ -135,6 +149,8 @@ export interface FileParseResult {
   symbols: ParsedSymbol[];
   /** Import statements in this file. */
   imports: ParsedImport[];
+  /** Relationships extracted from tree-sitter captures (EXTENDS, IMPLEMENTS, etc.). */
+  relationships: ParsedRelationship[];
   /** Top-level error message if parsing failed entirely. */
   error?: string;
 }
