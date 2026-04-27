@@ -65,20 +65,17 @@ function c3Linearize(
  * list that is not in the tail of any other list.
  */
 function c3Merge(lists: string[][], parentLists: string[][]): string[] {
-  // Build working lists: flatten parent lists
   const working = lists.map((l) => [...l]);
-
   const result: string[] = [];
-  const allLists = [parentLists.flat(), ...working.map((l) => l.slice(1))];
 
   while (working.some((l) => l.length > 0)) {
+    // Rebuild allLists each iteration so tail checks are correct (#146)
+    const allLists = [parentLists.flat(), ...working.map((l) => l.slice(1))];
     let found = false;
 
     for (const list of working) {
       if (list.length === 0) continue;
       const head = list[0];
-
-      // Check if head appears in any tail of other lists
       const inTail = allLists.some((l) => l.slice(1).includes(head));
       if (!inTail) {
         result.push(head);

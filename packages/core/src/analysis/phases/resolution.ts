@@ -88,6 +88,15 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
       }
 
       for (const target of targets) {
+        // Filter: if import is a named import, only match symbols with that name (#145)
+        const targetName = target.properties.name as string;
+        const importName = impNode.properties.name as string;
+        if (importName && targetName) {
+          // Check if any target in this file matches the import name
+          const hasNameMatch = targets.some((t) => t.properties.name === importName);
+          if (hasNameMatch && targetName !== importName) continue;
+        }
+
         const edgeId = `res:${impNode.id}:to:${target.id}`;
         if (graph.getRelationship(edgeId)) continue;
         bindingCount++;
