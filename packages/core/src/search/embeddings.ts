@@ -120,8 +120,24 @@ export function searchTfIdf(
 
   const queryWeights = new Map<string, number>();
   let queryNormSq = 0;
+  // Compute IDF from the corpus DF for proper TF-IDF query weighting (#67)
+  const idfCache = new Map<string, number>();
+  for (const [, vec] of index) {
+    for (const term of vec.weights.keys()) {
+      if (!idfCache.has(term)) {
+        // Estimate IDF from corpus: average document frequency
+        let docsWithTerm = 0;
+        for (const [, v] of index) if (v.weights.has(term)) docsWithTerm++;
+        idfCache.set(term, Math.log((index.size + 1) / (docsWithTerm + 1)));
+      }
+    }
+  }
+
   for (const t of queryTokens) {
-    queryWeights.set(t, (queryWeights.get(t) ?? 0) + 1);
+    const tf = (queryWeights.get(t) ?? 0) + 1;
+    const idf = idfCache.get(t) ?? Math.log((index.size + 1) / 1);
+    const weight = tf * idf;
+    queryWeights.set(t, weight);
   }
   for (const [, w] of queryWeights) {
     queryNormSq += w * w;
