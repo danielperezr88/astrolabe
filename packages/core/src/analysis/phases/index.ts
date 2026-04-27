@@ -1,5 +1,6 @@
 export { scanPhase } from './scan.js';
 export { structurePhase } from './structure.js';
+export { markdownPhase } from './markdown.js';
 export { parseEmitPhase } from './parse-emit.js';
 export { resolutionPhase } from './resolution.js';
 export { routesPhase } from './routes.js';
@@ -11,6 +12,7 @@ export { communityPhase } from './community.js';
 export { processTracingPhase } from './process-tracing.js';
 export type { FileEntry, ScanOutput } from './scan.js';
 export type { StructureOutput } from './structure.js';
+export type { MarkdownOutput } from './markdown.js';
 export type { ParseEmitOutput } from './parse-emit.js';
 export type { ResolutionOutput } from './resolution.js';
 export type { RoutesOutput } from './routes.js';
