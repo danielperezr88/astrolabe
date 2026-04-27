@@ -1,5 +1,5 @@
 /**
- * Tests for the Process Tracing phase — BFS call-graph traversal.
+ * Tests for the Process Tracing phase — BFS call-graph traversal (#131).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -11,10 +11,6 @@ import type { GraphNode } from '../../../src/core/types.js';
 
 function fn(id: string, name: string, filePath = 'src/test.ts', isExported = true): GraphNode {
   return { id, label: 'Function', properties: { name, filePath, isExported } };
-}
-
-function meth(id: string, name: string, filePath = 'src/test.ts', isExported = true): GraphNode {
-  return { id, label: 'Method', properties: { name, filePath, isExported } };
 }
 
 function callsRel(sourceId: string, targetId: string) {
@@ -36,35 +32,53 @@ describe('Process Tracing Phase', () => {
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
     expect(out.processCount).toBe(1);
-    expect(out.totalSteps).toBeGreaterThanOrEqual(2);
-    expect(out.maxPathLength).toBeGreaterThanOrEqual(2);
+    expect(out.totalSteps).toBe(2); // helper + format (main skipped at step 0)
+    expect(out.maxPathLength).toBe(2);
 
-    // Should have Process node
     const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
     expect(procNodes.length).toBe(1);
     expect(procNodes[0]?.properties.stepCount).toBe(3);
+    expect(procNodes[0]?.properties.processType).toBe('intra_community');
 
-    // Should have STEP_IN_PROCESS edges
     const stepEdges = Array.from(graph.iterRelationshipsByType('STEP_IN_PROCESS'));
-    expect(stepEdges.length).toBeGreaterThanOrEqual(2);
+    expect(stepEdges.length).toBe(2); // helper + format
+    // Verify each step edge connects Process -> symbol
+    for (const edge of stepEdges) {
+      expect(edge.sourceId).toBe(procNodes[0]?.id);
+    }
   });
 
-  it('detects only exported functions as entry points', async () => {
+  it('creates ENTRY_POINT_OF edges from function to Process', async () => {
     const graph = createKnowledgeGraph();
-    graph.addNode(fn('fn:public', 'publicFn'));
+    graph.addNode(fn('fn:entry', 'entry'));
+    graph.addNode(fn('fn:callee', 'callee', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:entry', 'fn:callee'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    (context.state as any).resolution = {};
+    await runPipeline([processTracingPhase], context);
+
+    const entryEdges = Array.from(graph.iterRelationshipsByType('ENTRY_POINT_OF'));
+    expect(entryEdges.length).toBe(1);
+    expect(entryEdges[0].sourceId).toBe('fn:entry');
+  });
+
+  it('skips non-exported functions without route/tool handler scoring', async () => {
+    const graph = createKnowledgeGraph();
     graph.addNode(fn('fn:private', 'privateFn', 'src/test.ts', false));
-    graph.addRelationship(callsRel('fn:private', 'fn:public')); // private calls public, but private isn't an entry
+    graph.addNode(fn('fn:public', 'publicFn'));
 
     const context = createPhaseContext('/test', graph, () => {});
     (context.state as any).resolution = {};
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
-    // Private function shouldn't be an entry point
-    expect(out.processCount).toBeGreaterThanOrEqual(0);
+    // Private function with no callers and no route/tool handler: score < 0.5
+    expect(out.processCount).toBe(0);
+    expect(out.totalSteps).toBe(0);
   });
 
-  it('handles graph with no call edges', async () => {
+  it('handles graph with no CALLS edges', async () => {
     const graph = createKnowledgeGraph();
     graph.addNode(fn('fn:a', 'a'));
     graph.addNode(fn('fn:b', 'b'));
@@ -74,24 +88,9 @@ describe('Process Tracing Phase', () => {
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
-    // No CALLS edges means no processes traced
     expect(out.processCount).toBe(0);
     expect(out.totalSteps).toBe(0);
     expect(out.maxPathLength).toBe(0);
-  });
-
-  it('creates ENTRY_POINT_OF edges', async () => {
-    const graph = createKnowledgeGraph();
-    graph.addNode(fn('fn:entry', 'entry'));
-    graph.addRelationship(callsRel('fn:entry', 'fn:entry')); // self-call won't create trace but ensures it's looked at
-
-    const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
-    await runPipeline([processTracingPhase], context);
-
-    // At minimum, entry functions should be identified
-    const entryNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
-    expect(entryNodes.length).toBeGreaterThanOrEqual(0);
   });
 
   it('handles empty graph', async () => {
@@ -103,5 +102,40 @@ describe('Process Tracing Phase', () => {
 
     expect(out.processCount).toBe(0);
     expect(out.maxPathLength).toBe(0);
+  });
+
+  it('detects multi-factor entry points with name-based scoring', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:handleReq', 'handleRequest', 'src/routes/api.ts', true));
+    graph.addNode(fn('fn:process', 'processData', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:handleReq', 'fn:process'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    (context.state as any).resolution = {};
+    await runPipeline([processTracingPhase], context);
+    const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
+
+    // handleRequest scores: name +0.5, file position +0.3, export +0.3, no-callers +0.3 = enough
+    expect(out.processCount).toBeGreaterThanOrEqual(1);
+
+    // Verify entry point score was set
+    const handleNode = graph.getNode('fn:handleReq');
+    expect(handleNode?.properties.entryPointScore).toBeDefined();
+    expect(handleNode?.properties.entryPointScore).toBeGreaterThan(0.5);
+  });
+
+  it('cleans stale Process nodes before re-run', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:a', 'a'));
+    graph.addRelationship(callsRel('fn:a', 'fn:a'));
+    // Add a stale Process node
+    graph.addNode({ id: 'process:stale', label: 'Process', properties: { name: 'stale', stepCount: 0, processType: 'intra_community', entryPointId: '', terminalId: '' } });
+
+    const context = createPhaseContext('/test', graph, () => {});
+    (context.state as any).resolution = {};
+    await runPipeline([processTracingPhase], context);
+
+    // Stale process should be removed
+    expect(graph.getNode('process:stale')).toBeUndefined();
   });
 });
