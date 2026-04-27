@@ -91,6 +91,7 @@ function refreshStatusBar(workspaceRoot?: string): void {
   } catch {
     statusBarItem.text = '$(graph) Astrolabe: not analyzed';
     statusBarItem.tooltip = 'Click to analyze codebase';
+    statusBarItem.command = 'astrolabe.analyze';
   }
 }
 
@@ -228,11 +229,25 @@ export function activate(context: vscode.ExtensionContext): void {
         { placeHolder: `Results for "${searchTerm}" (${results.length} found)`, matchOnDescription: true },
       );
       if (picked) {
-        const fp = results.find((r) => r.name === picked.label)?.filePath;
-        if (fp) {
-          const uri = vscode.Uri.file(join(folder.uri.fsPath, fp));
+        // #212: Match by nodeId, not name (avoid collisions)
+        const result = results.find((r) => r.nodeId === picked.detail);
+        if (result?.filePath) {
+          const uri = vscode.Uri.file(join(folder.uri.fsPath, result.filePath));
           const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc);
+          const editor = await vscode.window.showTextDocument(doc);
+          // #213: Navigate to symbol line number
+          try {
+            const store = createSqliteStore(db);
+            const graph = store.loadGraph();
+            store.close();
+            const node = graph.getNode(result.nodeId);
+            const line = node?.properties.startLine as number | undefined;
+            if (line && line > 0) {
+              const pos = new vscode.Position(line - 1, 0);
+              editor.selection = new vscode.Selection(pos, pos);
+              editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+            }
+          } catch { /* skip line navigation on error */ }
         }
       }
     } finally { fts.close(); }
@@ -269,6 +284,18 @@ export function activate(context: vscode.ExtensionContext): void {
       const store = createSqliteStore(db);
       try {
         const graph = store.loadGraph();
+
+        // #211: Build adjacency index once — O(R) instead of O(R×E) per result
+        const adj = new Map<string, Array<{ id: string; type: string; dir: string }>>();
+        for (const rel of graph.iterRelationships()) {
+          let b = adj.get(rel.sourceId);
+          if (!b) { b = []; adj.set(rel.sourceId, b); }
+          b.push({ id: rel.targetId, type: rel.type, dir: 'out' });
+          b = adj.get(rel.targetId);
+          if (!b) { b = []; adj.set(rel.targetId, b); }
+          b.push({ id: rel.sourceId, type: rel.type, dir: 'in' });
+        }
+
         const channel = vscode.window.createOutputChannel('Astrolabe Context');
         channel.clear();
         for (const r of results) {
@@ -277,25 +304,17 @@ export function activate(context: vscode.ExtensionContext): void {
           channel.appendLine(`  ID:    ${r.nodeId}`);
           channel.appendLine(`  File:  ${r.filePath}`);
           channel.appendLine('');
-          // Show incoming edges
-          for (const rel of graph.iterRelationships()) {
-            if (rel.targetId === r.nodeId) {
-              const src = graph.getNode(rel.sourceId);
-              channel.appendLine(`  ← ${rel.type} from ${src?.properties.name ?? rel.sourceId}`);
-            }
-          }
-          // Show outgoing edges
-          for (const rel of graph.iterRelationships()) {
-            if (rel.sourceId === r.nodeId) {
-              const tgt = graph.getNode(rel.targetId);
-              channel.appendLine(`  → ${rel.type} to ${tgt?.properties.name ?? rel.targetId}`);
-            }
+          const edges = adj.get(r.nodeId) ?? [];
+          for (const e of edges) {
+            const other = graph.getNode(e.id);
+            const arrow = e.dir === 'in' ? '←' : '→';
+            const verb = e.dir === 'in' ? 'from' : 'to';
+            channel.appendLine(`  ${arrow} ${e.type} ${verb} ${other?.properties.name ?? e.id}`);
           }
           channel.appendLine('');
         }
         channel.show();
-        store.close();
-      } catch { /* skip */ }
+      } finally { store.close(); }
     } finally { fts.close(); }
   });
 
@@ -403,6 +422,15 @@ export function activate(context: vscode.ExtensionContext): void {
       }, SAVE_DEBOUNCE_MS);
     }),
   );
+
+  // #215: Watch .git/HEAD for live stale detection (branch switches, pulls, merges)
+  const gitHead = join(repoPath, '.git', 'HEAD');
+  if (existsSync(gitHead)) {
+    const headWatcher = vscode.workspace.createFileSystemWatcher(gitHead);
+    headWatcher.onDidChange(() => refreshStatusBar(repoPath));
+    headWatcher.onDidCreate(() => refreshStatusBar(repoPath));
+    context.subscriptions.push(headWatcher);
+  }
 
   // Trigger: git HEAD polling (catches branch switches, pulls, merges)
   let lastHead = getGitCommit(repoPath);

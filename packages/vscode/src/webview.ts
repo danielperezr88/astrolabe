@@ -94,9 +94,30 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
         }
       }
 
-      // Simple force simulation
+      // #214: Cap nodes to top 1000 by degree to prevent O(N2) freeze
+      var cappedInfo = '';
+      var totalNodes = Object.keys(positions).length;
+      if (edgeList.length > 0 && totalNodes > 1000) {
+        var degree = {};
+        for (var e = 0; e < edgeList.length; e++) {
+          var ed = edgeList[e];
+          degree[ed.source] = (degree[ed.source] || 0) + 1;
+          degree[ed.target] = (degree[ed.target] || 0) + 1;
+        }
+        var topIds = Object.keys(positions).sort(function(a, b) { return (degree[b] || 0) - (degree[a] || 0); }).slice(0, 1000);
+        var topSet = {};
+        for (var t = 0; t < topIds.length; t++) topSet[topIds[t]] = true;
+        edgeList = edgeList.filter(function(ed) { return topSet[ed.source] && topSet[ed.target]; });
+        var newPositions = {};
+        for (var t = 0; t < topIds.length; t++) { var tid = topIds[t]; newPositions[tid] = positions[tid]; }
+        positions = newPositions;
+        data.nodes = data.nodes.filter(function(n) { return topSet[n.id]; });
+        cappedInfo = ' (showing top 1,000 of ' + totalNodes + ' nodes by connections)';
+      }
+
+      // #214: Adaptive iterations based on node count
       var nodeIds = Object.keys(positions);
-      var iterations = 80;
+      var iterations = nodeIds.length < 200 ? 80 : nodeIds.length < 600 ? 50 : 30;
       var repulsion = 8000, springLen = 120, springK = 0.02, damping = 0.9;
       for (var iter = 0; iter < iterations; iter++) {
         // Repulsion
@@ -150,6 +171,7 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
       var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       svg.appendChild(g);
 
+      // #210: Store source/target IDs on edges for click-to-highlight
       // Edges
       for (var e = 0; e < edgeList.length; e++) {
         var edge = edgeList[e];
@@ -157,6 +179,8 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
         var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         line.setAttribute('x1', src.x); line.setAttribute('y1', src.y);
         line.setAttribute('x2', tgt.x); line.setAttribute('y2', tgt.y);
+        line.setAttribute('data-source', edge.source);
+        line.setAttribute('data-target', edge.target);
         line.setAttribute('data-edge', edge.type);
         line.classList.add('edge');
         g.appendChild(line);
@@ -205,6 +229,13 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
         legend.appendChild(item);
       }
 
+      if (cappedInfo) {
+        var capEl = document.createElement('div');
+        capEl.style.cssText = 'flex-basis:100%;font-size:9px;color:#888;margin-top:2px;';
+        capEl.textContent = cappedInfo;
+        legend.appendChild(capEl);
+      }
+
       // ── Interaction ───────────────────────────────────────────────────────
       var viewBox = { x: 0, y: 0, w: width, h: height };
       var dragging = false, lastX = 0, lastY = 0;
@@ -241,14 +272,14 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
 
       svg.addEventListener('mouseup', function() { dragging = false; svg.style.cursor = 'default'; });
 
-      // Click node to highlight
+      // #210: Click node to highlight — uses data-source/data-target, not coordinate hacks
       g.addEventListener('click', function(e) {
         var el = e.target.closest('.node');
         if (!el) {
           // Deselect
           if (highlighted) {
-            for (var e = 0; e < g.children.length; e++) {
-              g.children[e].style.opacity = '1';
+            for (var i = 0; i < g.children.length; i++) {
+              g.children[i].style.opacity = '1';
             }
             highlighted = null;
           }
@@ -256,21 +287,11 @@ function graphHtml(webview: vscode.Webview, data: { nodes: SerializableNode[]; e
         }
         var id = el.getAttribute('data-id');
         highlighted = id;
-        for (var e = 0; e < g.children.length; e++) {
-          var child = g.children[e];
+        for (var i = 0; i < g.children.length; i++) {
+          var child = g.children[i];
           if (child.tagName === 'line') {
-            var srcId = Object.keys(nodeEls).find(function(k) {
-              return nodeEls[k].getAttribute('data-id') ===
-                child.getAttribute('data-edge') ? false :
-                positions[k] && positions[k].x === parseFloat(child.getAttribute('x1')) &&
-                positions[k].y === parseFloat(child.getAttribute('y1'));
-            });
-            var tgtId = Object.keys(nodeEls).find(function(k) {
-              return nodeEls[k].getAttribute('data-id') ===
-                child.getAttribute('data-edge') ? false :
-                positions[k] && positions[k].x === parseFloat(child.getAttribute('x2')) &&
-                positions[k].y === parseFloat(child.getAttribute('y2'));
-            });
+            var srcId = child.getAttribute('data-source');
+            var tgtId = child.getAttribute('data-target');
             child.style.opacity = (srcId === id || tgtId === id) ? '0.8' : '0.05';
           } else {
             child.style.opacity = child.getAttribute('data-id') === id ? '1' : '0.15';
