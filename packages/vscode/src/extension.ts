@@ -48,11 +48,11 @@ let statusBarItem: vscode.StatusBarItem;
 function createStatusBar(): void {
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'astrolabe.analyze';
-  updateStatusBar();
+  refreshStatusBar();
   statusBarItem.show();
 }
 
-function updateStatusBar(workspaceRoot?: string): void {
+function refreshStatusBar(workspaceRoot?: string): void {
   if (!workspaceRoot) {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) { statusBarItem.text = '$(graph) Astrolabe: no workspace'; return; }
@@ -62,6 +62,7 @@ function updateStatusBar(workspaceRoot?: string): void {
   if (!existsSync(db)) {
     statusBarItem.text = '$(graph) Astrolabe: not analyzed';
     statusBarItem.tooltip = 'Click to analyze codebase';
+    statusBarItem.command = 'astrolabe.analyze';
     return;
   }
   try {
@@ -72,6 +73,7 @@ function updateStatusBar(workspaceRoot?: string): void {
       if (repo.lastCommit !== currentCommit) {
         statusBarItem.text = '$(warning) Astrolabe: stale';
         statusBarItem.tooltip = 'Graph is stale — click to re-analyze';
+        statusBarItem.command = 'astrolabe.analyze';
         return;
       }
     }
@@ -88,6 +90,75 @@ function updateStatusBar(workspaceRoot?: string): void {
   }
 }
 
+// ── Core analysis (shared by auto-start and manual command) ───────────────────
+
+async function runAnalysis(
+  repoPath: string,
+  progress: vscode.Progress<{ message: string }> | null,
+  silent: boolean,
+): Promise<void> {
+  const db = dbPath(repoPath);
+  const log = createLogger({ level: 'info' });
+
+  statusBarItem.text = '$(sync~spin) Astrolabe: analyzing...';
+  statusBarItem.tooltip = 'Analysis in progress';
+  statusBarItem.command = undefined;
+
+  try {
+    if (progress) progress.report({ message: 'Initializing parser...' });
+    await initParser();
+
+    if (progress) progress.report({ message: 'Scanning files...' });
+    const graph = createKnowledgeGraph();
+    const phaseCtx = createPhaseContext(repoPath, graph, () => undefined);
+
+    if (progress) progress.report({ message: 'Running analysis pipeline (13 phases)...' });
+    await runPipeline([
+      scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
+      resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
+      mroPhase, communityPhase, processTracingPhase,
+    ], phaseCtx);
+
+    if (progress) progress.report({ message: 'Persisting to SQLite...' });
+    ensureDbDir(db);
+    const store = createSqliteStore(db);
+    store.saveGraph(graph);
+    const nodeCount = graph.nodeCount;
+    const edgeCount = graph.relationshipCount;
+
+    if (progress) progress.report({ message: 'Building search index...' });
+    const fts = createFtsSearch(db);
+    fts.indexGraph(store);
+    fts.close();
+    store.close();
+
+    if (progress) progress.report({ message: 'Registering repo...' });
+    const repos = loadRegistry();
+    const repoName = basename(repoPath);
+    const entry = {
+      name: repoName, path: repoPath, dbPath: db,
+      lastCommit: getGitCommit(repoPath), indexedAt: Date.now(),
+    };
+    const existingIdx = repos.findIndex((r) => r.path === repoPath);
+    if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
+    saveRegistry(repos);
+
+    log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount });
+    if (!silent) {
+      vscode.window.showInformationMessage(
+        `Astrolabe: Analysis complete — ${nodeCount} nodes, ${edgeCount} edges.`
+      );
+    }
+    refreshStatusBar(repoPath);
+  } catch (err) {
+    log.error('Analysis failed', { error: String(err) });
+    refreshStatusBar(repoPath);
+    if (!silent) {
+      vscode.window.showErrorMessage(`Astrolabe: Analysis failed — ${String(err)}`);
+    }
+  }
+}
+
 // ── Activation ───────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -100,62 +171,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showErrorMessage('Astrolabe: No workspace folder open.');
       return;
     }
-    const repoPath = folder.uri.fsPath;
-    const db = dbPath(repoPath);
-    const log = createLogger({ level: 'info' });
-
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'Astrolabe: Analyzing codebase...', cancellable: false },
-      async (progress) => {
-        try {
-          progress.report({ message: 'Initializing parser...' });
-          await initParser();
-
-          progress.report({ message: 'Scanning files...' });
-          const graph = createKnowledgeGraph();
-          const context_ = createPhaseContext(repoPath, graph, () => undefined);
-
-          progress.report({ message: 'Running analysis pipeline (13 phases)...' });
-          await runPipeline([
-            scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
-            resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-            mroPhase, communityPhase, processTracingPhase,
-          ], context_);
-
-          progress.report({ message: 'Persisting to SQLite...' });
-          ensureDbDir(db);
-          const store = createSqliteStore(db);
-          store.saveGraph(graph);
-          const nodeCount = graph.nodeCount;
-          const edgeCount = graph.relationshipCount;
-
-          progress.report({ message: 'Building search index...' });
-          const fts = createFtsSearch(db);
-          fts.indexGraph(store);
-          fts.close();
-          store.close();
-
-          progress.report({ message: 'Registering repo...' });
-          const repos = loadRegistry();
-          const repoName = basename(repoPath);
-          const entry = {
-            name: repoName, path: repoPath, dbPath: db,
-            lastCommit: getGitCommit(repoPath), indexedAt: Date.now(),
-          };
-          const existingIdx = repos.findIndex((r) => r.path === repoPath);
-          if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
-          saveRegistry(repos);
-
-          log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount });
-          vscode.window.showInformationMessage(
-            `Astrolabe: Analysis complete — ${nodeCount} nodes, ${edgeCount} edges.`
-          );
-          updateStatusBar(repoPath);
-        } catch (err) {
-          log.error('Analysis failed', { error: String(err) });
-          vscode.window.showErrorMessage(`Astrolabe: Analysis failed — ${String(err)}`);
-        }
-      }
+      async (progress) => runAnalysis(folder.uri.fsPath, progress, false),
     );
   });
 
@@ -355,6 +373,15 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   context.subscriptions.push(analyzeCmd, showGraphCmd, queryCmd, contextCmd, impactCmd, statusBarItem);
+
+  // Auto-analyze on startup if never analyzed — non-blocking, silent on success
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder) {
+    const db = dbPath(folder.uri.fsPath);
+    if (!existsSync(db)) {
+      runAnalysis(folder.uri.fsPath, null, true);
+    }
+  }
 }
 
 export function deactivate(): void {
