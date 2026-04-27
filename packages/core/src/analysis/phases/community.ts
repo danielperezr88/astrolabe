@@ -129,6 +129,67 @@ function modularityGain(
 }
 
 /**
+ * Partition a community into internally connected sub-communities using BFS.
+ * This is the Leiden refinement phase that guarantees well-connected communities.
+ */
+function refinePartition(
+  state: CommunityState,
+  adj: Map<string, Map<string, number>>,
+): boolean {
+  let refined = false;
+  const newCommunities = new Map<number, Set<string>>();
+  const newNodeToCommunity = new Map<string, number>();
+  let nextCommId = Math.max(...Array.from(state.communities.keys()), 0) + 1;
+
+  for (const [commId, members] of state.communities) {
+    if (members.size <= 1) {
+      newCommunities.set(commId, new Set(members));
+      for (const m of members) newNodeToCommunity.set(m, commId);
+      continue;
+    }
+
+    // Build subgraph for this community
+    const memberSet = new Set(members);
+    const visited = new Set<string>();
+
+    for (const node of members) {
+      if (visited.has(node)) continue;
+
+      // BFS within community to find connected component
+      const component = new Set<string>();
+      const queue = [node];
+      visited.add(node);
+
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        component.add(curr);
+        const neighbors = adj.get(curr);
+        if (neighbors) {
+          for (const [neighbor] of neighbors) {
+            if (memberSet.has(neighbor) && !visited.has(neighbor)) {
+              visited.add(neighbor);
+              queue.push(neighbor);
+            }
+          }
+        }
+      }
+
+      const compId = component.size === members.size ? commId : nextCommId++;
+      newCommunities.set(compId, component);
+      for (const n of component) newNodeToCommunity.set(n, compId);
+
+      if (compId !== commId) refined = true;
+    }
+  }
+
+  if (refined) {
+    state.communities = newCommunities;
+    state.nodeToCommunity = newNodeToCommunity;
+  }
+  return refined;
+}
+
+/**
  * One pass of Louvain: greedily reassign nodes to maximize modularity.
  */
 function louvainPass(
@@ -227,12 +288,15 @@ export const communityPhase: PhaseDefinition<CommunityOutput> = {
 
     const state = initCommunities(allNodeIds);
     state.totalWeight = totalWeight;
-
     let iterations = 0;
-    let moved = true;
 
-    while (moved && iterations < 20) { // Cap at 20 iterations
-      moved = louvainPass(state, adj, totalWeight);
+    while (iterations < 10) {
+      const moved = louvainPass(state, adj, totalWeight);
+      if (!moved) break;
+
+      // Leiden refinement: ensure communities are internally connected (#85)
+      refinePartition(state, adj);
+
       iterations++;
     }
 
