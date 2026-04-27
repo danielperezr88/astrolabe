@@ -426,17 +426,37 @@ export async function parseFile(
 }
 
 /**
- * Parse multiple source files in parallel.
+ * Parse multiple files, optionally bounded by concurrency limit.
  *
  * @param filePaths  Array of absolute file paths.
  * @param wasmDir    Absolute path to WASM directory.
+ * @param concurrency  Max parallel parses (default 8). 0 = unbounded.
  * @returns Array of {@link FileParseResult} in the same order as input.
  */
 export async function parseFiles(
   filePaths: string[],
   wasmDir: string,
+  concurrency = 8,
 ): Promise<FileParseResult[]> {
-  return Promise.all(filePaths.map((fp) => parseFile(fp, wasmDir)));
+  if (filePaths.length === 0) return [];
+  if (concurrency <= 0 || concurrency >= filePaths.length) {
+    return Promise.all(filePaths.map((fp) => parseFile(fp, wasmDir)));
+  }
+
+  const results: FileParseResult[] = new Array(filePaths.length);
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (cursor < filePaths.length) {
+      const i = cursor++;
+      results[i] = await parseFile(filePaths[i], wasmDir);
+    }
+  }
+
+  const workers = Array.from({ length: concurrency }, () => worker());
+  await Promise.all(workers);
+
+  return results;
 }
 
 /**
