@@ -7,30 +7,39 @@
  *
  * Native binary handling: VS Code's Electron bundles a different Node.js
  * ABI than the system Node.js. The postinstall script downloads both
- * binaries (node-v137 for system, electron-v140 as sidecar). At runtime,
- * we detect Electron and load the appropriate binary automatically.
+ * binaries (node-v137 for system, electron-v140 as sidecar). When running
+ * in Electron, we copy the electron binary into place before the first
+ * require('better-sqlite3') call.
  */
 
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function loadBetterSqlite3(): any {
-  const isElectron = 'electron' in process.versions;
-  if (isElectron) {
-    const req = createRequire(import.meta.url);
-    const sidecar = req.resolve('better-sqlite3/build/Release/electron/better_sqlite3.node');
-    if (sidecar && existsSync(sidecar)) {
-      try { return req(sidecar) as never; } catch { /* fall through */ }
+let _Database: any = undefined;
+
+function getDatabase(): any {
+  if (!_Database) {
+    // In Electron, swap in the electron-compiled binary before loading
+    if ('electron' in process.versions) {
+      const req = createRequire(import.meta.url);
+      try {
+        const sidecar = req.resolve('better-sqlite3/build/Release/electron/better_sqlite3.node');
+        const defaultBin = req.resolve('better-sqlite3/build/Release/better_sqlite3.node');
+        if (sidecar && existsSync(sidecar) && defaultBin) {
+          copyFileSync(sidecar, defaultBin);
+        }
+      } catch { /* ok if failed */ }
     }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _Database = require('better-sqlite3');
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('better-sqlite3') as never;
+  return _Database;
 }
 
-const Database = loadBetterSqlite3();
+const Database = getDatabase();
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
