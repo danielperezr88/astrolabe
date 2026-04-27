@@ -105,7 +105,7 @@ describe('MRO Phase', () => {
     const graph = createKnowledgeGraph();
     graph.addNode(cls('class:Base', 'Base', 'src/base.ts'));
     graph.addNode(cls('class:Child', 'Child', 'src/child.ts'));
-    graph.addNode(meth('meth:Base:handle', 'handle', 'src/base.ts'));
+    graph.addNode(meth('meth:Base:handle', 'handle', 'src/base.ts', 'Base'));
     graph.addRelationship(extendsRel('class:Child', 'class:Base'));
 
     const context = createPhaseContext('/test', graph, () => {});

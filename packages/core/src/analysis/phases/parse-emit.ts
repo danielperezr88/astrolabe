@@ -105,6 +105,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
         for (const rel of result.relationships) {
           emitRelationship(graph, rel, relPath);
         }
+
+        // ── Infer parentClass for Methods/Constructors (#155) ─────────────
+        // Language providers don't always set parentClass. Walk the file's
+        // symbols to assign each Method/Constructor to its nearest Class.
+        inferParentClasses(graph, relPath);
       }
 
       // Yield event-loop for very large repos
@@ -255,4 +260,59 @@ function emitRelationship(
     confidence: 0.7,
     reason: `tree-sitter ${rel.type.toLowerCase()} capture`,
   });
+}
+
+/**
+ * Infer parentClass for Method and Constructor nodes from Class nodes
+ * in the same file. For each Method/Constructor, finds the nearest Class
+ * node that starts before it (#155).
+ *
+ * This is a universal fallback for all language providers that don't
+ * explicitly set parentClass via tree-sitter captures.
+ */
+function inferParentClasses(
+  graph: PhaseContext['graph'],
+  filePath: string,
+): void {
+  // Collect Class nodes in this file with their line ranges
+  const classes: Array<{ id: string; name: string; startLine: number; endLine: number }> = [];
+  const methods: Array<{ id: string; startLine: number }> = [];
+
+  for (const node of graph.iterNodes()) {
+    if (node.properties.filePath !== filePath) continue;
+    if (node.label === 'Class' || node.label === 'Interface' || node.label === 'Struct' || node.label === 'Trait') {
+      classes.push({
+        id: node.id,
+        name: node.properties.name as string,
+        startLine: (node.properties.startLine as number) ?? 0,
+        endLine: (node.properties.endLine as number) ?? Infinity,
+      });
+    } else if (node.label === 'Method' || node.label === 'Constructor') {
+      // Only set if not already explicitly set
+      if (!node.properties.parentClass) {
+        methods.push({ id: node.id, startLine: (node.properties.startLine as number) ?? 0 });
+      }
+    }
+  }
+
+  if (classes.length === 0 || methods.length === 0) return;
+
+  // Sort classes by startLine for efficient lookup
+  classes.sort((a, b) => a.startLine - b.startLine);
+
+  for (const method of methods) {
+    // Find the nearest class that starts before this method
+    let best: typeof classes[0] | null = null;
+    for (const cls of classes) {
+      if (cls.startLine <= method.startLine && method.startLine <= cls.endLine) {
+        best = cls;
+      }
+    }
+    if (best) {
+      const node = graph.getNode(method.id);
+      if (node) {
+        node.properties.parentClass = best.name;
+      }
+    }
+  }
 }

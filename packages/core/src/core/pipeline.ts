@@ -130,7 +130,9 @@ function topologicalSort(phases: PhaseDefinition[]): PhaseDefinition[] {
     for (const dep of phase.dependencies) {
       if (!nameToPhase.has(dep)) {
         // Dependency not in current phase list — may have been run in a
-        // previous pipeline call. Log for debugging but allow (#157).
+        // previous pipeline call and stored in context.state.
+        // Log warning so typos don't go unnoticed (#157).
+        console.warn(`Pipeline: phase '${phase.name}' depends on '${dep}' which is not in the current phase list. This may be intentional if the dependency was run in a previous pipeline call.`);
         continue;
       }
       adjacency.get(dep)!.push(phase.name);

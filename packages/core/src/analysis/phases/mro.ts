@@ -192,7 +192,7 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
           // Filter methods to just those belonging to this ancestor class (#121)
           const ancestorName = ancestor.properties.name as string;
           const ownMethods = ancestorName
-            ? methods.filter((m) => (m.properties.parentClass as string) === ancestorName || !m.properties.parentClass)
+            ? methods.filter((m) => (m.properties.parentClass as string) === ancestorName)
             : methods;
           for (const method of ownMethods) {
             const edgeId = `mro:${cls.id}:has_method:${method.id}`;
