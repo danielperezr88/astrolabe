@@ -197,16 +197,16 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
     }
   }
 
-  // Deduplicate by name
+  // Deduplicate by name:ecosystem:scope (#201)
   const seen = new Set<string>();
   const unique = allFrameworks.filter((f) => {
-    const key = f.name;
+    const key = `${f.name}:${f.ecosystem}:${f.scope || 'root'}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 
-  // Create Framework nodes
+  // Create Framework nodes and USES_FRAMEWORK edges (#180)
   for (const fw of unique) {
     const fwId = `framework:${fw.ecosystem}:${fw.name}`;
     graph.addNode({
@@ -215,16 +215,14 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
       properties: { name: fw.name, ecosystem: fw.ecosystem, version: fw.version, detectedFrom: fw.detectedFrom },
     });
 
-    // #180: Create USES_FRAMEWORK edge from the Package node (if scoped)
+    // #180: Create USES_FRAMEWORK edge from the Package or Project node
     if (fw.scope) {
+      // Scoped framework (monorepo sub-package): link to Package node
       let pkgNodeId: string | null = null;
       for (const pkgNode of graph.iterNodes()) {
         if (pkgNode.label !== 'Package') continue;
         const fp = pkgNode.properties.filePath as string;
-        if (fp === fw.scope) {
-          pkgNodeId = pkgNode.id;
-          break;
-        }
+        if (fp === fw.scope) { pkgNodeId = pkgNode.id; break; }
       }
       if (pkgNodeId) {
         graph.addRelationship({
@@ -234,6 +232,22 @@ export function detectFrameworks(repoPath: string, graph: KnowledgeGraph): Frame
           type: 'USES_FRAMEWORK',
           confidence: 0.9,
           reason: `Package depends on ${fw.name}`,
+        });
+      }
+    } else {
+      // Root-level framework: link to Project node
+      let projNodeId: string | null = null;
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'Project') { projNodeId = node.id; break; }
+      }
+      if (projNodeId) {
+        graph.addRelationship({
+          id: `uses_fw:${projNodeId}:${fwId}`,
+          sourceId: projNodeId,
+          targetId: fwId,
+          type: 'USES_FRAMEWORK',
+          confidence: 0.9,
+          reason: `Project depends on ${fw.name}`,
         });
       }
     }

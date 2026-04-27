@@ -14,6 +14,7 @@ import {
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry,
+  generateSkill,
 } from '@astrolabe/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -148,17 +149,27 @@ program
     const store = createSqliteStore(opts.db);
     try {
       const graph = store.loadGraph();
+
+      // #134: Pre-build adjacency index (O(R)) for O(1) neighbor lookup
+      const adj = new Map<string, Array<{ neighborId: string; type: string; direction: string }>>();
+      for (const rel of graph.iterRelationships()) {
+        let bucket = adj.get(rel.sourceId);
+        if (!bucket) { bucket = []; adj.set(rel.sourceId, bucket); }
+        bucket.push({ neighborId: rel.targetId, type: rel.type, direction: 'outgoing' });
+        bucket = adj.get(rel.targetId);
+        if (!bucket) { bucket = []; adj.set(rel.targetId, bucket); }
+        bucket.push({ neighborId: rel.sourceId, type: rel.type, direction: 'incoming' });
+      }
+
       let found = 0;
       for (const node of graph.iterNodes()) {
         if (node.properties.name === symbolName) {
           found++;
           console.log(`${node.label}: ${node.id}`);
-          for (const rel of graph.iterRelationships()) {
-            if (rel.sourceId === node.id || rel.targetId === node.id) {
-              const oid = rel.sourceId === node.id ? rel.targetId : rel.sourceId;
-              const other = graph.getNode(oid);
-              console.log(`  ${rel.sourceId === node.id ? '→' : '←'} ${rel.type} ${other?.properties.name ?? oid}`);
-            }
+          const neighbors = adj.get(node.id) ?? [];
+          for (const { neighborId, type, direction } of neighbors) {
+            const other = graph.getNode(neighborId);
+            console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
           }
         }
       }
@@ -185,6 +196,15 @@ program
       }
       if (count === 0) console.log('No symbols found.');
     } finally { store.close(); }
+  });
+
+// ── generate-skill ──────────────────────────────────────────────────────────────
+program
+  .command('generate-skill')
+  .description('Generate a Markdown skill file for AI assistants (#110)')
+  .option('-o, --output <path>', 'Output file path', 'astrolabe-skill.md')
+  .action((opts: { output: string }) => {
+    generateSkill(opts.output);
   });
 
 program.parse();

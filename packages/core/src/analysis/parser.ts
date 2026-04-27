@@ -365,6 +365,48 @@ function extractImports(
   return Array.from(grouped.values());
 }
 
+// ── Shared extraction helper (#169) ────────────────────────────────────────
+
+/**
+ * Run symbol and import queries against a tree and extract results.
+ * Shared by both parseFile and parseString to avoid ~40 lines of duplicated
+ * query-matching logic per function.
+ */
+function extractFromTree(
+  language: WtsLanguage,
+  root: any,
+  langDef: LanguageDefinition,
+  normalisedPath: string,
+): { symbols: ParsedSymbol[]; imports: ParsedImport[]; relationships: ParsedRelationship[] } {
+  // Symbol extraction
+  const allSymbolMatches: QueryMatch[] = [];
+  for (let pi = 0; pi < langDef.symbolPatterns.length; pi++) {
+    const pattern = langDef.symbolPatterns[pi];
+    const query = getQuery(language, pattern.query, langDef.wasmFile);
+    const matches = query.matches(root);
+    for (const m of matches) {
+      (m as any)._patternIndex = pi;
+      allSymbolMatches.push(m);
+    }
+  }
+  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
+
+  // Import extraction
+  const allImportMatches: QueryMatch[] = [];
+  for (let pi = 0; pi < langDef.importPatterns.length; pi++) {
+    const pattern = langDef.importPatterns[pi];
+    const query = getQuery(language, pattern.query, langDef.wasmFile);
+    const matches = query.matches(root);
+    for (const m of matches) {
+      (m as any)._patternIndex = pi;
+      allImportMatches.push(m);
+    }
+  }
+  const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
+
+  return { symbols, imports, relationships };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -405,7 +447,7 @@ export async function parseFile(
   if (!langDef) {
     const result: FileParseResult = {
       filePath: normalisedPath,
-      language: 'typescript' as never, // unreachable: parse-emit phase filters via isParsable()
+      language: 'unknown',
       symbols: [],
       imports: [],
       relationships: [],
@@ -448,35 +490,8 @@ export async function parseFile(
 
   const root = tree.rootNode;
 
-  // ── Symbol extraction ──────────────────────────────────────────────────
-  const allSymbolMatches: QueryMatch[] = [];
-  for (let pi = 0; pi < langDef.symbolPatterns.length; pi++) {
-    const pattern = langDef.symbolPatterns[pi];
-    const query = getQuery(language, pattern.query, langDef.wasmFile);
-    const matches = query.matches(root);
-    for (const m of matches) {
-      // Tag with the actual pattern index since each pattern is its own
-      // Query and would otherwise have patternIndex=0 on every match.
-      (m as any)._patternIndex = pi;
-      allSymbolMatches.push(m);
-    }
-  }
-
-  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
-
-  // ── Import extraction
-  const allImportMatches: QueryMatch[] = [];
-  for (let pi = 0; pi < langDef.importPatterns.length; pi++) {
-    const pattern = langDef.importPatterns[pi];
-    const query = getQuery(language, pattern.query, langDef.wasmFile);
-    const matches = query.matches(root);
-    for (const m of matches) {
-      (m as any)._patternIndex = pi;
-      allImportMatches.push(m);
-    }
-  }
-
-  const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
+  // ── Extract symbols, imports, and relationships (#169) ──────────────────
+  const { symbols, imports, relationships } = extractFromTree(language, root, langDef, normalisedPath);
 
   // Clean up tree — parser is cached and reused (#168)
   tree.delete();
@@ -557,7 +572,7 @@ export async function parseString(
   if (!langDef) {
     return {
       filePath: normalisedPath,
-      language: 'typescript' as never,
+      language: 'unknown',
       symbols: [],
       imports: [],
       relationships: [],
@@ -574,29 +589,8 @@ export async function parseString(
 
   const root = tree.rootNode;
 
-  // Symbol extraction
-  const allSymbolMatches: QueryMatch[] = [];
-  for (let pi = 0; pi < langDef.symbolPatterns.length; pi++) {
-    const pattern = langDef.symbolPatterns[pi];
-    const query = getQuery(language, pattern.query, langDef.wasmFile);
-    for (const m of query.matches(root)) {
-      (m as any)._patternIndex = pi;
-      allSymbolMatches.push(m);
-    }
-  }
-  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
-
-  // Import extraction
-  const allImportMatches: QueryMatch[] = [];
-  for (let pi = 0; pi < langDef.importPatterns.length; pi++) {
-    const pattern = langDef.importPatterns[pi];
-    const query = getQuery(language, pattern.query, langDef.wasmFile);
-    for (const m of query.matches(root)) {
-      (m as any)._patternIndex = pi;
-      allImportMatches.push(m);
-    }
-  }
-  const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
+  // ── Extract symbols, imports, and relationships (#169) ──────────────────
+  const { symbols, imports, relationships } = extractFromTree(language, root, langDef, normalisedPath);
 
   // Clean up tree — parser is cached and reused (#168)
   tree.delete();

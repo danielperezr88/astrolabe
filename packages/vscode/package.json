@@ -8,7 +8,6 @@
     "vscode": "^1.90.0"
   },
   "activationEvents": [
-    "onLanguage",
     "onCommand:astrolabe.analyze"
   ],
   "main": "dist/extension.js",

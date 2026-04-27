@@ -5,7 +5,7 @@
  * symbol names and file contents for common ORM patterns.
  *
  * Dependencies: parse-emit
- * Output: CodeElement nodes + QUERIES edges
+ * Output: CodeElement nodes + USES edges
  */
 
 import { readFileSync, existsSync } from 'node:fs';

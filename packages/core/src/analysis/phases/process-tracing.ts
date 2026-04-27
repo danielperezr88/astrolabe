@@ -31,15 +31,37 @@ interface BfsNode {
 
 /**
  * Build outgoing call graph: Map<callerId, calleeId[]>
+ *
+ * Uses CALLS edges when available (tree-sitter function call detection).
+ * Falls back to USES edges as an approximation (#91) — USES edges include
+ * resolution-bindings (import → symbol), which serve as a reasonable
+ * "references" graph when CALLS edges don't exist yet.
  */
 function buildCallGraph(graph: PhaseContext['graph']): Map<string, string[]> {
   const calls = new Map<string, string[]>();
+
+  // Try CALLS edges first (precise: actual function invocations)
+  let usedCalls = false;
   for (const rel of graph.iterRelationships()) {
     if (rel.type !== 'CALLS') continue;
+    usedCalls = true;
     let callees = calls.get(rel.sourceId);
     if (!callees) { callees = []; calls.set(rel.sourceId, callees); }
     callees.push(rel.targetId);
   }
+
+  // #91: Fall back to USES edges when no CALLS edges exist.
+  // USES edges are created by the resolution phase (import → resolved symbol)
+  // and provide a directed "references" graph for process tracing.
+  if (!usedCalls) {
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type !== 'USES') continue;
+      let callees = calls.get(rel.sourceId);
+      if (!callees) { callees = []; calls.set(rel.sourceId, callees); }
+      callees.push(rel.targetId);
+    }
+  }
+
   return calls;
 }
 

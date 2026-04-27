@@ -12,8 +12,33 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getAllExtensions, languageForExtension } from '../analysis/parser.js';
+
+/**
+ * Build a dynamic list of supported languages from the language registry (#112).
+ * Groups extensions by language name for a readable output.
+ */
+function buildLanguageList(): string {
+  const exts = getAllExtensions();
+  const byLang = new Map<string, Set<string>>();
+  for (const ext of exts) {
+    const lang = languageForExtension(ext);
+    const name = lang ? lang.name : ext;
+    let group = byLang.get(name);
+    if (!group) { group = new Set(); byLang.set(name, group); }
+    group.add(ext);
+  }
+  return Array.from(byLang.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([lang, extensions]) => {
+      const extList = Array.from(extensions).sort().join(', ');
+      return `- ${lang} (${extList})`;
+    })
+    .join('\n');
+}
 
 function skillTemplate(version: string): string {
+  const languageList = buildLanguageList();
   return `# Astrolabe — Codebase Knowledge Graph Skill
 
 ## Overview
@@ -54,15 +79,17 @@ When connected via MCP, the following tools are available:
 
 | Tool | Description |
 |------|-------------|
-| \`astrolabe.search\` | Search the knowledge graph for symbols |
-| \`astrolabe.relationships\` | Get relationships for a symbol |
-| \`astrolabe.analyze\` | Analyze a repo and build the graph |
+| \`astrolabe.list_repos\` | Discover all indexed repositories |
+| \`astrolabe.query\` | Hybrid search over the knowledge graph |
+| \`astrolabe.context\` | 360-degree symbol view |
+| \`astrolabe.impact\` | Blast radius analysis |
+| \`astrolabe.detect_changes\` | Git-diff impact mapping |
+| \`astrolabe.rename\` | Graph-assisted multi-file rename |
+| \`astrolabe.cypher\` | Graph pattern query |
 
 ## Supported Languages
 
-- TypeScript (.ts, .tsx, .mts, .cts)
-- JavaScript (.js, .jsx, .mjs, .cjs)
-- Python (.py, .pyw)
+${languageList}
 
 ## Version
 

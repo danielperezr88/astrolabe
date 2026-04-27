@@ -143,8 +143,8 @@ export interface ParsedRelationship {
 /** Full parse result for a single file. */
 export interface FileParseResult {
   filePath: string;
-  /** Normalised language identifier. */
-  language: SupportedLanguage;
+  /** Normalised language identifier, or 'unknown' for unsupported extensions. */
+  language: SupportedLanguage | 'unknown';
   /** Symbols declared in this file. */
   symbols: ParsedSymbol[];
   /** Import statements in this file. */
