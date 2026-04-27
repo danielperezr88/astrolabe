@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 export interface MarkdownOutput {
@@ -72,10 +72,14 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
 
     // Pass 1: Create Section nodes and build global heading index (#194)
     const globalSections = new Map<string, string>(); // fileRelPath|slug → sectionId
+    // #202: Secondary index by file path for O(1) cross-file lookup
+    const fileSectionIndex = new Map<string, Array<{ slug: string; sectionId: string }>>();
+
     for (const file of mdFiles) {
       if (file.headings.length === 0) continue;
       fileCount++;
 
+      const sections: Array<{ slug: string; sectionId: string }> = [];
       for (const h of file.headings) {
         const sectionId = `section:${file.filePath}:${h.slug}`;
         if (!graph.getNode(sectionId)) {
@@ -92,6 +96,13 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
           sectionCount++;
         }
         globalSections.set(`${file.filePath}|${h.slug}`, sectionId);
+        sections.push({ slug: h.slug, sectionId });
+      }
+      // Index with-extension and without-extension for O(1) lookup (#202)
+      fileSectionIndex.set(file.filePath, sections);
+      const noExt = file.filePath.replace(/\.(md|mdx)$/i, '');
+      if (noExt !== file.filePath) {
+        fileSectionIndex.set(noExt, sections);
       }
     }
 
@@ -121,33 +132,16 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
           const targetSlug = anchor || link.target.replace(/^#/, '');
           resolvedTargetId = globalSections.get(`${file.filePath}|${targetSlug}`) ?? null;
         } else {
-          // Cross-file link — resolve relative path to full file path (#194)
-          const resolvedPath = resolve(dirname(file.filePath), targetFile).replace(/\\/g, '/');
-          // Try exact path match and extensionless match
-          let actualRelPath = resolvedPath;
-          if (!globalSections.has(`${resolvedPath}|${anchor || 'dummy'}`)) {
-            // Try without extension
-            const extMatch = actualRelPath.match(/\.(md|mdx)$/i);
-            const basePath = extMatch ? actualRelPath.slice(0, -extMatch[0].length) : actualRelPath;
+          // Cross-file link — resolve relative path keeping it repo-relative (#200)
+          const resolvedPath = resolveRelative(dirname(file.filePath), targetFile);
+          const sections = lookupSections(resolvedPath, fileSectionIndex);
 
-            // Search for matching file in global sections
-            for (const [key, id] of globalSections) {
-              const [fp] = key.split('|');
-              const fpNoExt = fp.replace(/\.(md|mdx)$/i, '');
-              if (fp === basePath || fpNoExt === basePath) {
-                const targetSlug = anchor || '';
-                if (targetSlug) {
-                  const maybeId = globalSections.get(`${fp}|${targetSlug}`);
-                  if (maybeId) { resolvedTargetId = maybeId; break; }
-                } else {
-                  // No anchor — link to first heading in target file
-                  resolvedTargetId = id;
-                  break;
-                }
-              }
+          if (sections) {
+            if (anchor) {
+              resolvedTargetId = globalSections.get(`${sections.path}|${anchor}`) ?? null;
+            } else {
+              resolvedTargetId = sections.entries[0]?.sectionId ?? null;
             }
-          } else {
-            resolvedTargetId = globalSections.get(`${resolvedPath}|${anchor}`) ?? null;
           }
         }
 
@@ -156,7 +150,7 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
         // #195: If pre-heading link (no containingSection), attach to File node
         const sourceId = containingSection
           ? `section:${file.filePath}:${sourceSlug}`
-          : file.id; // Use File node as source for links before first heading
+          : file.id;
 
         const edgeId = `xref:${sourceId}:to:${resolvedTargetId}`;
         if (graph.getRelationship(edgeId)) continue;
@@ -176,3 +170,48 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
     return { sectionCount, crossRefCount, fileCount };
   },
 };
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a relative target path from a base directory, keeping the
+ * result repo-relative (not absolute). Handles '../' segments (#200).
+ */
+function resolveRelative(baseDir: string, target: string): string {
+  const parts = target.replace(/\\/g, '/').split('/');
+  const stack = baseDir.split('/').filter((p) => p && p !== '.');
+
+  for (const part of parts) {
+    if (part === '.' || part === '') continue;
+    if (part === '..') {
+      stack.pop();
+    } else {
+      stack.push(part);
+    }
+  }
+
+  return stack.join('/');
+}
+
+/**
+ * Look up sections for a file path. Tries exact match, with .md/.mdx
+ * extensions, and without extension. O(1) via pre-built index (#202).
+ */
+function lookupSections(
+  filePath: string,
+  index: Map<string, Array<{ slug: string; sectionId: string }>>,
+): { path: string; entries: Array<{ slug: string; sectionId: string }> } | null {
+  let entries = index.get(filePath);
+  if (entries) return { path: filePath, entries };
+
+  for (const ext of ['.md', '.mdx']) {
+    entries = index.get(filePath + ext);
+    if (entries) return { path: filePath + ext, entries };
+  }
+
+  const stripped = filePath.replace(/\.(md|mdx)$/i, '');
+  entries = index.get(stripped);
+  if (entries) return { path: stripped, entries };
+
+  return null;
+}

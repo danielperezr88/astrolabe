@@ -99,9 +99,14 @@ function detectPythonFrameworks(repoPath: string, _graph: KnowledgeGraph, packag
   if (existsSync(pyprojectPath)) {
     try {
       const content = readFileSync(pyprojectPath, 'utf-8');
-      if (content.includes('flask')) results.push({ name: 'flask', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
-      if (content.includes('fastapi')) results.push({ name: 'fastapi', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
-      if (content.includes('django')) results.push({ name: 'django', ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
+      // #203: Use word-boundary matching (same as requirements.txt fix)
+      const pyFrameworks = ['flask', 'fastapi', 'django'];
+      for (const fw of pyFrameworks) {
+        const esc = fw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp(`\\b${esc}\\b`).test(content)) {
+          results.push({ name: fw, ecosystem: 'python', detectedFrom: 'pyproject.toml', scope: packageDir });
+        }
+      }
     } catch { /* skip */ }
   }
 
@@ -149,7 +154,11 @@ function detectRustFrameworks(repoPath: string, _graph: KnowledgeGraph, packageD
     const content = readFileSync(cargoPath, 'utf-8');
     const rustFrameworks = ['actix-web', 'rocket', 'axum', 'warp', 'tide', 'tokio'];
     for (const fw of rustFrameworks) {
-      if (content.includes(fw)) results.push({ name: fw, ecosystem: 'rust', detectedFrom: 'Cargo.toml', scope: packageDir });
+      // #203: Word-boundary matching for Rust deps too
+      const esc = fw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${esc}\\b`).test(content)) {
+        results.push({ name: fw, ecosystem: 'rust', detectedFrom: 'Cargo.toml', scope: packageDir });
+      }
     }
   } catch { /* skip */ }
   return results;
