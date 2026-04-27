@@ -11,7 +11,6 @@ const symbolPatterns: QueryPattern[] = [
   { query: '(struct_declaration name: (type_identifier) @name) @definition.struct', captureLabels: { 'definition.struct': 'Struct' }, nameCapture: 'name', outerCapture: 'definition.struct' },
   { query: '(enum_declaration name: (type_identifier) @name) @definition.enum', captureLabels: { 'definition.enum': 'Enum' }, nameCapture: 'name', outerCapture: 'definition.enum' },
   { query: '(protocol_declaration name: (type_identifier) @name) @definition.interface', captureLabels: { 'definition.interface': 'Interface' }, nameCapture: 'name', outerCapture: 'definition.interface' },
-  { query: '(extension_declaration type: (type_identifier) @name) @definition.extension', captureLabels: { 'definition.extension': 'Class' }, nameCapture: 'name', outerCapture: 'definition.extension' },
   { query: '(function_declaration name: (simple_identifier) @name) @definition.function', captureLabels: { 'definition.function': 'Function' }, nameCapture: 'name', outerCapture: 'definition.function' },
 ] as QueryPattern[];
 

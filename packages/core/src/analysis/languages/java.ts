@@ -24,7 +24,7 @@ const symbolPatterns: QueryPattern[] = [
 
 const importPatterns: QueryPattern[] = [
   { query: '(import_declaration (scoped_identifier) @name) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
-  { query: '(import_declaration (asterisk) (scoped_identifier) @name) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
+  { query: '(import_declaration (scoped_identifier) @name (asterisk)) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
 export const javaLanguage: LanguageDefinition = {
