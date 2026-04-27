@@ -44,6 +44,10 @@ function ensureDbDir(db: string): void {
 // ── Status bar ───────────────────────────────────────────────────────────────
 
 let statusBarItem: vscode.StatusBarItem;
+let analyzing = false;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_DEBOUNCE_MS = 30_000; // 30s after last save
+const HEAD_POLL_MS = 60_000;     // every 60s
 
 function createStatusBar(): void {
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -97,6 +101,8 @@ async function runAnalysis(
   progress: vscode.Progress<{ message: string }> | null,
   silent: boolean,
 ): Promise<void> {
+  if (analyzing) return; // prevent concurrent runs
+  analyzing = true;
   const db = dbPath(repoPath);
   const log = createLogger({ level: 'info' });
 
@@ -149,13 +155,14 @@ async function runAnalysis(
         `Astrolabe: Analysis complete — ${nodeCount} nodes, ${edgeCount} edges.`
       );
     }
-    refreshStatusBar(repoPath);
   } catch (err) {
     log.error('Analysis failed', { error: String(err) });
-    refreshStatusBar(repoPath);
     if (!silent) {
       vscode.window.showErrorMessage(`Astrolabe: Analysis failed — ${String(err)}`);
     }
+  } finally {
+    analyzing = false;
+    refreshStatusBar(repoPath);
   }
 }
 
@@ -374,14 +381,40 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(analyzeCmd, showGraphCmd, queryCmd, contextCmd, impactCmd, statusBarItem);
 
-  // Auto-analyze on startup if never analyzed — non-blocking, silent on success
+  // ── Live re-analysis triggers ─────────────────────────────────────────────
   const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder) {
-    const db = dbPath(folder.uri.fsPath);
-    if (!existsSync(db)) {
-      runAnalysis(folder.uri.fsPath, null, true);
-    }
+  if (!folder) return;
+
+  const repoPath = folder.uri.fsPath;
+
+  // Auto-analyze on startup if never analyzed
+  const db = dbPath(repoPath);
+  if (!existsSync(db)) {
+    runAnalysis(repoPath, null, true);
   }
+
+  // Trigger: debounced save (30s window batches multiple saves into one re-analysis)
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        runAnalysis(repoPath, null, true);
+      }, SAVE_DEBOUNCE_MS);
+    }),
+  );
+
+  // Trigger: git HEAD polling (catches branch switches, pulls, merges)
+  let lastHead = getGitCommit(repoPath);
+  const headInterval = setInterval(() => {
+    const currentHead = getGitCommit(repoPath);
+    if (currentHead !== 'unknown' && currentHead !== lastHead) {
+      lastHead = currentHead;
+      runAnalysis(repoPath, null, true);
+    }
+  }, HEAD_POLL_MS);
+
+  context.subscriptions.push({ dispose: () => clearInterval(headInterval) });
 }
 
 export function deactivate(): void {
