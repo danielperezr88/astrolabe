@@ -120,8 +120,8 @@ export function handle(a: Animal) {
     });
   });
 
-  describe('EXTENDS heuristic', () => {
-    it('creates EXTENDS guess when importing a Class', async () => {
+  describe('EXTENDS edge handling', () => {
+    it('does NOT create false EXTENDS edges from imports (#70)', async () => {
       const repo = makeRepo({
         'src/base.ts': `
 export class Animal {
@@ -145,10 +145,13 @@ export class Dog {
       const context = createPhaseContext(repo, graph, () => {});
       await runPipeline([scanPhase, structurePhase, parseEmitPhase, resolutionPhase], context);
 
-      const out = getPhaseOutput<ResolutionOutput>(context, 'resolution');
+      // Verify NO false-positive EXTENDS edges were created (#70)
+      const extendsEdges = Array.from(graph.iterRelationshipsByType('EXTENDS'));
+      expect(extendsEdges).toHaveLength(0);
 
-      // Should have edge counts
-      expect(out.edgeCounts).toBeDefined();
+      // Verify USES edges were created for the imports
+      const usesEdges = Array.from(graph.iterRelationshipsByType('USES'));
+      expect(usesEdges.length).toBeGreaterThan(0);
 
       // Dog class should exist
       const dogNode = Array.from(graph.iterNodes()).find(
