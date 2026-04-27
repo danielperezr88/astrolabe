@@ -41,9 +41,6 @@ export interface SqliteStore {
 // ── Schema ──────────────────────────────────────────────────────────────────
 
 const SCHEMA = `
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
   CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
@@ -75,6 +72,8 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);
   CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
   CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);
+
+  PRAGMA user_version = 1;
 `;
 
 // ── Implementation ──────────────────────────────────────────────────────────
