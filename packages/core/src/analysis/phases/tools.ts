@@ -11,11 +11,11 @@ import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 export interface ToolsOutput { toolCount: number; toolTypes: string[]; }
 
-const PATTERNS: Array<{ type: string; regex: RegExp; nameGroup: number }> = [
+const PATTERNS: Array<{ type: string; regex: RegExp; nameGroup: number; protoOnly?: boolean }> = [
   { type: 'mcp', regex: /server\.tool\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
   { type: 'trpc', regex: /\.(query|mutation|procedure)\s*\(\s*['"]([^'"]+)['"]?/g, nameGroup: 0 },
   { type: 'cli', regex: /\.command\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
-  { type: 'grpc', regex: /\brpc\s+(\w+)\s*\(/g, nameGroup: 1 },
+  { type: 'grpc', regex: /\brpc\s+(\w+)\s*\(/g, nameGroup: 1, protoOnly: true },
 ];
 
 export const toolsPhase: PhaseDefinition<ToolsOutput> = {
