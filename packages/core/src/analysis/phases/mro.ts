@@ -41,23 +41,21 @@ export interface MroOutput {
  */
 function c3Linearize(
   classId: string,
-  parents: string[][],
+  parentMap: Map<string, string[]>,
   cache: Map<string, string[]>,
 ): string[] {
   if (cache.has(classId)) return cache.get(classId)!;
 
-  if (parents.length === 0) {
+  const parentIds = parentMap.get(classId) ?? [];
+  if (parentIds.length === 0) {
     const result = [classId];
     cache.set(classId, result);
     return result;
   }
 
-  // Recursively linearize all parents
-  const parentLinearizations = parents.map((p) => c3Linearize(p[0]!, [], cache));
-
-  // merge: [classId] + merge(parent linearizations, direct parents list)
-  const merged = c3Merge(parentLinearizations, parents.map((p) => [p[0]!]));
-  const result = [classId, ...merged];
+  // Recursively linearize all parents using the actual parent map (#61)
+  const parentLinearizations = parentIds.map((pid) => c3Linearize(pid, parentMap, cache));
+  const result = [classId, ...c3Merge(parentLinearizations, parentIds.map((id) => [id]))];
   cache.set(classId, result);
   return result;
 }
@@ -165,7 +163,7 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
       extendsEdgeCount += parentIds.length;
 
       if (parentIds.length > 0) {
-        const mro = c3Linearize(cls.id, parentIds.map((id) => [id]), cache);
+        const mro = c3Linearize(cls.id, parentMap, cache);
 
         const depth = mro.length - 1; // Exclude self
         if (depth > maxDepth) maxDepth = depth;

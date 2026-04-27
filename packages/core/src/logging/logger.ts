@@ -5,7 +5,7 @@
  * and per-phase metrics reporting.
  */
 
-import { writeSync } from 'node:fs';
+import { writeSync, openSync } from 'node:fs';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -44,7 +44,6 @@ export function createLogger(
   let outFd: number | null = null;
 
   if (opts.output) {
-    const { openSync } = require('node:fs');
     outFd = openSync(opts.output, 'a');
   }
 

@@ -149,7 +149,8 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse> {
     }
 
     case 'notifications/initialized':
-      return { jsonrpc: '2.0', id: req.id, result: {} };
+      // Do NOT respond to notifications per MCP spec
+      return undefined as any;
 
     default:
       return {

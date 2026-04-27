@@ -47,6 +47,8 @@ function buildAdjacency(graph: PhaseContext['graph']): {
   const allNodeIds = new Set<string>();
 
   for (const node of graph.iterNodes()) {
+    // Exclude structural nodes from community detection (#63)
+    if (node.label === 'File' || node.label === 'Folder' || node.label === 'Import' || node.label === 'Package') continue;
     allNodeIds.add(node.id);
     if (!adj.has(node.id)) adj.set(node.id, new Map());
   }
