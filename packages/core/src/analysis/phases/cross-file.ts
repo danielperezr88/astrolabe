@@ -94,7 +94,9 @@ function topologicalFiles(importGraph: Map<string, string[]>): string[] {
       if (newD === 0) queue.push(d);
     }
   }
-  return sorted;
+  // #288: Reverse so dependencies (leaves) are processed before dependents.
+  // Original sort puts entry points first; type propagation needs leaves first.
+  return sorted.reverse();
 }
 
 // ── Type propagation ───────────────────────────────────────────────────────

@@ -83,12 +83,17 @@ export function showGraphPanel(context: vscode.ExtensionContext, dbPath: string)
 
   // Load built HTML
   const htmlPath = join(context.extensionPath, 'dist', 'webview', 'index.html');
-  let html = readFileSync(htmlPath, 'utf-8');
+  // #305: Graceful error if webview build output is missing
+  let html: string;
+  try { html = readFileSync(htmlPath, 'utf-8'); } catch {
+    vscode.window.showErrorMessage('Astrolabe: Graph webview not found. Please rebuild (npm run build).');
+    return;
+  }
 
-  // #245: Add CSP meta tag for defense-in-depth
+  // #303: Allow vscode-webview-resource: for Vite-built external script bundles
   html = html.replace(
     '<head>',
-    '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; script-src \'unsafe-inline\';">',
+    '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\' vscode-webview-resource:; script-src \'unsafe-inline\' vscode-webview-resource:;">',
   );
   const assetsDir = vscode.Uri.file(join(context.extensionPath, 'dist', 'webview', 'assets'));
   const assetsBase = panel.webview.asWebviewUri(assetsDir).toString();

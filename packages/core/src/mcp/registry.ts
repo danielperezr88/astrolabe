@@ -25,12 +25,18 @@ const REGISTRY_FILE = join(REGISTRY_DIR, 'registry.json');
 export function loadRegistry(): RegistryEntry[] {
   try {
     if (!existsSync(REGISTRY_FILE)) return [];
-    return JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8'));
+    const data = JSON.parse(readFileSync(REGISTRY_FILE, 'utf-8'));
+    // #302: Validate JSON structure before returning — malformed data causes cryptic errors
+    if (!Array.isArray(data)) {
+      log.warn('Registry file is not an array, ignoring', { path: REGISTRY_FILE });
+      return [];
+    }
+    return data.filter((e: unknown) =>
+      typeof e === 'object' && e !== null && 'name' in e && 'path' in e && 'dbPath' in e,
+    ) as RegistryEntry[];
   } catch (err) {
-    // #232: Log corruption instead of silently returning [] — prevents
-    // downstream code from auto-saving an empty array and wiping all entries.
     log.warn('Registry file corrupted, ignoring', { path: REGISTRY_FILE, error: String(err) });
-    return []; // caller must not auto-save this empty result
+    return [];
   }
 }
 
