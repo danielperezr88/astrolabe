@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 import type { KnowledgeGraph } from '@astrolabe/core';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   initParser,
@@ -294,7 +294,10 @@ export function activate(context: vscode.ExtensionContext): void {
       if (picked) {
         const result = results.find((r) => r.nodeId === picked.detail);
         if (result?.filePath) {
-          const uri = vscode.Uri.file(join(repoPath, result.filePath));
+          // #299: Prevent path traversal — validate resolved path stays within workspace
+          const fullPath = resolve(repoPath, result.filePath);
+          if (!fullPath.startsWith(resolve(repoPath) + '/') && fullPath !== resolve(repoPath)) return;
+          const uri = vscode.Uri.file(fullPath);
           const doc = await vscode.workspace.openTextDocument(uri);
           const editor = await vscode.window.showTextDocument(doc);
           try {
@@ -452,7 +455,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Trigger: debounced save (30s window batches multiple saves into one re-analysis)
   context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument(() => {
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      // #298: Only trigger analysis for files within the workspace being analyzed
+      if (!doc.uri.fsPath.startsWith(repoPath)) return;
       if (state.debounceTimer) clearTimeout(state.debounceTimer);
       state.debounceTimer = setTimeout(() => {
         state.debounceTimer = null;
