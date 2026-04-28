@@ -10,6 +10,7 @@
 
 import { createInterface } from 'node:readline';
 import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
@@ -44,7 +45,6 @@ interface RepoContext {
 }
 
 function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry): RepoContext {
-  const { statSync } = require('node:fs');
   let lastMtime = 0;
 
   return {
