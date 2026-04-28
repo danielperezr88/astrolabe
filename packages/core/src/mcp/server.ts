@@ -452,7 +452,9 @@ class LocalBackend {
       ctx.store.close();
       ctx.fts.close();
     }
+    // #301: Also clear lastAccess to prevent stale entry divergence
     this.repos.clear();
+    this.lastAccess.clear();
   }
 }
 

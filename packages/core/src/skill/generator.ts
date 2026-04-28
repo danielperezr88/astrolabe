@@ -104,10 +104,22 @@ This skill file was auto-generated on ${new Date().toISOString()}.
 /**
  * Generate the skill Markdown file and write it to disk.
  */
+/** #300: Walk up to find package.json — post-compilation dist/ dir has no package.json */
+function findPkgJson(startDir: string): Record<string, unknown> {
+  let dir = startDir;
+  for (let i = 0; i < 10; i++) {
+    try { return JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')); } catch {
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return { version: '0.0.0-unknown' };
+}
+
 export function generateSkill(outputPath: string): void {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
-  const content = skillTemplate(pkg.version);
+  const pkg = findPkgJson(dirname(fileURLToPath(import.meta.url)));
+  const content = skillTemplate(String(pkg.version));
   writeFileSync(outputPath, content, 'utf-8');
   console.log(`Skill file written to ${outputPath}`);
 }

@@ -234,6 +234,13 @@ function loadGraphCached(repoPath: string): { graph: KnowledgeGraph; adj: AdjInd
 export function activate(context: vscode.ExtensionContext): void {
   createStatusBar();
 
+  // #313: Cache output channels to prevent creating new ones per invocation
+  const outputChannels = {
+    context: vscode.window.createOutputChannel('Astrolabe Context'),
+    impact: vscode.window.createOutputChannel('Astrolabe Impact'),
+  };
+  context.subscriptions.push(outputChannels.context, outputChannels.impact);
+
   // #205: Wire analyze to full core pipeline
   const analyzeCmd = vscode.commands.registerCommand('astrolabe.analyze', async () => {
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -346,8 +353,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       const { graph, adj } = loadGraphCached(repoPath); // #244: use cached graph+adj
 
-      const channel = vscode.window.createOutputChannel('Astrolabe Context');
-      channel.clear();
+  const channel = outputChannels.context;
+  channel.clear();
       for (const r of results) {
         channel.appendLine(`${'─'.repeat(60)}`);
         channel.appendLine(`${r.label}: ${r.name}`);
@@ -408,8 +415,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
 
-    const channel = vscode.window.createOutputChannel('Astrolabe Impact');
-    channel.clear();
+  const channel = outputChannels.impact;
+  channel.clear();
     if (matched.length === 0) {
       channel.appendLine(`No symbol found matching "${searchTerm}".`);
     } else {
