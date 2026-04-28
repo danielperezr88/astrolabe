@@ -102,7 +102,7 @@ async function installBinary(bin) {
     if (r.status !== 0 && PLATFORM === 'win32') {
       // #219: Check PowerShell fallback result — don't silently swallow extraction failures
       const r2 = spawnSync('powershell', ['-Command', "tar -xzf '" + tarball + "' -C '" + tmpDir + "'"], { stdio: 'pipe', shell: true });
-      if (r2.status !== 0) throw new Error('tar extraction failed: ' + (r2.stderr?.toString().trim() || r.status));
+      if (r2.status !== 0) throw new Error('tar extraction failed: ' + (r2.stderr?.toString().trim() || String(r2.status)));
     }
 
     const src = findNode(tmpDir);
