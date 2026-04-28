@@ -8,6 +8,7 @@
  */
 
 import * as vscode from 'vscode';
+import type { KnowledgeGraph } from '@astrolabe/core';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -41,14 +42,51 @@ function ensureDbDir(db: string): void {
   if (dir !== '.' && !existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
+// #244: Shared adjacency index builder — DRY, used by context, impact, and MCP
+type AdjEntry = { id: string; type: string; dir: 'in' | 'out' };
+type AdjIndex = Map<string, AdjEntry[]>;
+
+function buildAdjacencyIndex(graph: KnowledgeGraph): AdjIndex {
+  const adj: AdjIndex = new Map();
+  for (const rel of graph.iterRelationships()) {
+    let b = adj.get(rel.sourceId);
+    if (!b) { b = []; adj.set(rel.sourceId, b); }
+    b.push({ id: rel.targetId, type: rel.type, dir: 'out' });
+    b = adj.get(rel.targetId);
+    if (!b) { b = []; adj.set(rel.targetId, b); }
+    b.push({ id: rel.sourceId, type: rel.type, dir: 'in' });
+  }
+  return adj;
+}
+
+// ── Per-workspace state (#236: multi-root workspace support) ─────────────────
+
+interface WorkspaceState {
+  analyzing: boolean;
+  debounceTimer: ReturnType<typeof setTimeout> | null;
+  lastHead: string;
+  /** #244: cached loaded graph, invalidated on re-analysis */
+  cachedGraph: KnowledgeGraph | null;
+  cachedAdj: AdjIndex | null;
+}
+
+const SAVE_DEBOUNCE_MS = 30_000;
+const HEAD_POLL_MS = 60_000;
+
+const ws = new Map<string, WorkspaceState>();
+
+function getWs(repoPath: string): WorkspaceState {
+  let state = ws.get(repoPath);
+  if (!state) {
+    state = { analyzing: false, debounceTimer: null, lastHead: '', cachedGraph: null, cachedAdj: null };
+    ws.set(repoPath, state);
+  }
+  return state;
+}
+
 // ── Status bar ───────────────────────────────────────────────────────────────
 
 let statusBarItem: vscode.StatusBarItem;
-let analyzing = false;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let lastHead = ''; // #216: shared between runAnalysis and HEAD polling
-const SAVE_DEBOUNCE_MS = 30_000; // 30s after last save
-const HEAD_POLL_MS = 60_000;     // every 60s
 
 function createStatusBar(): void {
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -103,8 +141,9 @@ async function runAnalysis(
   progress: vscode.Progress<{ message: string }> | null,
   silent: boolean,
 ): Promise<void> {
-  if (analyzing) return; // prevent concurrent runs
-  analyzing = true;
+  const state = getWs(repoPath);
+  if (state.analyzing) return;
+  state.analyzing = true;
   const db = dbPath(repoPath);
   const log = createLogger({ level: 'info' });
 
@@ -152,7 +191,11 @@ async function runAnalysis(
     saveRegistry(repos);
 
     // #216: Sync lastHead after successful analysis so HEAD polling doesn't double-fire
-    lastHead = getGitCommit(repoPath);
+    state.lastHead = getGitCommit(repoPath);
+
+    // #244: Invalidate cached graph so next command loads fresh data
+    state.cachedGraph = null;
+    state.cachedAdj = null;
 
     log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount });
     if (!silent) {
@@ -166,9 +209,24 @@ async function runAnalysis(
       vscode.window.showErrorMessage(`Astrolabe: Analysis failed — ${String(err)}`);
     }
   } finally {
-    analyzing = false;
+    state.analyzing = false;
     refreshStatusBar(repoPath);
   }
+}
+
+// #244: Load graph from DB with memory cache — avoids reloading on every command
+function loadGraphCached(repoPath: string): { graph: KnowledgeGraph; adj: AdjIndex } {
+  const state = getWs(repoPath);
+  if (state.cachedGraph && state.cachedAdj) return { graph: state.cachedGraph, adj: state.cachedAdj };
+
+  const db = dbPath(repoPath);
+  const store = createSqliteStore(db);
+  try {
+    state.cachedGraph = store.loadGraph();
+    state.cachedAdj = buildAdjacencyIndex(state.cachedGraph);
+  } finally { store.close(); }
+
+  return { graph: state.cachedGraph!, adj: state.cachedAdj! };
 }
 
 // ── Activation ───────────────────────────────────────────────────────────────
@@ -211,7 +269,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showErrorMessage('Astrolabe: No workspace folder open.');
       return;
     }
-    const db = dbPath(folder.uri.fsPath);
+    const repoPath = folder.uri.fsPath;
+    const db = dbPath(repoPath);
     if (!existsSync(db)) {
       vscode.window.showWarningMessage('Astrolabe: No analysis found. Run "Astrolabe: Analyze Codebase" first.');
       return;
@@ -233,25 +292,20 @@ export function activate(context: vscode.ExtensionContext): void {
         { placeHolder: `Results for "${searchTerm}" (${results.length} found)`, matchOnDescription: true },
       );
       if (picked) {
-        // #212: Match by nodeId, not name (avoid collisions)
         const result = results.find((r) => r.nodeId === picked.detail);
         if (result?.filePath) {
-          const uri = vscode.Uri.file(join(folder.uri.fsPath, result.filePath));
+          const uri = vscode.Uri.file(join(repoPath, result.filePath));
           const doc = await vscode.workspace.openTextDocument(uri);
           const editor = await vscode.window.showTextDocument(doc);
-          // #213: Navigate to symbol line number
           try {
-            const store = createSqliteStore(db);
-            try {
-              const graph = store.loadGraph();
-              const node = graph.getNode(result.nodeId);
-              const line = node?.properties.startLine as number | undefined;
-              if (line && line > 0) {
-                const pos = new vscode.Position(line - 1, 0);
-                editor.selection = new vscode.Selection(pos, pos);
-                editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-              }
-            } finally { store.close(); } // #217: close in finally, not try
+            const { graph } = loadGraphCached(repoPath); // #244: use cached graph
+            const node = graph.getNode(result.nodeId);
+            const line = node?.properties.startLine as number | undefined;
+            if (line && line > 0) {
+              const pos = new vscode.Position(line - 1, 0);
+              editor.selection = new vscode.Selection(pos, pos);
+              editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+            }
           } catch { /* skip line navigation on error */ }
         }
       }
@@ -265,7 +319,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showErrorMessage('Astrolabe: No workspace folder open.');
       return;
     }
-    const db = dbPath(folder.uri.fsPath);
+    const repoPath = folder.uri.fsPath;
+    const db = dbPath(repoPath);
     if (!existsSync(db)) {
       vscode.window.showWarningMessage('Astrolabe: No analysis found. Run "Astrolabe: Analyze Codebase" first.');
       return;
@@ -286,40 +341,26 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage(`No symbols found for "${searchTerm}".`);
         return;
       }
-      const store = createSqliteStore(db);
-      try {
-        const graph = store.loadGraph();
+      const { graph, adj } = loadGraphCached(repoPath); // #244: use cached graph+adj
 
-        // #211: Build adjacency index once — O(R) instead of O(R×E) per result
-        const adj = new Map<string, Array<{ id: string; type: string; dir: string }>>();
-        for (const rel of graph.iterRelationships()) {
-          let b = adj.get(rel.sourceId);
-          if (!b) { b = []; adj.set(rel.sourceId, b); }
-          b.push({ id: rel.targetId, type: rel.type, dir: 'out' });
-          b = adj.get(rel.targetId);
-          if (!b) { b = []; adj.set(rel.targetId, b); }
-          b.push({ id: rel.sourceId, type: rel.type, dir: 'in' });
+      const channel = vscode.window.createOutputChannel('Astrolabe Context');
+      channel.clear();
+      for (const r of results) {
+        channel.appendLine(`${'─'.repeat(60)}`);
+        channel.appendLine(`${r.label}: ${r.name}`);
+        channel.appendLine(`  ID:    ${r.nodeId}`);
+        channel.appendLine(`  File:  ${r.filePath}`);
+        channel.appendLine('');
+        const edges = adj.get(r.nodeId) ?? [];
+        for (const e of edges) {
+          const other = graph.getNode(e.id);
+          const arrow = e.dir === 'in' ? '←' : '→';
+          const verb = e.dir === 'in' ? 'from' : 'to';
+          channel.appendLine(`  ${arrow} ${e.type} ${verb} ${other?.properties.name ?? e.id}`);
         }
-
-        const channel = vscode.window.createOutputChannel('Astrolabe Context');
-        channel.clear();
-        for (const r of results) {
-          channel.appendLine(`${'─'.repeat(60)}`);
-          channel.appendLine(`${r.label}: ${r.name}`);
-          channel.appendLine(`  ID:    ${r.nodeId}`);
-          channel.appendLine(`  File:  ${r.filePath}`);
-          channel.appendLine('');
-          const edges = adj.get(r.nodeId) ?? [];
-          for (const e of edges) {
-            const other = graph.getNode(e.id);
-            const arrow = e.dir === 'in' ? '←' : '→';
-            const verb = e.dir === 'in' ? 'from' : 'to';
-            channel.appendLine(`  ${arrow} ${e.type} ${verb} ${other?.properties.name ?? e.id}`);
-          }
-          channel.appendLine('');
-        }
-        channel.show();
-      } finally { store.close(); }
+        channel.appendLine('');
+      }
+      channel.show();
     } finally { fts.close(); }
   });
 
@@ -330,7 +371,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showErrorMessage('Astrolabe: No workspace folder open.');
       return;
     }
-    const db = dbPath(folder.uri.fsPath);
+    const repoPath = folder.uri.fsPath;
+    const db = dbPath(repoPath);
     if (!existsSync(db)) {
       vscode.window.showWarningMessage('Astrolabe: No analysis found. Run "Astrolabe: Analyze Codebase" first.');
       return;
@@ -344,63 +386,50 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     if (!searchTerm) return;
 
-    const store = createSqliteStore(db);
-    try {
-      const graph = store.loadGraph();
-      // BFS upstream (who calls me) and downstream (who I call)
-      const adj = new Map<string, Array<{ id: string; type: string; dir: string }>>();
-      for (const rel of graph.iterRelationships()) {
-        let b = adj.get(rel.sourceId);
-        if (!b) { b = []; adj.set(rel.sourceId, b); }
-        b.push({ id: rel.targetId, type: rel.type, dir: 'out' });
-        b = adj.get(rel.targetId);
-        if (!b) { b = []; adj.set(rel.targetId, b); }
-        b.push({ id: rel.sourceId, type: rel.type, dir: 'in' });
-      }
+    const { graph, adj } = loadGraphCached(repoPath); // #244: use cached graph+adj
 
-      // Find matching nodes
-      const matched: Array<{ node: ReturnType<typeof graph.getNode>; upstream: string[]; downstream: string[] }> = [];
-      for (const node of graph.iterNodes()) {
-        if (node.properties.name === searchTerm) {
-          const n = adj.get(node.id) ?? [];
-          const upstream = n.filter((e) => e.dir === 'in').map((e) => {
-            const other = graph.getNode(e.id);
-            return `${e.type} ← ${other?.properties.name ?? e.id}`;
-          });
-          const downstream = n.filter((e) => e.dir === 'out').map((e) => {
-            const other = graph.getNode(e.id);
-            return `${e.type} → ${other?.properties.name ?? e.id}`;
-          });
-          matched.push({ node, upstream, downstream });
-        }
+    // Find matching nodes
+    const matched: Array<{ node: ReturnType<typeof graph.getNode>; upstream: string[]; downstream: string[] }> = [];
+    for (const node of graph.iterNodes()) {
+      if (node.properties.name === searchTerm) {
+        const n = adj.get(node.id) ?? [];
+        const upstream = n.filter((e) => e.dir === 'in').map((e) => {
+          const other = graph.getNode(e.id);
+          return `${e.type} ← ${other?.properties.name ?? e.id}`;
+        });
+        const downstream = n.filter((e) => e.dir === 'out').map((e) => {
+          const other = graph.getNode(e.id);
+          return `${e.type} → ${other?.properties.name ?? e.id}`;
+        });
+        matched.push({ node, upstream, downstream });
       }
+    }
 
-      const channel = vscode.window.createOutputChannel('Astrolabe Impact');
-      channel.clear();
-      if (matched.length === 0) {
-        channel.appendLine(`No symbol found matching "${searchTerm}".`);
-      } else {
-        for (const { node, upstream, downstream } of matched) {
-          channel.appendLine(`${'─'.repeat(60)}`);
-          channel.appendLine(`${node!.label}: ${node!.properties.name}  (${node!.properties.filePath})`);
+    const channel = vscode.window.createOutputChannel('Astrolabe Impact');
+    channel.clear();
+    if (matched.length === 0) {
+      channel.appendLine(`No symbol found matching "${searchTerm}".`);
+    } else {
+      for (const { node, upstream, downstream } of matched) {
+        channel.appendLine(`${'─'.repeat(60)}`);
+        channel.appendLine(`${node!.label}: ${node!.properties.name}  (${node!.properties.filePath})`);
+        channel.appendLine('');
+        if (upstream.length > 0) {
+          channel.appendLine(`Upstream (depends on me): ${upstream.length}`);
+          for (const u of upstream) channel.appendLine(`  ${u}`);
           channel.appendLine('');
-          if (upstream.length > 0) {
-            channel.appendLine(`Upstream (depends on me): ${upstream.length}`);
-            for (const u of upstream) channel.appendLine(`  ${u}`);
-            channel.appendLine('');
-          }
-          if (downstream.length > 0) {
-            channel.appendLine(`Downstream (I depend on): ${downstream.length}`);
-            for (const d of downstream) channel.appendLine(`  ${d}`);
-            channel.appendLine('');
-          }
-          if (upstream.length === 0 && downstream.length === 0) {
-            channel.appendLine('No connected edges found.');
-          }
+        }
+        if (downstream.length > 0) {
+          channel.appendLine(`Downstream (I depend on): ${downstream.length}`);
+          for (const d of downstream) channel.appendLine(`  ${d}`);
+          channel.appendLine('');
+        }
+        if (upstream.length === 0 && downstream.length === 0) {
+          channel.appendLine('No connected edges found.');
         }
       }
-      channel.show();
-    } finally { store.close(); }
+    }
+    channel.show();
   });
 
   context.subscriptions.push(analyzeCmd, showGraphCmd, queryCmd, contextCmd, impactCmd, statusBarItem);
@@ -410,6 +439,7 @@ export function activate(context: vscode.ExtensionContext): void {
   if (!folder) return;
 
   const repoPath = folder.uri.fsPath;
+  const state = getWs(repoPath);
 
   // #218: Auto-analyze on startup with progress notification (was silent)
   const db = dbPath(repoPath);
@@ -423,9 +453,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // Trigger: debounced save (30s window batches multiple saves into one re-analysis)
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(() => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        debounceTimer = null;
+      if (state.debounceTimer) clearTimeout(state.debounceTimer);
+      state.debounceTimer = setTimeout(() => {
+        state.debounceTimer = null;
         runAnalysis(repoPath, null, true);
       }, SAVE_DEBOUNCE_MS);
     }),
@@ -441,11 +471,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // Trigger: git HEAD polling (catches branch switches, pulls, merges)
-  lastHead = getGitCommit(repoPath); // #216: shared module var, also updated by runAnalysis
+  state.lastHead = getGitCommit(repoPath);
   const headInterval = setInterval(() => {
     const currentHead = getGitCommit(repoPath);
-    if (currentHead !== 'unknown' && currentHead !== lastHead) {
-      lastHead = currentHead;
+    if (currentHead !== 'unknown' && currentHead !== state.lastHead) {
+      state.lastHead = currentHead;
       runAnalysis(repoPath, null, true);
     }
   }, HEAD_POLL_MS);
@@ -454,6 +484,8 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // #247: Clean up pending debounce timer to prevent use-after-deactivation crash
-  if (debounceTimer) clearTimeout(debounceTimer);
+  // #247: Clean up pending debounce timers across all workspaces
+  for (const state of ws.values()) {
+    if (state.debounceTimer) clearTimeout(state.debounceTimer);
+  }
 }
