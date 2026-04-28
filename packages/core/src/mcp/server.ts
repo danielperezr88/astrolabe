@@ -5,7 +5,7 @@
  * tools backed by the SQLite knowledge graph database and a global registry
  * for multi-repo support.
  *
- * Tools: list_repos, query, context, impact, detect_changes, rename, filter_by_label
+ * Tools: list_repos, query, context, impact, detect_changes, filter_by_label
  */
 
 import { createInterface } from 'node:readline';
@@ -573,7 +573,7 @@ const TOOLS: Record<string, {
 
   'astrolabe.rename': {
     name: 'astrolabe.rename',
-    description: 'Graph-assisted multi-file rename with dry-run preview.',
+    description: '[PREVIEW ONLY] Graph-assisted multi-file rename preview. Does not perform actual renames.',
     inputSchema: {
       type: 'object',
       properties: {

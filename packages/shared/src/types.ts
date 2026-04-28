@@ -168,9 +168,11 @@ export type RelationshipType =
 
 /**
  * Per-signal evidence trace for why an edge was created with a given
- * confidence score. Populated by the scope-resolution pipeline so that
- * downstream query / audit tools can inspect why a particular edge
- * exists.
+ * confidence score.
+ *
+ * TODO(#253): This type is wired into GraphRelationship but never populated
+ * by any analysis phase. Currently only round-tripped through SQLite as
+ * empty arrays. Implement evidence tracking in the resolution pipeline.
  */
 export interface EvidenceSignal {
   readonly kind: string;
