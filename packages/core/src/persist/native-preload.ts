@@ -14,7 +14,7 @@
  * #224: Idempotent — only runs once per process via initialized guard.
  */
 
-import { copyFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { copyFileSync, renameSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -39,16 +39,16 @@ export function ensureNativeBinary(): void {
           mkdirSync(dirname(nodeBackup), { recursive: true });
           copyFileSync(defaultBin, nodeBackup);
         }
-        // Atomic replace with electron binary
+        // Atomic replace with electron binary (#227: cleanup temp on rename failure)
         const tmp = defaultBin + '.tmp-' + Date.now();
-        copyFileSync(electronSidecar, tmp);
-        renameSync(tmp, defaultBin);
+        try { copyFileSync(electronSidecar, tmp); renameSync(tmp, defaultBin); }
+        finally { try { unlinkSync(tmp); } catch { /* already gone */ } }
       }
     } else if (existsSync(nodeBackup)) {
-      // ── Node.js (CLI/tests): restore node binary from backup ──
+      // ── Node.js (CLI/tests): restore node binary from backup (#227: cleanup temp on rename failure)
       const tmp = defaultBin + '.tmp-' + Date.now();
-      copyFileSync(nodeBackup, tmp);
-      renameSync(tmp, defaultBin);
+      try { copyFileSync(nodeBackup, tmp); renameSync(tmp, defaultBin); }
+      finally { try { unlinkSync(tmp); } catch { /* already gone */ } }
     }
   } catch { /* non-fatal — will fall back to whatever binary is present */ }
 }
