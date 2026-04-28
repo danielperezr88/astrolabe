@@ -4,7 +4,7 @@
  */
 import { program } from 'commander';
 import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import {
@@ -52,24 +52,25 @@ program
       // Ensure output directory exists (#58)
       const outDir = dirname(opts.output);
       if (outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-      const store = createSqliteStore(opts.output);
+      // #238: Resolve DB path to absolute so registry entry matches actual file location
+      const dbPath = resolve(opts.output);
+      const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
       const nodeCount = graph.nodeCount;
       const edgeCount = graph.relationshipCount;
 
       // Build FTS index so query/context commands work (#132)
-      const fts = createFtsSearch(opts.output);
+      const fts = createFtsSearch(dbPath);
       fts.indexGraph(store);
       fts.close();
 
       store.close();
 
       // Register repo in global registry for multi-repo MCP support
-      const absDb = join(repoPath, opts.output);
       const repos = loadRegistry();
       const repoName = basename(repoPath);
       const existingIdx = repos.findIndex((r) => r.path === repoPath);
-      const entry = { name: repoName, path: repoPath, dbPath: absDb, lastCommit: getGitCommit(repoPath), indexedAt: Date.now() };
+      const entry = { name: repoName, path: repoPath, dbPath, lastCommit: getGitCommit(repoPath), indexedAt: Date.now() };
       if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
       saveRegistry(repos);
 

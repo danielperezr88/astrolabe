@@ -48,7 +48,35 @@ export function createKnowledgeGraph(): KnowledgeGraph {
 
   // ── Public API ────────────────────────────────────────────────────────
 
-  return {
+  function removeNode(nodeId: string): boolean {
+    if (!nodeMap.has(nodeId)) return false;
+
+    const node = nodeMap.get(nodeId)!;
+    const fp = node.properties.filePath;
+    if (fp) fileIndex.get(fp)?.delete(nodeId);
+
+    // O(1) per relationship using reverse index (#156)
+    const relIds = nodeRelIndex.get(nodeId);
+    if (relIds) {
+      for (const relId of relIds) {
+        const rel = relMap.get(relId);
+        if (rel) {
+          unindexRelByType(rel);
+          // Remove from peer node's reverse index too
+          const peerId = rel.sourceId === nodeId ? rel.targetId : rel.sourceId;
+          nodeRelIndex.get(peerId)?.delete(relId);
+        }
+        relMap.delete(relId);
+      }
+      nodeRelIndex.delete(nodeId);
+    }
+
+    nodeMap.delete(nodeId);
+    return true;
+  }
+
+  // #230: Capture self-reference so destructured calls work correctly
+  const self = {
     // ── Getters (materialized arrays — use iterators for hot paths) ────
     get nodes() {
       return Array.from(nodeMap.values());
@@ -109,9 +137,9 @@ export function createKnowledgeGraph(): KnowledgeGraph {
     // ── Mutation ───────────────────────────────────────────────────────
     addNode(node: GraphNode): void {
       if (nodeMap.has(node.id)) {
-        // Node already exists — update properties to allow idempotent re-adds (#159)
+        // #242: Replace properties entirely — avoid stale prop survival from previous version
         const existing = nodeMap.get(node.id)!;
-        Object.assign(existing.properties, node.properties);
+        existing.properties = { ...node.properties };
         return;
       }
       nodeMap.set(node.id, node);
@@ -137,39 +165,14 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       }
     },
 
-    removeNode(nodeId: string): boolean {
-      if (!nodeMap.has(nodeId)) return false;
-
-      const node = nodeMap.get(nodeId)!;
-      const fp = node.properties.filePath;
-      if (fp) fileIndex.get(fp)?.delete(nodeId);
-
-      // O(1) per relationship using reverse index (#156)
-      const relIds = nodeRelIndex.get(nodeId);
-      if (relIds) {
-        for (const relId of relIds) {
-          const rel = relMap.get(relId);
-          if (rel) {
-            unindexRelByType(rel);
-            // Remove from peer node's reverse index too
-            const peerId = rel.sourceId === nodeId ? rel.targetId : rel.sourceId;
-            nodeRelIndex.get(peerId)?.delete(relId);
-          }
-          relMap.delete(relId);
-        }
-        nodeRelIndex.delete(nodeId);
-      }
-
-      nodeMap.delete(nodeId);
-      return true;
-    },
+    removeNode,
 
     removeNodesByFile(filePath: string): number {
       const bucket = fileIndex.get(filePath);
       if (!bucket) return 0;
       const ids = Array.from(bucket);
       for (const id of ids) {
-        this.removeNode(id);
+        removeNode(id); // #230: use closure reference, not `this`
       }
       fileIndex.delete(filePath);
       return ids.length;
@@ -187,4 +190,6 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       return true;
     },
   };
+
+  return self;
 }

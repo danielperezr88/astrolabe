@@ -44,15 +44,23 @@ interface RepoContext {
 }
 
 function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry): RepoContext {
+  const { statSync } = require('node:fs');
+  let lastMtime = 0;
+
   return {
     store,
     fts,
     entry,
     graph: undefined,
     loadGraph() {
-      if (!this.graph) {
-        this.graph = store.loadGraph();
-      }
+      // #240: Check DB file mtime to detect stale cache after external re-analysis
+      try {
+        const mtime = statSync(entry.dbPath).mtimeMs;
+        if (this.graph && lastMtime >= mtime) return this.graph;
+        lastMtime = mtime;
+      } catch { /* file missing — will fail on store.loadGraph() below */ }
+
+      this.graph = store.loadGraph();
       return this.graph;
     },
     invalidateGraph() {
@@ -274,18 +282,21 @@ class LocalBackend {
       }
     }
 
-    // BFS traversal using adjacency index
+    // BFS traversal using adjacency index (#248: cap total results to prevent OOM)
+    const MAX_IMPACT_RESULTS = 500;
     const affected: Array<{ depth: number; name: string; type: string; filePath: string; relationType: string; confidence: number }> = [];
     const visited = new Set<string>([targetNode.id]);
     const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
+    let truncated = false;
 
-    while (queue.length > 0) {
+    while (queue.length > 0 && affected.length < MAX_IMPACT_RESULTS) {
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
       const neighbors = adj.get(current.id) ?? [];
       for (const { neighborId, type, confidence } of neighbors) {
         if (visited.has(neighborId)) continue;
+        if (affected.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
         visited.add(neighborId);
         const node = graph.getNode(neighborId);
         queue.push({ id: neighborId, depth: current.depth + 1 });
@@ -314,6 +325,7 @@ class LocalBackend {
       target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
       direction,
       affected_count: affected.length,
+      truncated, // #248: true if result cap reached
       depth_groups: depthGroups,
     };
   }
@@ -450,6 +462,19 @@ class LocalBackend {
 
 const backend = new LocalBackend();
 
+// #241: Validate required string/number parameters to prevent uncaught exceptions
+function requireString(params: Record<string, unknown>, key: string): string {
+  const val = params[key];
+  if (typeof val !== 'string' || val.length === 0) throw new Error(`Missing or invalid parameter: ${key}`);
+  return val;
+}
+function requireNumber(params: Record<string, unknown>, key: string, fallback: number): number {
+  const val = params[key];
+  if (val === undefined || val === null) return fallback;
+  if (typeof val !== 'number') throw new Error(`Invalid parameter: ${key} (expected number, got ${typeof val})`);
+  return val;
+}
+
 const TOOLS: Record<string, {
   name: string;
   description: string;
@@ -481,7 +506,8 @@ const TOOLS: Record<string, {
       required: ['query'],
     },
     handler: async (params) => {
-      const result = backend.query(params.query as string, params.repo as string, (params.limit as number) ?? 20);
+      const query = requireString(params, 'query');
+      const result = backend.query(query, params.repo as string, requireNumber(params, 'limit', 20));
       const nextHint = '\n\nNext: use context({name: "foundSymbol"}) to get 360-degree view of any result.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
@@ -499,7 +525,8 @@ const TOOLS: Record<string, {
       required: ['name'],
     },
     handler: async (params) => {
-      const result = backend.context(params.name as string, params.repo as string);
+      const name = requireString(params, 'name');
+      const result = backend.context(name, params.repo as string);
       const nextHint = '\n\nNext: use impact({target: "symbolName", direction: "upstream"}) for blast radius analysis.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
@@ -520,12 +547,13 @@ const TOOLS: Record<string, {
       required: ['target'],
     },
     handler: async (params) => {
+      const target = requireString(params, 'target');
       const result = backend.impact(
-        params.target as string,
+        target,
         (params.direction as 'upstream' | 'downstream') ?? 'upstream',
         params.repo as string,
-        (params.maxDepth as number) ?? 5,
-        (params.minConfidence as number) ?? 0.3,
+        requireNumber(params, 'maxDepth', 5),
+        requireNumber(params, 'minConfidence', 0.3),
       );
       const nextHint = '\n\nNext: use detect_changes() before committing to verify your changes match expected impact.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
@@ -851,7 +879,7 @@ export async function startMcpServer(): Promise<void> {
         process.stdout.write(JSON.stringify(res) + '\n');
       }
     } catch {
-      process.stderr.write('{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}\n');
+      process.stderr.write('{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}\n');
     }
   }
 }

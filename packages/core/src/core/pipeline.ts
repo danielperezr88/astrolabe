@@ -86,8 +86,17 @@ export async function runPipeline(
  * Retrieve a phase's output from the shared context.
  * Generic typed accessor — pass the expected output type.
  */
+/** #239: Throw on missing phase output instead of returning undefined cast as T. */
 export function getPhaseOutput<T>(context: PhaseContext, phaseName: string): T {
-  return context.state.get(`output:${phaseName}`) as T;
+  const key = `output:${phaseName}`;
+  const val = context.state.get(key);
+  if (val === undefined) {
+    throw new Error(
+      `Phase output '${phaseName}' not found in context. ` +
+      `Available: ${[...context.state.keys()].filter((k) => k.startsWith('output:')).join(', ')}`,
+    );
+  }
+  return val as T;
 }
 
 /**

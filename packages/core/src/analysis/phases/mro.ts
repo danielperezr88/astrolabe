@@ -43,8 +43,13 @@ function c3Linearize(
   classId: string,
   parentMap: Map<string, string[]>,
   cache: Map<string, string[]>,
+  visited: Set<string> = new Set(),
 ): string[] {
   if (cache.has(classId)) return cache.get(classId)!;
+
+  // #233: Detect cycles (e.g., A extends B, B extends A) to prevent infinite recursion
+  if (visited.has(classId)) return [classId];
+  visited.add(classId);
 
   const parentIds = parentMap.get(classId) ?? [];
   if (parentIds.length === 0) {
@@ -54,7 +59,7 @@ function c3Linearize(
   }
 
   // Recursively linearize all parents using the actual parent map (#61)
-  const parentLinearizations = parentIds.map((pid) => c3Linearize(pid, parentMap, cache));
+  const parentLinearizations = parentIds.map((pid) => c3Linearize(pid, parentMap, cache, visited));
   const result = [classId, ...c3Merge(parentLinearizations, parentIds.map((id) => [id]))];
   cache.set(classId, result);
   return result;

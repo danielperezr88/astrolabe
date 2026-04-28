@@ -85,7 +85,11 @@ export function showGraphPanel(context: vscode.ExtensionContext, dbPath: string)
   const htmlPath = join(context.extensionPath, 'dist', 'webview', 'index.html');
   let html = readFileSync(htmlPath, 'utf-8');
 
-  // Rewrite asset paths to webview URIs
+  // #245: Add CSP meta tag for defense-in-depth
+  html = html.replace(
+    '<head>',
+    '<head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; script-src \'unsafe-inline\';">',
+  );
   const assetsDir = vscode.Uri.file(join(context.extensionPath, 'dist', 'webview', 'assets'));
   const assetsBase = panel.webview.asWebviewUri(assetsDir).toString();
   html = html.replace(/\.\/assets\//g, assetsBase + '/');

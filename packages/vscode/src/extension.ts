@@ -454,5 +454,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // Cleanup
+  // #247: Clean up pending debounce timer to prevent use-after-deactivation crash
+  if (debounceTimer) clearTimeout(debounceTimer);
 }

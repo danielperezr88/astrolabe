@@ -161,6 +161,11 @@ function applyOpacity(nodes: SimNode[], links: SimLink[]) {
 
 function render(data: { nodes: NodeData[]; edges: EdgeData[] }) {
   const svgEl = d3.select('#graph-svg');
+
+  // #237: Stop previous simulation and remove stale zoom listeners before re-render
+  if (sim) sim.stop();
+  svgEl.on('.zoom', null);
+
   svgEl.selectAll('*').remove();
   const svg = svgEl as unknown as d3.Selection<SVGSVGElement, unknown, null, undefined>;
   const svgNode = svgEl.node() as SVGSVGElement;
