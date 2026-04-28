@@ -8,7 +8,8 @@
  * Output: CodeElement nodes + USES edges
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 

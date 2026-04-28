@@ -8,7 +8,7 @@
  * Output: Section nodes + CROSS_REFERENCES edges
  */
 
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 

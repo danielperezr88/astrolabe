@@ -6,7 +6,7 @@
  * for incremental re-indexing.
  */
 
-import './native-preload.js'; // must be first — swaps binary for Electron
+import './native-preload.js'; // #224: triggers electron binary copy before better-sqlite3 loads
 import Database from 'better-sqlite3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
