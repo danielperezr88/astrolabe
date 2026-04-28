@@ -73,10 +73,11 @@ describe('Parser', () => {
       await expect(initParser()).resolves.toBeUndefined();
     });
 
-    it('resetParser clears state and allows re-init', () => {
+    it('resetParser clears state and allows re-init', async () => {
       resetParser();
       // State is cleared; initParser should still work
-      expect(initParser()).resolves.toBeUndefined();
+      // #252: Must await — un-awaited promise assertion provides false confidence
+      await expect(initParser()).resolves.toBeUndefined();
     });
   });
 
@@ -218,7 +219,7 @@ describe('Parser', () => {
 
     it('extracts total symbols correctly', async () => {
       const result = await parseFile(jsSymbolsFile, wasmDir);
-      expect(result.symbols.length).toBeGreaterThanOrEqual(5); // class + 3 fns + method + getter
+      expect(result.symbols.length).toBe(6); // class + 3 fns + method + getter
     });
 
     it('extracts named imports', async () => {
@@ -454,7 +455,8 @@ describe('Parser', () => {
       const fns = result.symbols.filter((s) => s.label === 'Function');
       // Note: the Python lang def has a duplicate function_definition pattern,
       // but extractSymbols deduplicates by symbol id
-      expect(fns.length).toBeGreaterThanOrEqual(2); // my_function + my_method
+      // #252: Use exact assertion — fixture has exactly 2 functions
+      expect(fns.length).toBe(2); // my_function + my_method
       const fnNames = fns.map((f) => f.name).sort();
       expect(fnNames).toContain('my_function');
       expect(fnNames).toContain('my_method');

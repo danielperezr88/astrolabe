@@ -61,8 +61,8 @@ describe('Community Phase', () => {
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 
-    // Each isolated node becomes its own community
-    expect(out.communityCount).toBeGreaterThanOrEqual(1);
+    // #252: Two isolated nodes should produce exactly 2 communities
+    expect(out.communityCount).toBe(2);
   });
 
   it('handles empty graph', async () => {
@@ -103,8 +103,7 @@ describe('Community Phase', () => {
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 
-    // Modularity should be non-negative
-    expect(out.modularity).toBeGreaterThanOrEqual(-1);
-    expect(out.modularity).toBeLessThanOrEqual(1);
+    // #252: Two clear clusters with one bridge edge — modularity should be positive
+    expect(out.modularity).toBeGreaterThan(0.1);
   });
 });
