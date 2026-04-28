@@ -15,8 +15,8 @@ const symbolPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 const importPatterns: QueryPattern[] = [
-  { query: '(import_declaration (simple_identifier) @name) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
-  { query: '(import_declaration (navigation_suffix (type_identifier) @name)) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
+  { query: '(import_declaration (simple_identifier) @name @source) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
+  { query: '(import_declaration (navigation_suffix (type_identifier) @name @source)) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
 export const swiftLanguage: LanguageDefinition = {

@@ -16,7 +16,7 @@ const symbolPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 const importPatterns: QueryPattern[] = [
-  { query: '(use_declaration name: (name) @name) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
+  { query: '(use_declaration name: (name) @name @source) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
 export const phpLanguage: LanguageDefinition = {

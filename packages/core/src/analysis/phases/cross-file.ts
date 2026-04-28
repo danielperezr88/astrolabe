@@ -2,9 +2,14 @@
  * Pipeline Phase: Cross-File Type Propagation
  *
  * Builds type maps and topological import order across files.
- * Type reference resolution (resolved_returnType etc.) is deferred
- * until the parser captures returnType/declaredType on Function/Method
- * nodes — see #164 for details.
+ *
+ * ⚠️  DEFERRED (#234): The actual cross-file type reference resolution
+ * (resolving Function.returnType → target Class node) requires parser support
+ * for capturing returnType/declaredType/parameterTypes on Function/Method nodes.
+ * Until the parser populates these properties, the phase only builds type maps
+ * and file ordering — it does NOT emit type-reference relationships.
+ *
+ * See tracking issue #234 and parser enhancement #164 for details.
  *
  * Dependencies: parse-emit, resolution (both must complete first)
  * Output: Per-file type maps and topological sorted file order

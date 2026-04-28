@@ -18,7 +18,7 @@ const symbolPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 const importPatterns: QueryPattern[] = [
-  { query: '(using_directive name: (identifier_or_type_name) @name) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
+  { query: '(using_directive name: (identifier_or_type_name) @name @source) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
 export const csharpLanguage: LanguageDefinition = {

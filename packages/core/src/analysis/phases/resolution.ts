@@ -90,7 +90,13 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
 
         // Exact file match (with or without extension)
         if (fp === resolved || fpNoExt === resNoExt) {
-          for (const [, nodes] of syms) targets.push(...nodes);
+          // #246: Only collect symbols matching the import names, not ALL symbols
+          if (nameFilter) {
+            for (const [name, nodes] of syms) {
+              if (nameFilter.has(name)) targets.push(...nodes);
+            }
+          }
+          // Side-effect imports (no named imports) → skip all symbols
           continue;
         }
 
@@ -99,7 +105,12 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
         if (fp.startsWith(resolved + '/')) {
           const subPath = fp.slice(resolved.length + 1);
           if (!subPath.includes('/')) {
-            for (const [, nodes] of syms) targets.push(...nodes);
+            // #246: Filter to only explicitly imported symbols
+            if (nameFilter) {
+              for (const [name, nodes] of syms) {
+                if (nameFilter.has(name)) targets.push(...nodes);
+              }
+            }
           }
         }
       }
