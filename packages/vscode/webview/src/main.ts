@@ -174,8 +174,9 @@ function render(data: { nodes: NodeData[]; edges: EdgeData[] }) {
   svgEl.selectAll('*').remove();
   const svg = svgEl as unknown as d3.Selection<SVGSVGElement, unknown, null, undefined>;
   const svgNode = svgEl.node() as SVGSVGElement;
-  const W = svgNode.clientWidth;
-  const H = svgNode.clientHeight;
+  // #306: Fall back to explicit dimensions if SVG not laid out (panel hidden/minimized)
+  const W = svgNode.clientWidth || 800;
+  const H = svgNode.clientHeight || 600;
 
   // Arrow marker
   svg.append('defs').append('marker')
@@ -301,16 +302,17 @@ function render(data: { nodes: NodeData[]; edges: EdgeData[] }) {
 declare global { interface Window { graphData: { nodes: NodeData[]; edges: EdgeData[] } | null; } }
 
 function init() {
-  if (!window.graphData) {
-    window.addEventListener('message', (e: MessageEvent) => {
-      if (e.data?.type === 'graphData') {
-        window.graphData = e.data.data;
-        render(window.graphData!);
-      }
-    });
-    return;
+  // #307: Named function so we can remove the listener instead of stacking new ones
+  function onMessage(e: MessageEvent) {
+    if (e.data?.type === 'graphData') {
+      window.graphData = e.data.data;
+      render(window.graphData!);
+    }
   }
-  render(window.graphData);
+  window.removeEventListener('message', onMessage);
+  window.addEventListener('message', onMessage);
+
+  if (window.graphData) render(window.graphData);
 }
 
 if (document.readyState === 'loading') {

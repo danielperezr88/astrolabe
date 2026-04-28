@@ -61,12 +61,23 @@ function serializeGraph(graph: KnowledgeGraph): { nodes: SerializableNode[]; edg
 
 // ── Panel provider ───────────────────────────────────────────────────────────
 
+// #304: Store panel reference for refresh after re-analysis
+let _panel: vscode.WebviewPanel | null = null;
+
 export function showGraphPanel(context: vscode.ExtensionContext, dbPath: string): void {
   const store = createSqliteStore(dbPath);
   let graph: KnowledgeGraph;
   try {
     graph = store.loadGraph();
   } finally { store.close(); }
+
+  // #304: Reuse existing panel if already open, updating data instead of creating new
+  if (_panel) {
+    const graphData = serializeGraph(graph);
+    _panel.webview.postMessage({ type: 'graphData', data: graphData });
+    _panel.reveal();
+    return;
+  }
 
   const panel = vscode.window.createWebviewPanel(
     'astrolabeGraph',
@@ -111,4 +122,8 @@ export function showGraphPanel(context: vscode.ExtensionContext, dbPath: string)
   );
 
   panel.webview.html = html;
+
+  // #304: Track panel for refresh after re-analysis
+  _panel = panel;
+  panel.onDidDispose(() => { _panel = null; });
 }
