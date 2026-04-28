@@ -47,6 +47,11 @@ const MAX_DEPTH = 3;
 
 // ── Sidebar update ──────────────────────────────────────────────────────────
 
+// #228: Escape HTML in user-controlled values to prevent XSS
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function updateSidebar(node: NodeData | null, nodes: SimNode[], links: SimLink[]) {
   const sidebar = d3.select('#sidebar');
   sidebar.html('');
@@ -60,12 +65,12 @@ function updateSidebar(node: NodeData | null, nodes: SimNode[], links: SimLink[]
     .style('background', c + '33').style('color', c).text(node.label);
   sidebar.append('div').attr('class', 'name').text(node.name);
   sidebar.append('div').attr('class', 'prop')
-    .html(`<strong>ID</strong> ${node.id}`);
+    .html(`<strong>ID</strong> ${esc(node.id)}`);
   sidebar.append('div').attr('class', 'prop')
-    .html(`<strong>File</strong> ${node.filePath || '—'}`);
+    .html(`<strong>File</strong> ${esc(node.filePath || '—')}`);
   if (node.startLine) {
     sidebar.append('div').attr('class', 'prop')
-      .html(`<strong>Lines</strong> ${node.startLine}–${node.endLine ?? node.startLine}`);
+      .html(`<strong>Lines</strong> ${esc(String(node.startLine))}–${esc(String(node.endLine ?? node.startLine))}`);
   }
 
   // Extra properties
@@ -75,7 +80,7 @@ function updateSidebar(node: NodeData | null, nodes: SimNode[], links: SimLink[]
     extras.forEach(([k, v]) => {
       const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
       if (val.length < 100) {
-        sidebar.append('div').attr('class', 'prop').html(`<strong>${k}</strong> ${val}`);
+        sidebar.append('div').attr('class', 'prop').html(`<strong>${esc(k)}</strong> ${esc(val)}`);
       }
     });
   }

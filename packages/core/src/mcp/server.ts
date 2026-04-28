@@ -9,7 +9,7 @@
  */
 
 import { createInterface } from 'node:readline';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
@@ -344,8 +344,10 @@ class LocalBackend {
 
     let diffFiles: string[] = [];
     try {
-      const diffArg = scope === 'staged' ? ' --cached' : scope === 'all' ? ' HEAD' : '';
-      const output = execSync(`git diff --name-only${diffArg}`, { cwd: repoPath, encoding: 'utf-8' });
+      const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
+      const args = ['diff', '--name-only'];
+      if (diffFlag) args.push(diffFlag);
+      const output = execFileSync('git', args, { cwd: repoPath, encoding: 'utf-8' });
       diffFiles = output.trim().split('\n').filter(Boolean);
     } catch {
       return { error: 'Git diff failed. Is this a git repository?' };
