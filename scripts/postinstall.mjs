@@ -111,6 +111,16 @@ async function installBinary(bin) {
     mkdirSync(join(baseDir, subDir), { recursive: true });
     copyFileSync(src, nodeFile);
     console.log('[astrolabe]   installed ' + bin.name + ' to ' + nodeFile);
+
+    // Keep a backup of the node binary so native-preload can restore it
+    // after VSCode's Electron overwrites the default location.
+    if (!bin.dest) {
+      const backupDir = join(baseDir, 'build', 'Release', 'node');
+      const backupFile = join(backupDir, 'better_sqlite3.node');
+      mkdirSync(backupDir, { recursive: true });
+      copyFileSync(nodeFile, backupFile);
+      console.log('[astrolabe]   backed up node binary for restore');
+    }
   } catch (err) {
     console.error('[astrolabe] Failed to install ' + bin.name + ': ' + err.message);
   } finally {
