@@ -229,9 +229,10 @@ function emitRelationship(
       sourceId = node.id;
       if (targetId) break;
     }
-    if (node.properties.name === rel.targetName && !node.properties.startLine) {
-      // Target might be defined with a startLine too; try with and without
+    // #296: Remove dead !startLine check — ALL symbol nodes have startLine
+    if (node.properties.name === rel.targetName) {
       targetId = node.id;
+      break;
     }
   }
 

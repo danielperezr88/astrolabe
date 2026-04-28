@@ -48,7 +48,8 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
           let match;
           while ((match = fw.regex.exec(content)) !== null) {
             const { method, path } = fw.extract(match);
-            const routeId = `route:${fp}:${method}:${path}`;
+            // #297: Include framework name to prevent ID collision across detectors
+        const routeId = `route:${fp}:${fw.name}:${method}:${path}`;
             if (graph.getNode(routeId)) continue;
 
             graph.addNode({
