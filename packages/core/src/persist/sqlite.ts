@@ -147,10 +147,13 @@ export function createSqliteStore(dbPath: string): SqliteStore {
         id: string; label: string; properties: string;
       }[];
       for (const row of nodeRows) {
+        // #311: Graceful fallback for corrupted JSON properties
+        let props: Record<string, unknown>;
+        try { props = JSON.parse(row.properties); } catch { props = {}; }
         graph.addNode({
           id: row.id,
           label: row.label as GraphNode['label'],
-          properties: JSON.parse(row.properties),
+          properties: props,
         });
       }
 
@@ -184,8 +187,10 @@ export function createSqliteStore(dbPath: string): SqliteStore {
     },
 
     getChangedFiles(files: { path: string; hash: string }[]): { path: string; hash: string }[] {
+      // #286: Use closure variable getHash, not this.getFileHash (breaks on destructuring)
       return files.filter((f) => {
-        const stored = this.getFileHash(f.path);
+        const row = getHash.get(f.path) as { hash: string } | undefined;
+        const stored = row?.hash;
         return !stored || stored !== f.hash;
       });
     },

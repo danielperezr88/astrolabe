@@ -123,7 +123,8 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
 
     search(query: string, limit = 20): SearchResult[] {
       // Sanitize query for FTS5 (remove special chars, keep alphanumeric + underscore)
-      const sanitized = query.replace(/['"*()^~!@#$%&=+<>|]/g, ' ').replace(/\s+/g, ' ').trim();
+      // #310: Also escape { } : which are FTS5 special chars
+      const sanitized = query.replace(/['"*()^~!@#$%&=+<>|{}:]/g, ' ').replace(/\s+/g, ' ').trim();
       if (!sanitized) return [];
       // Use AND between terms so multi-word queries require all terms to match.
       // Single-word queries use prefix matching for partial completion.
@@ -147,7 +148,8 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
     },
 
     close(): void {
-      db.close();
+      // #285: Only close if we own the connection — shared DB is caller's responsibility
+      if (ownsConnection) db.close();
     },
   };
 }

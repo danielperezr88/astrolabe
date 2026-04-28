@@ -268,6 +268,8 @@ class LocalBackend {
     // Pre-build adjacency index: Map<nodeId, { neighborId, type, confidence }[]> (#119)
     const adj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
     for (const rel of graph.iterRelationships()) {
+      // #290: Exclude synthetic STEP_IN_PROCESS edges — being in same process ≠ dependency
+      if (rel.type === 'STEP_IN_PROCESS') continue;
       if (rel.confidence < minConfidence) continue;
       // Upstream: target <- source (who calls me)
       if (direction === 'upstream') {
@@ -359,11 +361,12 @@ class LocalBackend {
     const changedSymbols: string[] = [];
     const affectedProcesses: string[] = [];
 
-    // Find changed symbols by matching changed files to node filePath (#127)
+    // #314: Use Set for O(N+M) file matching instead of Array.includes O(N*M)
     const changedNodeIds = new Set<string>();
+    const diffFileSet = new Set(diffFiles);
     for (const node of graph.iterNodes()) {
       const fp = node.properties.filePath as string | undefined;
-      if (fp && diffFiles.includes(fp)) {
+      if (fp && diffFileSet.has(fp)) {
         changedNodeIds.add(node.id);
         changedSymbols.push(node.properties.name ?? node.id);
       }
@@ -586,9 +589,11 @@ const TOOLS: Record<string, {
       required: ['symbol_name', 'new_name'],
     },
     handler: async (params) => {
+      // #291: Validate required params via requireString — was as string cast
+      const symbolName = requireString(params, 'symbol_name');
+      const newName = requireString(params, 'new_name');
       const result = backend.renameSymbol(
-        params.symbol_name as string,
-        params.new_name as string,
+        symbolName, newName,
         params.file_path as string,
         (params.dry_run as boolean) ?? true,
         params.repo as string,

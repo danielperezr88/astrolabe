@@ -129,6 +129,10 @@ function topologicalSort(phases: PhaseDefinition[]): PhaseDefinition[] {
 
   // Initialize
   for (const phase of phases) {
+    if (nameToPhase.has(phase.name)) {
+      // #294: Throw on duplicate phase names instead of silently overwriting
+      throw new Error(`Duplicate phase name: '${phase.name}' — each phase must have a unique name`);
+    }
     nameToPhase.set(phase.name, phase);
     inDegree.set(phase.name, 0);
     adjacency.set(phase.name, []);

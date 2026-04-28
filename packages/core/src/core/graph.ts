@@ -139,6 +139,17 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       if (nodeMap.has(node.id)) {
         // #242: Replace properties entirely — avoid stale prop survival from previous version
         const existing = nodeMap.get(node.id)!;
+        // #293: Update fileIndex if filePath changed on re-add (incremental re-parse)
+        const oldFp = existing.properties.filePath;
+        const newFp = node.properties.filePath;
+        if (oldFp !== newFp) {
+          if (oldFp) fileIndex.get(oldFp)?.delete(node.id);
+          if (newFp) {
+            let bucket = fileIndex.get(newFp);
+            if (!bucket) { bucket = new Set(); fileIndex.set(newFp, bucket); }
+            bucket.add(node.id);
+          }
+        }
         existing.properties = { ...node.properties };
         return;
       }

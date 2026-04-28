@@ -50,7 +50,10 @@ export function ensureNativeBinary(): void {
       try { copyFileSync(nodeBackup, tmp); renameSync(tmp, defaultBin); }
       finally { try { unlinkSync(tmp); } catch { /* already gone */ } }
     }
-  } catch { /* non-fatal — will fall back to whatever binary is present */ }
+  } catch (err) {
+    // #308: Log the error instead of silently swallowing — helps diagnose permission/disk issues
+    try { console.warn('[astrolabe/native-preload] Binary preload failed:', (err as Error).message); } catch { /* can't log */ }
+  }
 }
 
 // Trigger at import time so the binary is in place before better-sqlite3 loads.

@@ -14,7 +14,8 @@ const symbolPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 const importPatterns: QueryPattern[] = [
-  { query: '(call method: (identifier) @_method arguments: (argument_list (string) @source)) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'source', outerCapture: 'import', isImport: true },
+  // #287: Only match require/require_relative calls — avoid false-positive IMPORTS on puts/logger/warn etc.
+  { query: '(call method: (identifier) @_method arguments: (argument_list (string) @source)) @import (#match? @_method "^(require|require_relative)$")', captureLabels: { 'import': 'Import' }, nameCapture: 'source', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
 export const rubyLanguage: LanguageDefinition = {
