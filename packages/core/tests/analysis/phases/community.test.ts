@@ -35,7 +35,7 @@ describe('Community Phase', () => {
     graph.addRelationship(callsRel('fn:B:y', 'fn:B:z'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 
@@ -57,7 +57,7 @@ describe('Community Phase', () => {
     graph.addNode(fn('fn:isolated:two', 'two'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 
@@ -68,7 +68,7 @@ describe('Community Phase', () => {
   it('handles empty graph', async () => {
     const graph = createKnowledgeGraph();
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 
@@ -99,7 +99,7 @@ describe('Community Phase', () => {
     graph.addRelationship(callsRel('fn:A:one', 'fn:B:one'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([communityPhase], context);
     const out = getPhaseOutput<CommunityOutput>(context, 'community');
 

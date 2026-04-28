@@ -33,7 +33,7 @@ describe('MRO Phase', () => {
     graph.addNode(fn('fn:A:foo', 'foo'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([mroPhase], context);
     const out = getPhaseOutput<MroOutput>(context, 'mro');
 
@@ -52,7 +52,7 @@ describe('MRO Phase', () => {
     graph.addRelationship(extendsRel('class:B', 'class:A'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([mroPhase], context);
     const out = getPhaseOutput<MroOutput>(context, 'mro');
 
@@ -75,7 +75,7 @@ describe('MRO Phase', () => {
     graph.addRelationship(extendsRel('class:D', 'class:C'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([mroPhase], context);
     const out = getPhaseOutput<MroOutput>(context, 'mro');
 
@@ -93,7 +93,7 @@ describe('MRO Phase', () => {
   it('handles empty graph', async () => {
     const graph = createKnowledgeGraph();
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([mroPhase], context);
     const out = getPhaseOutput<MroOutput>(context, 'mro');
 
@@ -109,7 +109,7 @@ describe('MRO Phase', () => {
     graph.addRelationship(extendsRel('class:Child', 'class:Base'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([mroPhase], context);
     const out = getPhaseOutput<MroOutput>(context, 'mro');
 

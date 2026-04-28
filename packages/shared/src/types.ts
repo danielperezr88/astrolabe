@@ -34,6 +34,17 @@ export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
  * Every node in the knowledge graph has exactly one label.
  * The label determines what properties the node carries and how it's rendered.
  */
+/**
+ * Node label taxonomy.
+ *
+ * Some labels overlap in scope (e.g., Method ⊆ Function, Struct ⊆ Class-like).
+ * The LABEL_PRIORITY map in parser.ts handles deduplication: when tree-sitter
+ * matches the same node with multiple patterns, the more-specific label wins
+ * (Method > Function, Constructor > Method, Property > Variable, etc.).
+ *
+ * Resolution order for overlapping labels:
+ *   Constructor > Property > Method > Function, Class, Interface, Struct
+ */
 export type NodeLabel =
   // Structural
   | 'Project'

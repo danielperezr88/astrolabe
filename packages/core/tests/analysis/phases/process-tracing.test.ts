@@ -35,7 +35,7 @@ describe('Process Tracing Phase', () => {
     graph.addRelationship(callsRel('fn:helper', 'fn:format'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
@@ -63,7 +63,7 @@ describe('Process Tracing Phase', () => {
     graph.addRelationship(callsRel('fn:entry', 'fn:callee'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
 
     const entryEdges = Array.from(graph.iterRelationshipsByType('ENTRY_POINT_OF'));
@@ -77,7 +77,7 @@ describe('Process Tracing Phase', () => {
     graph.addNode(fn('fn:public', 'publicFn'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
@@ -92,7 +92,7 @@ describe('Process Tracing Phase', () => {
     graph.addNode(fn('fn:b', 'b'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
@@ -104,7 +104,7 @@ describe('Process Tracing Phase', () => {
   it('handles empty graph', async () => {
     const graph = createKnowledgeGraph();
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
@@ -119,7 +119,7 @@ describe('Process Tracing Phase', () => {
     graph.addRelationship(callsRel('fn:handleReq', 'fn:process'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
     const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
 
@@ -140,7 +140,7 @@ describe('Process Tracing Phase', () => {
     graph.addNode({ id: 'process:stale', label: 'Process', properties: { name: 'stale', stepCount: 0, processType: 'intra_community', entryPointId: '', terminalId: '' } });
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
 
     // Stale process should be removed
@@ -160,7 +160,7 @@ describe('Process Tracing Phase', () => {
     graph.addRelationship(memberRel('fn:service', 'community:2'));
 
     const context = createPhaseContext('/test', graph, () => {});
-    (context.state as any).resolution = {};
+    context.state.set('output:resolution', {});
     await runPipeline([processTracingPhase], context);
 
     const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
