@@ -195,10 +195,11 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
 
           const methods = methodsByFile.get(ancestorFp) ?? [];
           // Filter methods to just those belonging to this ancestor class (#121)
+          // #295: Skip ancestors with no name — fallback to ALL methods causes
+          // sibling method pollution in files with multiple classes
           const ancestorName = ancestor.properties.name as string;
-          const ownMethods = ancestorName
-            ? methods.filter((m) => (m.properties.parentClass as string) === ancestorName)
-            : methods;
+          if (!ancestorName) continue;
+          const ownMethods = methods.filter((m) => (m.properties.parentClass as string) === ancestorName);
           for (const method of ownMethods) {
             const edgeId = `mro:${cls.id}:has_method:${method.id}`;
             if (!graph.getRelationship(edgeId)) {
