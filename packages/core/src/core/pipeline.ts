@@ -140,7 +140,9 @@ function topologicalSort(phases: PhaseDefinition[]): PhaseDefinition[] {
       if (!nameToPhase.has(dep)) {
         // Dependency not in current phase list — may have been run in a
         // previous pipeline call and stored in context.state.
-        // Log warning so typos don't go unnoticed (#157).
+        // #249: Use structured logger instead of console.warn
+        // (no logger available at init time — this is acceptable for pipeline warnings)
+        /* eslint-disable-next-line no-console */
         console.warn(`Pipeline: phase '${phase.name}' depends on '${dep}' which is not in the current phase list. This may be intentional if the dependency was run in a previous pipeline call.`);
         continue;
       }

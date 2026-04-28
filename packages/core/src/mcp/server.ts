@@ -5,7 +5,7 @@
  * tools backed by the SQLite knowledge graph database and a global registry
  * for multi-repo support.
  *
- * Tools: list_repos, query, context, impact, detect_changes, rename, cypher
+ * Tools: list_repos, query, context, impact, detect_changes, rename, filter_by_label
  */
 
 import { createInterface } from 'node:readline';
@@ -425,22 +425,15 @@ class LocalBackend {
     };
   }
 
-  cypher(query: string, repo?: string) {
+  filterByLabel(label: string, repo?: string) {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
-    // Parse MATCH patterns from query (#120)
-    if (!query || !query.toLowerCase().includes('match')) {
-      return { error: 'Only MATCH queries supported. Example: MATCH (n:Function) RETURN n' };
-    }
-
-    // Extract label filter: (n:LabelName) or (n:LabelName) where...
-    const labelMatch = query.match(/\(\w*\s*:\s*(\w+)\s*\)/);
-    const targetLabel = labelMatch ? labelMatch[1] : null;
-
+    // #243: Renamed from "cypher" — this only does single-label filtering,
+    // not actual Cypher graph pattern matching.
     const results: Array<Record<string, unknown>> = [];
     for (const node of graph.iterNodes()) {
-      if (targetLabel && node.label !== targetLabel) continue;
+      if (node.label !== label) continue;
       results.push({
         id: node.id,
         label: node.label,
@@ -604,19 +597,20 @@ const TOOLS: Record<string, {
     },
   },
 
-  'astrolabe.cypher': {
-    name: 'astrolabe.cypher',
-    description: 'Query the knowledge graph with graph patterns.',
+  'astrolabe.filter_by_label': {
+    name: 'astrolabe.filter_by_label',
+    description: 'Filter graph nodes by label type (e.g., Function, Class, Route). Returns matching nodes with id, label, name, and filePath.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Graph query (MATCH pattern)' },
+        label: { type: 'string', description: 'Node label to filter by (e.g. "Function", "Class")' },
         repo: { type: 'string', description: 'Repository name' },
       },
-      required: ['query'],
+      required: ['label'],
     },
     handler: async (params) => {
-      const result = backend.cypher(params.query as string, params.repo as string);
+      const label = requireString(params, 'label');
+      const result = backend.filterByLabel(label, params.repo as string);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   },

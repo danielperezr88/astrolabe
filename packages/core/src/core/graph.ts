@@ -182,6 +182,9 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       const rel = relMap.get(relId);
       if (!rel) return false;
       unindexRelByType(rel);
+      // #257: Clean empty relTypeIndex buckets to prevent memory leak
+      const bucket = relTypeIndex.get(rel.type);
+      if (bucket && bucket.size === 0) relTypeIndex.delete(rel.type);
       // Clean up node-to-relationship reverse index (#188)
       for (const nid of [rel.sourceId, rel.targetId]) {
         nodeRelIndex.get(nid)?.delete(relId);
