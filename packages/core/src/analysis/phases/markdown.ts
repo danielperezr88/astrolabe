@@ -22,7 +22,7 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
   name: 'markdown',
   dependencies: ['structure'],
 
-  execute(context: PhaseContext): MarkdownOutput {
+  async execute(context: PhaseContext): Promise<MarkdownOutput> {
     const { graph } = context;
     let sectionCount = 0;
     let crossRefCount = 0;
@@ -41,7 +41,7 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
       if (!fp || !/\.(md|mdx)$/i.test(fp)) continue;
 
       try {
-        const content = readFileSync(join(context.repoPath, fp), 'utf-8');
+        const content = await readFile(join(context.repoPath, fp), 'utf-8');
         const headings: Array<{ level: number; text: string; line: number; slug: string }> = [];
         const links: Array<{ text: string; target: string; line: number }> = [];
 

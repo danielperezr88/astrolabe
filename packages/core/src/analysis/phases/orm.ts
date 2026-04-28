@@ -23,7 +23,7 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
   name: 'orm',
   dependencies: ['parse-emit'],
 
-  execute(context: PhaseContext): OrmOutput {
+  async execute(context: PhaseContext): Promise<OrmOutput> {
     const { graph } = context;
     const frameworks = new Set<string>();
     let modelCount = 0;
@@ -33,7 +33,7 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
     const prismaSchema = join(context.repoPath, 'prisma', 'schema.prisma');
     if (existsSync(prismaSchema)) {
       try {
-        const content = readFileSync(prismaSchema, 'utf-8');
+        const content = await readFile(prismaSchema, 'utf-8');
         const modelRegex = /model\s+(\w+)\s*\{/g;
         let match;
         while ((match = modelRegex.exec(content)) !== null) {

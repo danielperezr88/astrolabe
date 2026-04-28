@@ -5,7 +5,7 @@
  * and CLI commands by scanning file contents (#138).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
@@ -21,7 +21,7 @@ const PATTERNS: Array<{ type: string; regex: RegExp; nameGroup: number; protoOnl
 export const toolsPhase: PhaseDefinition<ToolsOutput> = {
   name: 'tools', dependencies: ['parse-emit'],
 
-  execute(context: PhaseContext): ToolsOutput {
+  async execute(context: PhaseContext): Promise<ToolsOutput> {
     const { graph } = context;
     let toolCount = 0;
     const toolTypes = new Set<string>();
@@ -32,7 +32,7 @@ export const toolsPhase: PhaseDefinition<ToolsOutput> = {
       if (!fp) continue;
 
       try {
-        const content = readFileSync(join(context.repoPath, fp), 'utf-8');
+        const content = await readFile(join(context.repoPath, fp), 'utf-8');
         for (const pat of PATTERNS) {
           // Skip proto-only patterns for non-.proto files (#185)
           if (pat.protoOnly && !fp.endsWith('.proto')) continue;

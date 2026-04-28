@@ -5,7 +5,7 @@
  * web frameworks. Creates Route nodes with HANDLES_ROUTE edges (#137).
  */
 
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
@@ -29,7 +29,7 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
   name: 'routes',
   dependencies: ['parse-emit'],
 
-  execute(context: PhaseContext): RoutesOutput {
+  async execute(context: PhaseContext): Promise<RoutesOutput> {
     const { graph } = context;
     let routeCount = 0;
     const frameworks = new Set<string>();
@@ -43,7 +43,7 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp)) continue;
 
       try {
-        const content = readFileSync(join(context.repoPath, fp), 'utf-8');
+        const content = await readFile(join(context.repoPath, fp), 'utf-8');
         for (const fw of FRAMEWORK_PATTERNS) {
           let match;
           while ((match = fw.regex.exec(content)) !== null) {
