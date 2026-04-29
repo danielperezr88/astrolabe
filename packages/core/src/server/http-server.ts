@@ -308,9 +308,19 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
         return await handleImpact(res, decodeURIComponent(imMatch[1]), body);
       }
 
-      // Health check
+      // Health check — also serves as bridge auto-detect endpoint (#377)
       if (req.method === 'GET' && path === '/api/health') {
-        return json(res, { status: 'ok', uptime: process.uptime() });
+        const registry = loadRegistry();
+        return json(res, {
+          status: 'ok',
+          uptime: process.uptime(),
+          repos: registry.map((r) => ({
+            name: r.name,
+            path: r.path,
+            indexedAt: r.indexedAt,
+            lastCommit: r.lastCommit,
+          })),
+        });
       }
 
       // 404

@@ -6,6 +6,8 @@ import type { RepoInfo, ClusterInfo, SearchResult, ApiRepos } from './types';
 
 const API = '/api';
 
+type ConnStatus = 'checking' | 'connected' | 'offline';
+
 export default function App() {
   const [repos, setRepos] = useState<Array<{ name: string; path: string }>>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
@@ -14,16 +16,37 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [connStatus, setConnStatus] = useState<ConnStatus>('checking');
   const abortRef = useRef<AbortController | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
 
-  // Fetch available repos
+  // Bridge mode: auto-detect local server (#377)
   useEffect(() => {
+    fetch(`${API}/health`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((health: { status: string; repos?: Array<{ name: string; path: string }> }) => {
+        setConnStatus('connected');
+        if (health.repos && health.repos.length > 0) {
+          setRepos(health.repos);
+        }
+      })
+      .catch(() => {
+        setConnStatus('offline');
+        setError('Not connected to Astrolabe server. Run: astrolabe serve');
+      });
+  }, []);
+
+  // Also try to fetch full repo list from dedicated endpoint
+  useEffect(() => {
+    if (connStatus !== 'connected') return;
     fetch(`${API}/repos`)
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: ApiRepos) => setRepos(data.repos || []))
-      .catch(() => setError('Cannot reach Astrolabe server. Run: astrolabe serve'));
-  }, []);
+      .catch(() => {}); // repos already set from health check if available
+  }, [connStatus]);
 
   // Load repo context and clusters
   const selectRepo = useCallback(async (name: string) => {
@@ -99,6 +122,9 @@ export default function App() {
       />
       <main style={{ flex: 1, position: 'relative' }}>
         <SearchBar onSearch={search} disabled={!selectedRepo} />
+        {connStatus === 'checking' && <div style={{ padding: '0.5rem 1rem', color: '#d29922', background: '#2a2100', fontSize: '0.85rem' }}>Connecting to server...</div>}
+        {connStatus === 'offline' && <div style={{ padding: '0.5rem 1rem', color: '#f85149', background: '#490202', fontSize: '0.85rem' }}>Offline — run: <code>astrolabe serve</code></div>}
+        {connStatus === 'connected' && repos.length > 0 && <div style={{ padding: '0.25rem 1rem', color: '#3fb950', background: '#0d1b14', fontSize: '0.75rem' }}>Connected • {repos.length} repo{repos.length !== 1 ? 's' : ''} indexed</div>}
         {error && <div style={{ padding: '1rem', color: '#f85149', background: '#490202' }}>{error}</div>}
         {loading && <div style={{ padding: '1rem', color: '#58a6ff' }}>Loading...</div>}
         <GraphView repoName={selectedRepo} clusters={clusters} />
