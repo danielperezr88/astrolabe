@@ -11,6 +11,15 @@ export interface TfIdfVector {
   norm: number;
 }
 
+export interface TfIdfIndex {
+  /** Map of nodeId → TF-IDF vector */
+  vectors: Map<string, TfIdfVector>;
+  /** Document frequency: term → number of documents containing it */
+  df: Map<string, number>;
+  /** Total number of documents indexed */
+  totalDocs: number;
+}
+
 export interface SimilarityResult {
   nodeId: string;
   score: number;
@@ -44,9 +53,9 @@ const STOP_WORDS = new Set([
  * @param documents  Array of { nodeId, text } pairs.
  * @returns Map of nodeId → TF-IDF vector.
  */
-export function buildTfIdfIndex(documents: { nodeId: string; text: string }[]): Map<string, TfIdfVector> {
+export function buildTfIdfIndex(documents: { nodeId: string; text: string }[]): TfIdfIndex {
   const N = documents.length;
-  if (N === 0) return new Map();
+  if (N === 0) return { vectors: new Map(), df: new Map(), totalDocs: 0 };
 
   // Tokenize all documents
   const docTokens: Map<string, string[]> = new Map();
@@ -92,7 +101,7 @@ export function buildTfIdfIndex(documents: { nodeId: string; text: string }[]): 
     });
   }
 
-  return index;
+  return { vectors: index, df, totalDocs: N };
 }
 
 /**
@@ -112,27 +121,25 @@ export function cosineSimilarity(a: Map<string, number>, normA: number, b: Map<s
  */
 export function searchTfIdf(
   query: string,
-  index: Map<string, TfIdfVector>,
+  idx: TfIdfIndex,
   limit = 20,
 ): SimilarityResult[] {
+  const { vectors: index, df, totalDocs } = idx;
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
   const queryWeights = new Map<string, number>();
   let queryNormSq = 0;
-  // Compute IDF only for query terms to avoid O(corpus×terms) (#186)
+  // Use cached DF from build phase instead of recomputing (#312)
   const idfCache = new Map<string, number>();
   for (const t of new Set(queryTokens)) {
-    let docsWithTerm = 0;
-    for (const [, vec] of index) {
-      if (vec.weights.has(t)) docsWithTerm++;
-    }
-    idfCache.set(t, Math.log((index.size + 1) / (docsWithTerm + 1)));
+    const docsWithTerm = df.get(t) ?? 0;
+    idfCache.set(t, Math.log((totalDocs + 1) / (docsWithTerm + 1)));
   }
 
   for (const t of queryTokens) {
     const tf = (queryWeights.get(t) ?? 0) + 1;
-    const idf = idfCache.get(t) ?? Math.log((index.size + 1) / 1);
+    const idf = idfCache.get(t) ?? Math.log((totalDocs + 1) / 1);
     const weight = tf * idf;
     queryWeights.set(t, weight);
   }

@@ -13,9 +13,9 @@ describe('TF-IDF Embeddings', () => {
       { nodeId: 'fn:c', text: 'function searches database for user records' },
     ];
 
-    const index = buildTfIdfIndex(docs);
-    expect(index.size).toBe(3);
-    expect(index.get('fn:a')!.weights.size).toBeGreaterThan(0);
+    const idx = buildTfIdfIndex(docs);
+    expect(idx.vectors.size).toBe(3);
+    expect(idx.vectors.get('fn:a')!.weights.size).toBeGreaterThan(0);
   });
 
   it('finds relevant documents via cosine similarity', () => {
@@ -25,8 +25,8 @@ describe('TF-IDF Embeddings', () => {
       { nodeId: 'fn:c', text: 'database search query index' },
     ];
 
-    const index = buildTfIdfIndex(docs);
-    const results = searchTfIdf('user login authentication', index, 10);
+    const idx = buildTfIdfIndex(docs);
+    const results = searchTfIdf('user login authentication', idx, 10);
 
     expect(results.length).toBeGreaterThan(0);
     // fn:a should be the best match since it shares "user", "authentication", "login"
@@ -44,13 +44,13 @@ describe('TF-IDF Embeddings', () => {
   });
 
   it('handles empty query', () => {
-    const index = buildTfIdfIndex([{ nodeId: 'fn:a', text: 'hello world' }]);
-    const results = searchTfIdf('', index);
+    const idx = buildTfIdfIndex([{ nodeId: 'fn:a', text: 'hello world' }]);
+    const results = searchTfIdf('', idx);
     expect(results).toHaveLength(0);
   });
 
   it('handles empty document set', () => {
-    const index = buildTfIdfIndex([]);
-    expect(index.size).toBe(0);
+    const idx = buildTfIdfIndex([]);
+    expect(idx.vectors.size).toBe(0);
   });
 });

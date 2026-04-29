@@ -99,10 +99,14 @@ class LocalBackend {
       for (const [n, t] of this.lastAccess) {
         if ((t ?? 0) < oldestTime) { oldest = n; oldestTime = t ?? 0; }
       }
-      if (oldest) {
-        this.repos.get(oldest)?.store.close();
-        this.repos.get(oldest)?.fts.close();
+      if (oldest && this.repos.has(oldest)) {
+        this.repos.get(oldest)!.store.close();
+        this.repos.get(oldest)!.fts.close();
         this.repos.delete(oldest);
+        this.lastAccess.delete(oldest);
+      } else if (oldest) {
+        // #301: Clean stale lastAccess entry with no corresponding repo
+        this.lastAccess.delete(oldest);
       }
     }
 
@@ -644,7 +648,7 @@ function readResource(uri: string): string | null {
   }
 
   // astrolabe://repo/{name}/context
-  const ctxMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/context$/);
+  const ctxMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/context$/);
   if (ctxMatch) {
     try {
       const ctx = backend.getRepo(ctxMatch[1]);
@@ -654,7 +658,7 @@ function readResource(uri: string): string | null {
   }
 
   // astrolabe://repo/{name}/clusters
-  const clMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/clusters$/);
+  const clMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/clusters$/);
   if (clMatch) {
     try {
       const ctx = backend.getRepo(clMatch[1]);
@@ -668,7 +672,7 @@ function readResource(uri: string): string | null {
   }
 
   // astrolabe://repo/{name}/processes
-  const prMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/processes$/);
+  const prMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/processes$/);
   if (prMatch) {
     try {
       const ctx = backend.getRepo(prMatch[1]);
@@ -682,7 +686,7 @@ function readResource(uri: string): string | null {
   }
 
   // astrolabe://repo/{name}/process/{processName}
-  const ptMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/process\/(.+)$/);
+  const ptMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/process\/(.+)$/);
   if (ptMatch) {
     try {
       const ctx = backend.getRepo(ptMatch[1]);
@@ -700,7 +704,7 @@ function readResource(uri: string): string | null {
   }
 
   // astrolabe://repo/{name}/schema
-  const scMatch = uri.match(/^astrolabe:\/\/repo\/(.+)\/schema$/);
+  const scMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/schema$/);
   if (scMatch) {
     const name = scMatch[1];
     try {

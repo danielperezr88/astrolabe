@@ -64,7 +64,11 @@ export function createKnowledgeGraph(): KnowledgeGraph {
           unindexRelByType(rel);
           // Remove from peer node's reverse index too
           const peerId = rel.sourceId === nodeId ? rel.targetId : rel.sourceId;
-          nodeRelIndex.get(peerId)?.delete(relId);
+          const peerBucket = nodeRelIndex.get(peerId);
+          if (peerBucket) {
+            peerBucket.delete(relId);
+            if (peerBucket.size === 0) nodeRelIndex.delete(peerId);
+          }
         }
         relMap.delete(relId);
       }
@@ -198,7 +202,11 @@ export function createKnowledgeGraph(): KnowledgeGraph {
       if (bucket && bucket.size === 0) relTypeIndex.delete(rel.type);
       // Clean up node-to-relationship reverse index (#188)
       for (const nid of [rel.sourceId, rel.targetId]) {
-        nodeRelIndex.get(nid)?.delete(relId);
+        const bucket = nodeRelIndex.get(nid);
+        if (bucket) {
+          bucket.delete(relId);
+          if (bucket.size === 0) nodeRelIndex.delete(nid);
+        }
       }
       relMap.delete(relId);
       return true;
