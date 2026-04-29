@@ -17,6 +17,7 @@ import {
   generateSkill,
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
+  createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -275,6 +276,65 @@ program
   .option('-o, --output <path>', 'Output file path', 'astrolabe-skill.md')
   .action((opts: { output: string }) => {
     generateSkill(opts.output);
+  });
+
+// ── group (cross-repo management) ──────────────────────────────────────────
+const groupCmd = program.command('group').description('Manage cross-repo groups for multi-repo tracking (#266)');
+
+groupCmd.command('create <name>')
+  .description('Create a new repository group')
+  .action((name: string) => {
+    const group = createGroup(name);
+    console.log(`Group "${group.name}" created.`);
+  });
+
+groupCmd.command('remove <name>')
+  .description('Remove a repository group')
+  .action((name: string) => {
+    removeGroup(name);
+    console.log(`Group "${name}" removed.`);
+  });
+
+groupCmd.command('add <group> <path> <repoName>')
+  .description('Add a repository to a group at the given hierarchy path')
+  .action((group: string, path: string, repoName: string) => {
+    addRepoToGroup(group, path, repoName);
+    console.log(`Added "${repoName}" to group "${group}" at path "${path}".`);
+  });
+
+groupCmd.command('remove-repo <group> <path>')
+  .description('Remove a repository from a group by hierarchy path')
+  .action((group: string, path: string) => {
+    removeRepoFromGroup(group, path);
+    console.log(`Removed "${path}" from group "${group}".`);
+  });
+
+groupCmd.command('list')
+  .description('List all groups')
+  .action(() => {
+    const groups = listGroups();
+    if (groups.length === 0) {
+      console.log('No groups defined. Use `astrolabe group create <name>` to create one.');
+      return;
+    }
+    for (const g of groups) {
+      console.log(`${g.name} (${Object.keys(g.repos).length} repos, created ${new Date(g.createdAt).toISOString()})`);
+      for (const [path, repo] of Object.entries(g.repos)) {
+        console.log(`  ${path} → ${repo.repoName}`);
+      }
+    }
+  });
+
+groupCmd.command('status <name>')
+  .description('Show staleness and status of all repos in a group')
+  .action((name: string) => {
+    const status = getGroupStatus(name);
+    console.log(`Group: ${status.name} (${status.repoCount} repos)`);
+    for (const r of status.repos) {
+      const staleIcon = r.stale ? '⚠' : '✓';
+      const indexed = r.indexedAt ? new Date(r.indexedAt).toISOString() : 'never';
+      console.log(`  ${staleIcon} ${r.path} → ${r.repoName} (indexed: ${indexed})`);
+    }
   });
 
 program.parse();

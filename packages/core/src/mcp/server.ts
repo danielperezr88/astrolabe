@@ -17,6 +17,7 @@ import type { SqliteStore } from '../persist/sqlite.js';
 import type { FtsSearch } from '../search/fts.js';
 import type { GraphNode } from '../core/types.js';
 import { loadRegistry, type RegistryEntry } from './registry.js';
+import { listGroups, getGroupStatus, groupQuery } from './groups.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -623,6 +624,64 @@ const TOOLS: Record<string, {
       const label = requireString(params, 'label');
       const result = backend.filterByLabel(label, params.repo as string);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  },
+
+  'astrolabe.group_list': {
+    name: 'astrolabe.group_list',
+    description: 'List all cross-repo groups. Use this to discover monorepo/multi-service groupings.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    handler: async () => {
+      const groups = listGroups();
+      if (groups.length === 0) return { content: [{ type: 'text', text: 'No groups defined. Use `astrolabe group create <name>` from CLI to create one.' }] };
+      const lines = groups.map((g) => `${g.name} (${Object.keys(g.repos).length} repos, created ${new Date(g.createdAt).toISOString()})`);
+      return { content: [{ type: 'text', text: `Groups:\n${lines.join('\n')}\n\nNext: use group_status({name: "groupName"}) to check staleness.` }] };
+    },
+  },
+
+  'astrolabe.group_status': {
+    name: 'astrolabe.group_status',
+    description: 'Check staleness and status of all repos in a cross-repo group.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Group name from group_list' } },
+      required: ['name'],
+    },
+    handler: async (params) => {
+      const name = requireString(params, 'name');
+      const status = getGroupStatus(name);
+      const lines = status.repos.map((r) => {
+        const icon = r.stale ? '⚠ STALE' : '✓ current';
+        const indexed = r.indexedAt ? new Date(r.indexedAt).toISOString() : 'never';
+        return `${icon} | ${r.path} → ${r.repoName} (last indexed: ${indexed})`;
+      });
+      return { content: [{ type: 'text', text: `Group: ${status.name} (${status.repoCount} repos)\n${lines.join('\n')}` }] };
+    },
+  },
+
+  'astrolabe.group_query': {
+    name: 'astrolabe.group_query',
+    description: 'Search across all repos in a cross-repo group. Fans out to each repo database.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        query: { type: 'string', description: 'Search term' },
+        limit: { type: 'number', description: 'Max results per repo', default: 20 },
+      },
+      required: ['name', 'query'],
+    },
+    handler: async (params) => {
+      const groupName = requireString(params, 'name');
+      const query = requireString(params, 'query');
+      const limit = requireNumber(params, 'limit', 20);
+      const results = groupQuery(groupName, query, limit);
+      if (results.length === 0) return { content: [{ type: 'text', text: 'No results or no reachable databases in the group.' }] };
+      const lines = results.map((r) => {
+        const repoResults = r.results.map((rr) => `  ${rr.label.padEnd(12)} ${rr.name.padEnd(30)} ${rr.filePath}`).join('\n');
+        return `=== ${r.repoName} ===\n${repoResults}`;
+      });
+      return { content: [{ type: 'text', text: lines.join('\n\n') }] };
     },
   },
 };
