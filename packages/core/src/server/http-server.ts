@@ -19,13 +19,22 @@ import { dirname } from 'node:path';
 export interface ServeOptions {
   port?: number;
   host?: string;
+  /** API key for bearer token auth (#329). Falls back to ASTROLABE_API_KEY env. */
+  apiKey?: string;
+  /** Allowed CORS origin (#328). Defaults to * on localhost, host:port otherwise. */
+  allowOrigin?: string;
 }
 
 // ── Connection pool ────────────────────────────────────────────────────────
 
 const MAX_CONNS = 5;
 
-const repos = new Map<string, { store: ReturnType<typeof createSqliteStore>; fts: ReturnType<typeof createFtsSearch>; lastAccess: number }>();
+const repos = new Map<string, {
+  store: ReturnType<typeof createSqliteStore>;
+  fts: ReturnType<typeof createFtsSearch>;
+  graph?: ReturnType<ReturnType<typeof createSqliteStore>['loadGraph']>; // #330: cache loaded graph
+  lastAccess: number;
+}>();
 
 function getRepo(dbPath: string, name: string) {
   let ctx = repos.get(name);
@@ -58,12 +67,29 @@ function getRepo(dbPath: string, name: string) {
 
 // ── JSON helpers ──────────────────────────────────────────────────────────
 
+let _corsOrigin = '*';
+let _apiKey: string | undefined;
+
+function authMiddleware(req: IncomingMessage, res: ServerResponse): boolean {
+  if (!_apiKey) return true; // no auth configured
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${_apiKey}`) {
+    res.writeHead(401, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': _corsOrigin,
+    });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return false;
+  }
+  return true;
+}
+
 function json(res: ServerResponse, data: unknown, status = 200) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': _corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
   res.end(JSON.stringify(data));
 }
@@ -103,7 +129,9 @@ async function handleContext(res: ServerResponse, repoName: string) {
 
   try {
     const ctx = getRepo(entry.dbPath, repoName);
-    const graph = ctx.store.loadGraph();
+    // #330: Cache loaded graph in connection pool
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
 
     let meta = null;
     try { meta = loadMeta(dirname(entry.dbPath)); } catch { /* no meta */ }
@@ -129,7 +157,9 @@ async function handleClusters(res: ServerResponse, repoName: string) {
 
   try {
     const ctx = getRepo(entry.dbPath, repoName);
-    const graph = ctx.store.loadGraph();
+    // #330: Cache loaded graph in connection pool
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
     const clusters: unknown[] = [];
     for (const node of graph.iterNodes()) {
       if (node.label === 'Community') clusters.push({
@@ -173,7 +203,9 @@ async function handleImpact(res: ServerResponse, repoName: string, params: Recor
 
   try {
     const ctx = getRepo(entry.dbPath, repoName);
-    const graph = ctx.store.loadGraph();
+    // #330: Cache loaded graph in connection pool
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
 
     // Build adjacency index
     const adj = new Map<string, Array<{ neighborId: string; type: string; direction: string }>>();
@@ -215,17 +247,31 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
   const port = opts.port ?? 4747;
   const host = opts.host ?? 'localhost';
 
+  // #328: Restrict CORS when bound to non-localhost
+  _corsOrigin = opts.allowOrigin ?? (
+    (host === 'localhost' || host === '127.0.0.1' || host === '::1') ? '*' : `http://${host}:${port}`
+  );
+
+  // #329: API key authentication
+  _apiKey = opts.apiKey || process.env.ASTROLABE_API_KEY || undefined;
+  if (_apiKey) {
+    console.error('Astrolabe HTTP server: API key authentication enabled');
+  }
+
   const server = createServer(async (req, res) => {
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': _corsOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
       res.end();
       return;
     }
+
+    // #329: Auth middleware
+    if (!authMiddleware(req, res)) return;
 
     const url = new URL(req.url ?? '/', `http://${host}:${port}`);
     const path = url.pathname;
@@ -239,27 +285,27 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       // GET /api/repo/:name/context
       const ctxMatch = path.match(/^\/api\/repo\/([^/]+)\/context$/);
       if (req.method === 'GET' && ctxMatch) {
-        return await handleContext(res, ctxMatch[1]);
+        return await handleContext(res, decodeURIComponent(ctxMatch[1]));
       }
 
       // GET /api/repo/:name/clusters
       const clMatch = path.match(/^\/api\/repo\/([^/]+)\/clusters$/);
       if (req.method === 'GET' && clMatch) {
-        return await handleClusters(res, clMatch[1]);
+        return await handleClusters(res, decodeURIComponent(clMatch[1]));
       }
 
       // POST /api/repo/:name/query
       const qMatch = path.match(/^\/api\/repo\/([^/]+)\/query$/);
       if (req.method === 'POST' && qMatch) {
         const body = await parseBody(req);
-        return await handleQuery(res, qMatch[1], body);
+        return await handleQuery(res, decodeURIComponent(qMatch[1]), body);
       }
 
       // POST /api/repo/:name/impact
       const imMatch = path.match(/^\/api\/repo\/([^/]+)\/impact$/);
       if (req.method === 'POST' && imMatch) {
         const body = await parseBody(req);
-        return await handleImpact(res, imMatch[1], body);
+        return await handleImpact(res, decodeURIComponent(imMatch[1]), body);
       }
 
       // Health check
@@ -279,5 +325,28 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
     console.error(`API docs: http://${host}:${port}/api/repos`);
   });
 
+  // #332: Graceful shutdown — close all connections
+  const cleanup = () => {
+    shutdownHttpServer();
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+
   return server;
+}
+
+// ── Shutdown ────────────────────────────────────────────────────────────────
+
+/**
+ * Close all cached SQLite connections (#332).
+ * Call this on server shutdown to prevent WAL file locks.
+ */
+export function shutdownHttpServer(): void {
+  for (const [, ctx] of repos) {
+    ctx.store.close();
+    ctx.fts.close();
+    ctx.graph = undefined;
+  }
+  repos.clear();
 }
