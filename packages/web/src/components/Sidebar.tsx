@@ -8,9 +8,11 @@ interface Props {
   clusters: ClusterInfo[];
   searchResults: SearchResult[];
   onSearch: (query: string) => void;
+  selectedClusterId: string;
+  onSelectCluster: (clusterId: string) => void;
 }
 
-export default function Sidebar({ repos, selectedRepo, onSelectRepo, repoInfo, clusters, searchResults }: Props) {
+export default function Sidebar({ repos, selectedRepo, onSelectRepo, repoInfo, clusters, searchResults, selectedClusterId, onSelectCluster }: Props) {
   return (
     <nav style={{
       width: '320px', minWidth: '320px', background: '#161b22',
@@ -69,13 +71,20 @@ export default function Sidebar({ repos, selectedRepo, onSelectRepo, repoInfo, c
             Communities ({clusters.length})
           </h2>
           {clusters.slice(0, 10).map((c) => (
-            <div key={c.id} style={{
-              padding: '0.4rem 0.5rem', marginBottom: '0.25rem',
-              background: '#0d1117', borderRadius: '4px', fontSize: '0.8rem'
-            }}>
+            <button
+              key={c.id}
+              onClick={() => onSelectCluster(c.id)}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                padding: '0.4rem 0.5rem', marginBottom: '0.25rem',
+                background: selectedClusterId === c.id ? '#1f6feb22' : '#0d1117',
+                border: '1px solid ' + (selectedClusterId === c.id ? '#1f6feb' : 'transparent'),
+                borderRadius: '4px', color: '#c9d1d9', cursor: 'pointer', fontSize: '0.8rem'
+              }}
+            >
               <div style={{ fontWeight: 600 }}>{c.name}</div>
-              <div style={{ color: '#8b949e' }}>{c.symbolCount} symbols · cohesion: {c.cohesion?.toFixed(2)}</div>
-            </div>
+              <div style={{ color: '#8b949e' }}>{c.symbolCount} symbols · cohesion: {(c.cohesion ?? 0).toFixed(2)}</div>
+            </button>
           ))}
         </section>
       )}

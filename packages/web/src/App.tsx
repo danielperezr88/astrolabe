@@ -157,6 +157,8 @@ export default function App() {
         clusters={clusters}
         searchResults={searchResults}
         onSearch={search}
+        selectedClusterId={selectedClusterId}
+        onSelectCluster={selectCluster}
       />
       <main style={{ flex: 1, position: 'relative' }}>
         <SearchBar onSearch={search} disabled={!selectedRepo} />

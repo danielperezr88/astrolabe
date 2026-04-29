@@ -107,6 +107,17 @@ export default function GraphView({ repoName, clusters, graphData, loading }: Pr
       }
     }
 
+    // Pre-build neighbor sets for O(1) hover highlight (#390)
+    const neighbors = new Map<string, Set<string>>();
+    for (const l of links) {
+      const src = l.source as string;
+      const tgt = l.target as string;
+      if (!neighbors.has(src)) neighbors.set(src, new Set());
+      if (!neighbors.has(tgt)) neighbors.set(tgt, new Set());
+      neighbors.get(src)!.add(tgt);
+      neighbors.get(tgt)!.add(src);
+    }
+
     const simNodes: Array<d3.SimulationNodeDatum & GraphNode> = graphData.nodes.map((n) => ({
       ...n,
       x: width / 2 + (Math.random() - 0.5) * 200,
@@ -182,10 +193,7 @@ export default function GraphView({ repoName, clusters, graphData, loading }: Pr
         l.source.id === d.id || l.target.id === d.id ? 0.9 : 0.1,
       );
       node.attr('opacity', (n: any) =>
-        n.id === d.id || links.some((l: any) =>
-          (l.source.id === d.id && l.target.id === n.id) ||
-          (l.target.id === d.id && l.source.id === n.id)
-        ) ? 1 : 0.3,
+        n.id === d.id || neighbors.get(d.id)?.has(n.id) ? 1 : 0.3,
       );
     });
 
