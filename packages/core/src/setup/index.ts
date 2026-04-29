@@ -6,10 +6,24 @@
  * editor so users can start using Astrolabe immediately after `astrolabe setup`.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+
+// ── Atomic write helper (#333) ─────────────────────────────────────────────
+
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const tmp = filePath + '.tmp-' + Date.now();
+  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+  renameSync(tmp, filePath);
+}
+
+function atomicWriteText(filePath: string, text: string): void {
+  const tmp = filePath + '.tmp-' + Date.now();
+  writeFileSync(tmp, text, 'utf-8');
+  renameSync(tmp, filePath);
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +82,7 @@ const EDITORS: EditorConfig[] = [
         args: ['-y', '@astrolabe/cli', 'serve-mcp'],
       };
 
-      writeFileSync(configPath, JSON.stringify(mcp, null, 2), 'utf-8');
+      atomicWriteJson(configPath, mcp);
       return { path: configPath };
     },
   },
@@ -105,7 +119,7 @@ const EDITORS: EditorConfig[] = [
         args: ['-y', '@astrolabe/cli', 'serve-mcp'],
       };
 
-      writeFileSync(configPath, JSON.stringify(mcp, null, 2), 'utf-8');
+      atomicWriteJson(configPath, mcp);
       return { path: configPath };
     },
   },
@@ -145,7 +159,7 @@ const EDITORS: EditorConfig[] = [
         args: ['-y', '@astrolabe/cli', 'serve-mcp'],
       };
 
-      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      atomicWriteJson(configPath, config);
       return { path: configPath };
     },
   },
@@ -212,7 +226,7 @@ const EDITORS: EditorConfig[] = [
         args: ['-y', '@astrolabe/cli', 'serve-mcp'],
       };
 
-      writeFileSync(configPath, JSON.stringify(mcp, null, 2), 'utf-8');
+      atomicWriteJson(configPath, mcp);
       return { path: configPath };
     },
   },
@@ -242,9 +256,9 @@ args = ["-y", "@astrolabe/cli", "serve-mcp"]
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       if (existsSync(configPath) && !force) {
-        writeFileSync(configPath, readFileSync(configPath, 'utf-8') + tomlBlock, 'utf-8');
+        atomicWriteText(configPath, readFileSync(configPath, 'utf-8') + tomlBlock);
       } else {
-        writeFileSync(configPath, tomlBlock.trim() + '\n', 'utf-8');
+        atomicWriteText(configPath, tomlBlock.trim() + '\n');
       }
 
       return { path: configPath };
