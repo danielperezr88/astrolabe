@@ -155,6 +155,15 @@ const importPatterns: QueryPattern[] = [
   //{ query: '...', ... }
 ];
 
+// ── Decorator patterns (#281) ──────────────────────────────────────────────
+
+const decoratorPatterns: QueryPattern[] = [
+  // @Decorator(args) — captures decorator name
+  { query: '(decorator (call_expression function: (identifier) @name)) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
+  // @Decorator (no args)
+  { query: '(decorator (identifier) @name) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
+];
+
 // ── Language definition ────────────────────────────────────────────────────
 
 export const typescriptLanguage: LanguageDefinition = {
@@ -169,6 +178,10 @@ export const typescriptLanguage: LanguageDefinition = {
 
   get importPatterns(): QueryPattern[] {
     return importPatterns;
+  },
+
+  get decoratorPatterns(): QueryPattern[] {
+    return decoratorPatterns;
   },
 
   async load(wasmDir: string): Promise<WtsLanguage> {
@@ -199,6 +212,10 @@ export const tsxLanguage: LanguageDefinition = {
 
   get importPatterns(): QueryPattern[] {
     return importPatterns;
+  },
+
+  get decoratorPatterns(): QueryPattern[] {
+    return decoratorPatterns;
   },
 
   async load(wasmDir: string): Promise<WtsLanguage> {

@@ -368,6 +368,47 @@ function extractImports(
 // ── Shared extraction helper (#169) ────────────────────────────────────────
 
 /**
+ * #281: Extract decorator/annotation usage from the AST.
+ *
+ * Runs decoratorPatterns queries against the tree, extracts decorator names,
+ * and produces ParsedRelationship entries with type 'DECORATES'.
+ *
+ * The nameCapture from each pattern identifies the decorator name.
+ * No node creation is done here — only relationship edges.
+ */
+function extractDecorators(
+  language: WtsLanguage,
+  root: any,
+  langDef: LanguageDefinition,
+  normalisedPath: string,
+): ParsedRelationship[] {
+  const relationships: ParsedRelationship[] = [];
+
+  for (const pattern of langDef.decoratorPatterns!) {
+    const query = getQuery(language, pattern.query, langDef.wasmFile);
+    const matches = query.matches(root);
+
+    for (const match of matches) {
+      const nameNode = match.captures.find((c: any) => c.name === pattern.nameCapture);
+      if (!nameNode) continue;
+
+      const decoratorName = nameNode.node.text;
+      const startLine = nameNode.node.startPosition.row + 1;
+
+      relationships.push({
+        filePath: normalisedPath,
+        sourceName: '', // Will be resolved by the outer capture context
+        sourceStartLine: startLine,
+        targetName: decoratorName,
+        type: 'DECORATES',
+      });
+    }
+  }
+
+  return relationships;
+}
+
+/**
  * Run symbol and import queries against a tree and extract results.
  * Shared by both parseFile and parseString to avoid ~40 lines of duplicated
  * query-matching logic per function.
@@ -403,6 +444,12 @@ function extractFromTree(
     }
   }
   const imports = extractImports(allImportMatches, langDef.importPatterns, normalisedPath);
+
+  // #281: Decorator/annotation extraction
+  if (langDef.decoratorPatterns && langDef.decoratorPatterns.length > 0) {
+    const decoratorRelationships = extractDecorators(language, root, langDef, normalisedPath);
+    relationships.push(...decoratorRelationships);
+  }
 
   return { symbols, imports, relationships };
 }

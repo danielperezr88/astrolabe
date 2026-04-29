@@ -84,6 +84,8 @@ export interface LanguageDefinition {
   readonly symbolPatterns: QueryPattern[];
   /** Query patterns for extracting import statements. */
   readonly importPatterns: QueryPattern[];
+  /** #281: Query patterns for extracting decorator/annotation usage. */
+  readonly decoratorPatterns?: QueryPattern[];
 
   /**
    * Load the WASM grammar(s) and return a Language instance.
