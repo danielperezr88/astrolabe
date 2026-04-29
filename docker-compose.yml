@@ -6,12 +6,12 @@ services:
   astrolabe:
     build: .
     ports:
-      - "4747:4747"
+      - "127.0.0.1:4747:4747"
     volumes:
       - ./:/workspace:ro
-      - astrolabe_data:/root/.astrolabe
+      - astrolabe_data:/home/astrolabe/.astrolabe
     environment:
-      - ASTROLABE_API_KEY=${ASTROLABE_API_KEY:-}
+      - ASTROLABE_API_KEY=${ASTROLABE_API_KEY:?Set ASTROLABE_API_KEY env variable}
     command: ["npx", "astrolabe", "serve", "--host", "0.0.0.0"]
     restart: unless-stopped
 
