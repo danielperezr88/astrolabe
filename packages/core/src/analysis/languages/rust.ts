@@ -130,6 +130,7 @@ export const rustLanguage: LanguageDefinition = {
   name: 'rust',
   extensions: ['.rs'],
   wasmFile: 'tree-sitter-rust.wasm',
+  importSemantics: 'named',
 
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },

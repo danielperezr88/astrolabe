@@ -102,6 +102,7 @@ export const goLanguage: LanguageDefinition = {
   name: 'go',
   extensions: ['.go'],
   wasmFile: 'tree-sitter-go.wasm',
+  importSemantics: 'wildcard-leaf',
 
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },

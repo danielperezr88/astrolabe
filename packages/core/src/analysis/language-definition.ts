@@ -10,6 +10,10 @@
 import type { Language as WtsLanguage, QueryMatch } from 'web-tree-sitter';
 import type { SupportedLanguage, NodeLabel, RelationshipType } from '@astrolabe/shared';
 
+// ── Import semantics (#279) ─────────────────────────────────────────────────
+
+export type ImportSemantics = 'named' | 'wildcard-leaf' | 'wildcard-transitive' | 'namespace';
+
 // ── Query pattern ──────────────────────────────────────────────────────────
 
 /**
@@ -86,6 +90,8 @@ export interface LanguageDefinition {
   readonly importPatterns: QueryPattern[];
   /** #281: Query patterns for extracting decorator/annotation usage. */
   readonly decoratorPatterns?: QueryPattern[];
+  /** #279: Import resolution strategy for cross-file symbol lookup. */
+  readonly importSemantics: ImportSemantics;
 
   /**
    * Load the WASM grammar(s) and return a Language instance.

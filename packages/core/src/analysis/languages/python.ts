@@ -103,6 +103,7 @@ export const pythonLanguage: LanguageDefinition = {
   name: 'python',
   extensions: ['.py', '.pyw'],
   wasmFile: 'tree-sitter-python.wasm',
+  importSemantics: 'namespace',
 
   get symbolPatterns(): QueryPattern[] {
     return symbolPatterns;

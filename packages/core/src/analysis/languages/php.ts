@@ -20,7 +20,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const phpLanguage: LanguageDefinition = {
-  name: 'php', extensions: ['.php'], wasmFile: 'tree-sitter-php.wasm',
+  name: 'php', extensions: ['.php'], wasmFile: 'tree-sitter-php.wasm', importSemantics: 'named',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };

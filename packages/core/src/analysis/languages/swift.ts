@@ -20,7 +20,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const swiftLanguage: LanguageDefinition = {
-  name: 'swift', extensions: ['.swift'], wasmFile: 'tree-sitter-swift.wasm',
+  name: 'swift', extensions: ['.swift'], wasmFile: 'tree-sitter-swift.wasm', importSemantics: 'wildcard-leaf',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };
