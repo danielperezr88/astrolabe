@@ -64,20 +64,22 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.class',
   },
-  // function foo() { … }
+  // function foo(): Bar { … }
   {
-    query: '(function_declaration name: (identifier) @name) @definition.function',
+    query: '(function_declaration name: (identifier) @name return_type: (type_annotation)? (type_identifier)? @returnType) @definition.function',
     captureLabels: { 'definition.function': 'Function' },
     nameCapture: 'name',
     outerCapture: 'definition.function',
+    typeAnnotationCaptures: { 'returnType': 'returnType' },
   },
-  // const foo = () => { … }
+  // const foo = (): Bar => { … }
   {
     query:
-      '(lexical_declaration (variable_declarator name: (identifier) @name value: (arrow_function))) @definition.function',
+      '(lexical_declaration (variable_declarator name: (identifier) @name value: (arrow_function return_type: (type_annotation)? (type_identifier)? @returnType))) @definition.function',
     captureLabels: { 'definition.function': 'Function' },
     nameCapture: 'name',
     outerCapture: 'definition.function',
+    typeAnnotationCaptures: { 'returnType': 'returnType' },
   },
   // const foo = function() { … }
   {

@@ -183,12 +183,64 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
         if (fp !== filePath) continue;
         if (node.label !== 'Function' && node.label !== 'Method') continue;
 
-        // TODO(#164): Type reference resolution — requires parser support for
-        // capturing returnType/declaredType/parameterTypes/fieldType on
-        // Function/Method nodes. Once the parser populates these properties,
-        // re-enable:
-        //   node.properties[`resolved_${prop}`] = refType;
-        // and wire consumption in MCP context tool.
+        // #376: Resolve returnType to target symbol
+        const returnType = node.properties.returnType as string | undefined;
+        if (returnType) {
+          const resolvedType = availableTypes.get(returnType);
+          if (resolvedType) {
+            // Store resolved type name for downstream consumption
+            node.properties.resolved_returnType = returnType;
+
+            // Create RETURNS_TYPE edge to the target type symbol
+            for (const typeNode of graph.iterNodes()) {
+              if (typeNode.properties.name === returnType &&
+                  typeNode.properties.filePath &&
+                  typeNode.label === resolvedType) {
+                const edgeId = `returns:${node.id}:${typeNode.id}`;
+                if (!graph.getRelationship(edgeId)) {
+                  graph.addRelationship({
+                    id: edgeId,
+                    sourceId: node.id,
+                    targetId: typeNode.id,
+                    type: 'RETURNS_TYPE',
+                    confidence: 0.8,
+                    reason: `returnType: ${returnType} resolves to ${typeNode.label}`,
+                  });
+                  propagatedEdges++;
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        // #376: Resolve fieldType / declaredType similarly
+        const declaredType = node.properties.declaredType as string | undefined;
+        if (declaredType) {
+          const resolvedType = availableTypes.get(declaredType);
+          if (resolvedType) {
+            node.properties.resolved_declaredType = declaredType;
+            for (const typeNode of graph.iterNodes()) {
+              if (typeNode.properties.name === declaredType &&
+                  typeNode.properties.filePath &&
+                  typeNode.label === resolvedType) {
+                const edgeId = `declares:${node.id}:${typeNode.id}`;
+                if (!graph.getRelationship(edgeId)) {
+                  graph.addRelationship({
+                    id: edgeId,
+                    sourceId: node.id,
+                    targetId: typeNode.id,
+                    type: 'DECLARES_TYPE',
+                    confidence: 0.8,
+                    reason: `declaredType: ${declaredType} resolves to ${typeNode.label}`,
+                  });
+                  propagatedEdges++;
+                }
+                break;
+              }
+            }
+          }
+        }
       }
 
       propagatedEdges++;

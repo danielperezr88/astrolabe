@@ -173,7 +173,9 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
   | 'QUERIES'
-  | 'USES_FRAMEWORK';
+  | 'USES_FRAMEWORK'
+  | 'RETURNS_TYPE'
+  | 'DECLARES_TYPE';
 
 // ── Evidence for edge provenance ───────────────────────────────────────────
 

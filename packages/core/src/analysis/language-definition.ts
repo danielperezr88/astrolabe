@@ -92,6 +92,16 @@ export interface QueryPattern {
    * Import patterns use different capture semantics (source, name, isDefault).
    */
   isImport?: boolean;
+
+  /**
+   * Optional: maps capture names to property names for type annotations (#376).
+   * When a capture like `@returnType` matches, the parser extracts the
+   * type annotation text and stores it as a node property.
+   *
+   * E.g. `{ returnType: 'returnType', fieldType: 'fieldType' }`
+   * This enables cross-file type resolution and return-type-aware binding.
+   */
+  typeAnnotationCaptures?: Record<string, string>;
 }
 
 // ── Language definition contract ───────────────────────────────────────────
@@ -152,6 +162,8 @@ export interface ParsedSymbol {
   endLine: number;
   /** Whether the symbol is exported from its module. */
   isExported: boolean;
+  /** Type annotations extracted from the AST (#376). E.g. { returnType: 'User' }. */
+  typeAnnotations?: Record<string, string>;
 }
 
 /** A single import relationship extracted from a source file. */

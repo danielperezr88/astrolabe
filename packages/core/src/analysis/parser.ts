@@ -287,6 +287,20 @@ function extractSymbols(
         }
       }
     }
+
+    // Collect type annotation text from captures (#376)
+    if (pattern.typeAnnotationCaptures) {
+      const entry = seen.get(dedupKey);
+      if (entry) {
+        const annotations = entry.typeAnnotations || (entry.typeAnnotations = {});
+        for (const [captureName, propName] of Object.entries(pattern.typeAnnotationCaptures)) {
+          const typeNode = match.captures.find((c) => c.name === captureName);
+          if (typeNode && !annotations[propName]) {
+            annotations[propName] = typeNode.node.text;
+          }
+        }
+      }
+    }
   }
 
   return { symbols: Array.from(seen.values()), relationships };

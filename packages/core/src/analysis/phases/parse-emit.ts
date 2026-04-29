@@ -203,6 +203,7 @@ function emitSymbol(
       startLine: sym.startLine,
       endLine: sym.endLine,
       isExported: sym.isExported,
+      ...(sym.typeAnnotations ?? {}),
     },
   };
   graph.addNode(node);
