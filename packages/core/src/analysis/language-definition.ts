@@ -14,6 +14,9 @@ import type { SupportedLanguage, NodeLabel, RelationshipType } from '@astrolabe/
 
 export type ImportSemantics = 'named' | 'wildcard-leaf' | 'wildcard-transitive' | 'namespace';
 
+/** #278: MRO (Method Resolution Order) strategy per language. */
+export type MroStrategy = 'c3' | 'first-wins' | 'none';
+
 // ── Query pattern ──────────────────────────────────────────────────────────
 
 /**
@@ -92,6 +95,8 @@ export interface LanguageDefinition {
   readonly decoratorPatterns?: QueryPattern[];
   /** #279: Import resolution strategy for cross-file symbol lookup. */
   readonly importSemantics: ImportSemantics;
+  /** #278: MRO strategy for method resolution inheritance chains. */
+  readonly mroStrategy: MroStrategy;
 
   /**
    * Load the WASM grammar(s) and return a Language instance.

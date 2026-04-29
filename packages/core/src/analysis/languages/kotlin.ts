@@ -31,6 +31,7 @@ export const kotlinLanguage: LanguageDefinition = {
   extensions: ['.kt', '.kts'],
   wasmFile: 'tree-sitter-kotlin.wasm',
   importSemantics: 'named',
+  mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> {

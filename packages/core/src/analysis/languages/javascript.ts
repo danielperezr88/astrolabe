@@ -118,6 +118,7 @@ export const javascriptLanguage: LanguageDefinition = {
   extensions: ['.js', '.mjs', '.cjs', '.jsx'],
   wasmFile: 'tree-sitter-javascript.wasm',
   importSemantics: 'named',
+  mroStrategy: 'first-wins',
 
   get symbolPatterns(): QueryPattern[] {
     return symbolPatterns;

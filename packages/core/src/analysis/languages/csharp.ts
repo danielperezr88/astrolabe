@@ -22,7 +22,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const csharpLanguage: LanguageDefinition = {
-  name: 'csharp', extensions: ['.cs'], wasmFile: 'tree-sitter-c-sharp.wasm', importSemantics: 'named',
+  name: 'csharp', extensions: ['.cs'], wasmFile: 'tree-sitter-c-sharp.wasm',   importSemantics: 'named', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };

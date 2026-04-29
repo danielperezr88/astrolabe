@@ -19,7 +19,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const rubyLanguage: LanguageDefinition = {
-  name: 'ruby', extensions: ['.rb'], wasmFile: 'tree-sitter-ruby.wasm', importSemantics: 'wildcard-leaf',
+  name: 'ruby', extensions: ['.rb'], wasmFile: 'tree-sitter-ruby.wasm',   importSemantics: 'wildcard-leaf', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };

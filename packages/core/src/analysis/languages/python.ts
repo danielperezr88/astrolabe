@@ -104,6 +104,7 @@ export const pythonLanguage: LanguageDefinition = {
   extensions: ['.py', '.pyw'],
   wasmFile: 'tree-sitter-python.wasm',
   importSemantics: 'namespace',
+  mroStrategy: 'c3',
 
   get symbolPatterns(): QueryPattern[] {
     return symbolPatterns;

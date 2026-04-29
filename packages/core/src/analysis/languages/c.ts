@@ -20,7 +20,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const cLanguage: LanguageDefinition = {
-  name: 'c', extensions: ['.c', '.h'], wasmFile: 'tree-sitter-c.wasm', importSemantics: 'wildcard-transitive',
+  name: 'c', extensions: ['.c', '.h'], wasmFile: 'tree-sitter-c.wasm',   importSemantics: 'wildcard-transitive', mroStrategy: 'none',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };

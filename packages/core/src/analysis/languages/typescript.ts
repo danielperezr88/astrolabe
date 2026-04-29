@@ -184,6 +184,9 @@ export const typescriptLanguage: LanguageDefinition = {
     return decoratorPatterns;
   },
 
+  importSemantics: 'named',
+  mroStrategy: 'first-wins',
+
   async load(wasmDir: string): Promise<WtsLanguage> {
     const wasmPath = resolve(wasmDir, this.wasmFile);
     return Language.load(wasmPath);
@@ -217,6 +220,9 @@ export const tsxLanguage: LanguageDefinition = {
   get decoratorPatterns(): QueryPattern[] {
     return decoratorPatterns;
   },
+
+  importSemantics: 'named',
+  mroStrategy: 'first-wins',
 
   async load(wasmDir: string): Promise<WtsLanguage> {
     const wasmPath = resolve(wasmDir, this.wasmFile);

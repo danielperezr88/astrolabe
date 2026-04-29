@@ -33,7 +33,7 @@ export const javaLanguage: LanguageDefinition = {
   name: 'java',
   extensions: ['.java'],
   wasmFile: 'tree-sitter-java.wasm',
-  importSemantics: 'named',
+  importSemantics: 'named', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> {

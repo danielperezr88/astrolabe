@@ -21,7 +21,7 @@ const importPatterns: QueryPattern[] = [
 ] as QueryPattern[];
 
 export const cppLanguage: LanguageDefinition = {
-  name: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh'], wasmFile: 'tree-sitter-cpp.wasm', importSemantics: 'wildcard-transitive',
+  name: 'cpp', extensions: ['.cpp', '.cc', '.cxx', '.hpp', '.hh'], wasmFile: 'tree-sitter-cpp.wasm',   importSemantics: 'wildcard-transitive', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };

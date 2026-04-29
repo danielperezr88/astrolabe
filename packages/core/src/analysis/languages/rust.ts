@@ -131,6 +131,7 @@ export const rustLanguage: LanguageDefinition = {
   extensions: ['.rs'],
   wasmFile: 'tree-sitter-rust.wasm',
   importSemantics: 'named',
+  mroStrategy: 'first-wins',
 
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },
