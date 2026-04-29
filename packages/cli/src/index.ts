@@ -69,10 +69,10 @@ program
       // #280: Attempt incremental analysis if previous analysis exists
       const storedMeta = loadMeta(dirname(dbPath));
       const dbExists = existsSync(dbPath);
-  let graph: ReturnType<typeof createKnowledgeGraph>;
-  let nodeCount = 0;
-  let edgeCount = 0;
-  let isIncremental = false; // #338: track for AGENTS.md generation
+      let graph: ReturnType<typeof createKnowledgeGraph>;
+      let nodeCount = 0;
+      let edgeCount = 0;
+      let isIncremental = false; // #338: track for AGENTS.md generation
 
       if (storedMeta && dbExists) {
         // ── Incremental mode ──
