@@ -974,7 +974,7 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
         id: req.id,
         result: {
           protocolVersion: '2024-11-05',
-          capabilities: { tools: {}, resources: { subscribe: false }, prompts: {} },
+          capabilities: { tools: {}, resources: { subscribe: false }, prompts: { listChanged: false } },
           serverInfo: { name: 'astrolabe', version: '0.2.0' },
         },
       };
