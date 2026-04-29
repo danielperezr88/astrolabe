@@ -16,6 +16,7 @@ import {
   loadRegistry, saveRegistry,
   generateSkill,
   loadMeta, saveMeta, computeFileDiff, buildMeta,
+  installHooks,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -137,6 +138,10 @@ program
       const entry = { name: repoName, path: repoPath, dbPath, lastCommit, indexedAt: Date.now() };
       if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
       saveRegistry(repos);
+
+      // #276: Install Claude Code hooks for auto-augmentation
+      const hookResult = installHooks(repoPath);
+      log.info('Claude Code hooks installed', { scripts: hookResult.scripts, config: hookResult.config });
 
       log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, repo: repoName });
     } catch (err) {
