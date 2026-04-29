@@ -19,8 +19,43 @@ import { loadRegistry, type RegistryEntry } from './registry.js';
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
 import { McpTransport } from './transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
+import { executeTraversal, type TraversalQuery } from './traverse.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
+
+interface GraphTraversalQuery {
+  match?: { label?: string; filter?: Record<string, unknown>; id?: string };
+  traverse?: Array<{
+    direction: 'incoming' | 'outgoing' | 'any';
+    type?: string;
+    filter?: Record<string, unknown>;
+    nodeFilter?: { label?: string; filter?: Record<string, unknown> };
+  }>;
+  return?: string[];
+  limit?: number;
+  repo?: string;
+}
+
+/** Check if a property bag matches a filter spec. Supports gt/gte/lt/lte operators. */
+function matchesFilter(props: Record<string, unknown>, filter?: Record<string, unknown>): boolean {
+  if (!filter || Object.keys(filter).length === 0) return true;
+  for (const [key, expected] of Object.entries(filter)) {
+    const actual = props[key];
+    if (expected === null || expected === undefined) {
+      if (actual != null) return false;
+    } else if (typeof expected === 'object' && !Array.isArray(expected)) {
+      // Operator object: { gt: 0.8 }, { lt: 10 }, etc.
+      const op = expected as Record<string, number>;
+      if (op.gt !== undefined && (typeof actual !== 'number' || actual <= op.gt)) return false;
+      if (op.gte !== undefined && (typeof actual !== 'number' || actual < op.gte)) return false;
+      if (op.lt !== undefined && (typeof actual !== 'number' || actual >= op.lt)) return false;
+      if (op.lte !== undefined && (typeof actual !== 'number' || actual > op.lte)) return false;
+    } else {
+      if (actual !== expected) return false;
+    }
+  }
+  return true;
+}
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -453,6 +488,98 @@ class LocalBackend {
     return { columns: ['id', 'label', 'name', 'filePath'], rows: results };
   }
 
+  // ── Graph Traversal Query Engine (#369) ───────────────────────────────
+
+  /**
+   * JSON-based graph traversal engine.
+   *
+   * Supports: node-pattern matching → relationship traversal chains →
+   * property filtering → limited returns.
+   *
+   * Query shape:
+   * {
+   *   match: { label?: string, filter?: { name: "..." }, id?: string },
+   *   traverse: [{ direction: "incoming"|"outgoing"|"any", type?: "CALLS",
+   *               filter?: { confidence: { gt: 0.8 } } }],
+   *   return: ["name", "filePath"],
+   *   limit: 50
+   * }
+   */
+  graphQuery(query: GraphTraversalQuery, repo?: string) {
+    const ctx = this.getRepo(repo);
+    const graph = ctx.loadGraph();
+    const limit = query.limit ?? 50;
+
+    // Step 1: Match starting nodes
+    let currentIds: Set<string>;
+    if (query.match?.id) {
+      currentIds = new Set([query.match.id]);
+    } else {
+      currentIds = new Set<string>();
+      for (const node of graph.iterNodes()) {
+        if (query.match?.label && node.label !== query.match.label) continue;
+        if (!matchesFilter(node.properties, query.match?.filter)) continue;
+        currentIds.add(node.id);
+        if (currentIds.size >= limit * 3) break; // safety cap on match phase
+      }
+    }
+
+    if (currentIds.size === 0) return { columns: [], rows: [] };
+
+    // Step 2: Traverse relationships (chain of steps)
+    if (query.traverse) {
+      for (const step of query.traverse) {
+        const nextIds = new Set<string>();
+        for (const rel of graph.iterRelationships()) {
+          const isMatch = step.direction === 'any'
+            ? (currentIds.has(rel.sourceId) || currentIds.has(rel.targetId))
+            : step.direction === 'outgoing'
+              ? currentIds.has(rel.sourceId)
+              : currentIds.has(rel.targetId);
+
+          if (!isMatch) continue;
+          if (step.type && rel.type !== step.type) continue;
+          if (!matchesFilter(rel as unknown as Record<string, unknown>, step.filter)) continue;
+
+          const neighborId = step.direction === 'outgoing'
+            ? rel.targetId
+            : step.direction === 'incoming'
+              ? rel.sourceId
+              : currentIds.has(rel.sourceId) ? rel.targetId : rel.sourceId;
+
+          // Apply node-level filter on the neighbor
+          const neighbor = graph.getNode(neighborId);
+          if (!neighbor) continue;
+          if (step.nodeFilter?.label && neighbor.label !== step.nodeFilter.label) continue;
+          if (!matchesFilter(neighbor.properties, step.nodeFilter?.filter)) continue;
+
+          nextIds.add(neighborId);
+          if (nextIds.size >= limit) break;
+        }
+        currentIds = nextIds;
+        if (currentIds.size === 0) break;
+      }
+    }
+
+    // Step 3: Collect results with requested properties
+    const columns = query.return ?? ['id', 'label', 'name', 'filePath'];
+    const rows: Array<Record<string, unknown>> = [];
+    for (const id of currentIds) {
+      const node = graph.getNode(id);
+      if (!node) continue;
+      const row: Record<string, unknown> = {};
+      for (const col of columns) {
+        if (col === 'id') row.id = node.id;
+        else if (col === 'label') row.label = node.label;
+        else row[col] = node.properties[col] ?? null;
+      }
+      rows.push(row);
+      if (rows.length >= limit) break;
+    }
+
+    return { columns, rows, total_matched: currentIds.size, returned: rows.length };
+  }
+
   shutdown(): void {
     for (const ctx of this.repos.values()) {
       ctx.store.close();
@@ -495,7 +622,7 @@ const TOOLS: Record<string, {
       const repos = backend.listRepos();
       if (repos.length === 0) return { content: [{ type: 'text', text: 'No indexed repositories. Run `astrolabe analyze <path>` first.' }] };
       const lines = repos.map((r) => `${r.name} (${r.path}) — ${new Date(r.indexedAt).toISOString()}`);
-      return { content: [{ type: 'text', text: `Indexed repositories:\n${lines.join('\n')}\n\nNext: use query({query: "your search"}) or context({name: "symbolName"})` }] };
+      return { content: [{ type: 'text', text: `Indexed repositories:\n${lines.join('\n')}\n\nNext: use query({query: "your search"}) or context({name: "symbolName"}). For complex graph patterns, use cypher({match: {...}}). Read astrolabe://repo/{name}/schema for node labels and relationship types.` }] };
     },
   },
 
@@ -625,6 +752,48 @@ const TOOLS: Record<string, {
       const label = requireString(params, 'label');
       const result = backend.filterByLabel(label, params.repo as string);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    },
+  },
+
+  'astrolabe.cypher': {
+    name: 'astrolabe.cypher',
+    description: `Graph traversal queries over the knowledge graph. Chain-match nodes and traverse edges.
+
+QUERY FORMAT:
+{
+  "query": {
+    "match": { "label": "Function" },         // optional: filter start nodes by label/name/id
+    "traverse": [                              // optional: chain of edge walks
+      { "direction": "incoming", "type": "CALLS", "minConfidence": 0.8 },
+      { "direction": "outgoing", "type": "MEMBER_OF" }
+    ],
+    "limit": 50                                // optional: max results (default 50)
+  }
+}
+If match is omitted, starts from all nodes (limited to prevent OOM).
+
+EXAMPLES:
+- All classes: { query: { match: { label: "Class" } } }
+- What calls validateUser: { query: { match: { name: "validateUser" }, traverse: [{ direction: "incoming", type: "CALLS" }] } }
+- Call chain from auth: { query: { match: { name: "Authentication", label: "Community" }, traverse: [{ direction: "incoming", type: "MEMBER_OF" }, { direction: "outgoing", type: "CALLS" }] } }
+
+RETURNS: { nodes: [...], edges: [...], nodeCount, edgeCount }`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'object', description: 'Traversal query object with match, traverse[], and limit' },
+        repo: { type: 'string', description: 'Repository name' },
+      },
+      required: ['query'],
+    },
+    handler: async (params) => {
+      const query = params.query as TraversalQuery;
+      if (!query) throw new Error('Missing required parameter: query');
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const result = executeTraversal(graph, query);
+      const nextHint = '\n\nNext: use context({name: "<symbol>"}) for 360-degree view of any result node.';
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
   },
 
