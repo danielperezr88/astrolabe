@@ -7,8 +7,9 @@
  * can add custom content outside the block.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { KnowledgeGraph } from '../core/types.js';
 import type { RegistryEntry } from '../mcp/registry.js';
 
@@ -103,6 +104,14 @@ Last indexed: ${opts.lastCommit ? opts.lastCommit.substring(0, 7) : 'unknown'}
 ${END_MARKER}`;
 }
 
+// ── Atomic file write (#337) ─────────────────────────────────────────────
+
+function atomicWrite(path: string, content: string): void {
+  const tmp = path + '.tmp-' + randomUUID();
+  writeFileSync(tmp, content, 'utf-8');
+  renameSync(tmp, path);
+}
+
 // ── File update logic ─────────────────────────────────────────────────────
 
 function updateFile(path: string, newBlock: string): boolean {
@@ -115,12 +124,12 @@ function updateFile(path: string, newBlock: string): boolean {
       // Replace existing block
       const before = content.substring(0, startIdx);
       const after = content.substring(endIdx + END_MARKER.length);
-      writeFileSync(path, before + newBlock + after, 'utf-8');
+      atomicWrite(path, before + newBlock + after);
       return true;
     }
 
     // Append to existing file
-    writeFileSync(path, content.trimEnd() + '\n\n' + newBlock + '\n', 'utf-8');
+    atomicWrite(path, content.trimEnd() + '\n\n' + newBlock + '\n');
     return true;
   }
 
@@ -171,27 +180,36 @@ export function generateAgentFiles(repoPath: string, opts: GenerateOptions): Age
 
 function generateCommunitySkills(repoPath: string, opts: GenerateOptions): number {
   const skillsDir = join(repoPath, '.astrolabe', 'skills');
-  if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
+
+  // #339: Clean stale skills from previous runs
+  if (existsSync(skillsDir)) {
+    rmSync(skillsDir, { recursive: true, force: true });
+  }
+  mkdirSync(skillsDir, { recursive: true });
 
   const graph = opts.graph!;
   const communities = new Map<string, string[]>();
 
-  // Map symbols to communities via MEMBER_OF edges
+  // #336: Pre-build MEMBER_OF index for O(1) lookup (was O(S×R))
+  const memberOf = new Map<string, string>();
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type === 'MEMBER_OF') {
+      const target = graph.getNode(rel.targetId);
+      if (target) memberOf.set(rel.sourceId, (target.properties.name as string) ?? target.id);
+    }
+  }
+
+  // Collect communities and their symbols
   for (const node of graph.iterNodes()) {
     if (node.label === 'Community') {
       const name = (node.properties.name as string) ?? node.id;
       if (!communities.has(name)) communities.set(name, []);
     } else if (['Function', 'Class', 'Method', 'Interface'].includes(node.label)) {
       const symbolName = (node.properties.name as string) ?? node.id;
-      for (const rel of graph.iterRelationships()) {
-        if (rel.type === 'MEMBER_OF' && rel.sourceId === node.id) {
-          const cNode = graph.getNode(rel.targetId);
-          if (cNode) {
-            const cName = (cNode.properties.name as string) ?? cNode.id;
-            if (!communities.has(cName)) communities.set(cName, []);
-            communities.get(cName)!.push(symbolName);
-          }
-        }
+      const cName = memberOf.get(node.id);
+      if (cName) {
+        if (!communities.has(cName)) communities.set(cName, []);
+        communities.get(cName)!.push(symbolName);
       }
     }
   }

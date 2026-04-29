@@ -69,12 +69,14 @@ program
       // #280: Attempt incremental analysis if previous analysis exists
       const storedMeta = loadMeta(dirname(dbPath));
       const dbExists = existsSync(dbPath);
-      let graph: ReturnType<typeof createKnowledgeGraph>;
-      let nodeCount = 0;
-      let edgeCount = 0;
+  let graph: ReturnType<typeof createKnowledgeGraph>;
+  let nodeCount = 0;
+  let edgeCount = 0;
+  let isIncremental = false; // #338: track for AGENTS.md generation
 
       if (storedMeta && dbExists) {
         // ── Incremental mode ──
+        isIncremental = true; // #338: track for AGENTS.md generation
         log.info('Incremental analysis enabled — comparing file hashes...');
         const diff = computeFileDiff(currentHashes, storedMeta);
         const totalChanged = diff.changed.length + diff.added.length + diff.deleted.length;
@@ -173,7 +175,7 @@ program
           routeCount: lc['Route'] ?? 0,
           toolCount: lc['Tool'] ?? 0,
           lastCommit,
-          isIncremental: false, // full analysis path
+          isIncremental,
           graph: opts.skills ? graph : undefined,
           skills: opts.skills ?? false,
         });
