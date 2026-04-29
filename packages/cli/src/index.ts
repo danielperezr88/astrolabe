@@ -48,9 +48,17 @@ program
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
   .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean }) => {
+  .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; maxFileSize?: number }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
+
+    // #373: Configure max file size (env var + CLI flag)
+    if (opts.maxFileSize) {
+      process.env.ASTROLABE_MAX_FILE_SIZE = String(Math.max(1, opts.maxFileSize));
+      log.info(`ASTROLABE_MAX_FILE_SIZE: effective threshold ${process.env.ASTROLABE_MAX_FILE_SIZE}KB (default 512KB)`);
+    }
+
     try {
       await initParser();
       const outDir = dirname(opts.output);

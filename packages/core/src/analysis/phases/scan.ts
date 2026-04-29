@@ -75,8 +75,22 @@ const BINARY_EXTENSIONS = new Set([
   '.db', '.sqlite', '.sqlite3',
 ]);
 
-/** Max file size in bytes to scan (512 KB default). */
-const MAX_FILE_SIZE = 512 * 1024;
+/** Max file size in bytes to scan (512 KB default). Overridable via env or context. */
+const DEFAULT_MAX_FILE_SIZE = 512 * 1024;
+const MAX_FILE_SIZE_CAP = 32 * 1024 * 1024; // 32 MB — tree-sitter parser ceiling
+
+function getMaxFileSize(context: PhaseContext): number {
+  // Env override
+  const envVal = process.env.ASTROLABE_MAX_FILE_SIZE;
+  if (envVal) {
+    const kib = parseInt(envVal, 10);
+    if (!isNaN(kib) && kib > 0) return Math.min(kib * 1024, MAX_FILE_SIZE_CAP);
+  }
+  // Context option override
+  const ctxVal = context.state.get('options:maxFileSize') as number | undefined;
+  if (ctxVal !== undefined && ctxVal > 0) return Math.min(ctxVal * 1024, MAX_FILE_SIZE_CAP);
+  return DEFAULT_MAX_FILE_SIZE;
+}
 
 /** Config/metadata extensions to include even without a language provider. */
 const CONFIG_EXTENSIONS = new Set([
@@ -199,6 +213,7 @@ function discoverFiles(
   repoPath: string,
   patterns: RegExp[],
   files: FileEntry[],
+  maxFileSize: number,
 ): void {
   let entries: string[];
   try {
@@ -221,7 +236,7 @@ function discoverFiles(
     }
 
     if (st.isDirectory()) {
-      discoverFiles(fullPath, repoPath, patterns, files);
+      discoverFiles(fullPath, repoPath, patterns, files, maxFileSize);
     } else if (st.isFile()) {
       // Skip binary files by extension (#77)
       const ext = extname(entry).toLowerCase();
@@ -231,8 +246,8 @@ function discoverFiles(
       const language = langDef ? langDef.name : null;
       // Skip if neither a code extension nor a recognized config extension (#115)
       if (!langDef && !getAllowedExtensions().has(ext)) continue;
-      // Skip large files (#77)
-      if (st.size > MAX_FILE_SIZE) continue;
+      // Skip large files (#77) — threshold configurable via --max-file-size or ASTROLABE_MAX_FILE_SIZE
+      if (st.size > maxFileSize) continue;
       const hash = computeHash(fullPath);
       files.push({
         path: relPath,
@@ -256,8 +271,9 @@ export const scanPhase: PhaseDefinition<ScanOutput> = {
   execute(context: PhaseContext): ScanOutput {
     const patterns = buildIgnorePatterns(context.repoPath);
     const files: FileEntry[] = [];
+    const maxFileSize = getMaxFileSize(context);
 
-    discoverFiles(context.repoPath, context.repoPath, patterns, files);
+    discoverFiles(context.repoPath, context.repoPath, patterns, files, maxFileSize);
 
     // Sort by path for determinism
     files.sort((a, b) => a.path.localeCompare(b.path));

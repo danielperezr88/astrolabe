@@ -160,5 +160,51 @@ describe('Scan Phase', () => {
 
       rmSync(repo, { recursive: true, force: true });
     });
+
+    it('skips files larger than configured max file size (#373)', async () => {
+      const smallContent = 'a'.repeat(100);
+      const largeContent = 'a'.repeat(2000); // 2KB — above a 1KB limit
+      const repo = makeRepo({
+        'src/small.ts': smallContent,
+        'src/large.ts': largeContent,
+      });
+
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext(repo, graph, () => {});
+      // Override max to 1KB (1 * 1024) — large.ts is 2000 bytes, should be skipped
+      context.state.set('options:maxFileSize', 1);
+      const output = await runPipeline([scanPhase], context);
+      const scanOut = output[0] as ScanOutput;
+
+      expect(scanOut.files).toHaveLength(1);
+      expect(scanOut.files[0].path).toBe('src/small.ts');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('respects ASTROLABE_MAX_FILE_SIZE env var override (#373)', async () => {
+      const smallContent = 'a'.repeat(100);
+      const largeContent = 'a'.repeat(5000); // 5KB
+      const repo = makeRepo({
+        'src/small.ts': smallContent,
+        'src/large.ts': largeContent,
+      });
+
+      process.env.ASTROLABE_MAX_FILE_SIZE = '2'; // 2KB threshold
+      try {
+        const graph = createKnowledgeGraph();
+        const context = createPhaseContext(repo, graph, () => {});
+        const output = await runPipeline([scanPhase], context);
+        const scanOut = output[0] as ScanOutput;
+
+        // large.ts is 5000 bytes > 2KB, should be skipped
+        expect(scanOut.files).toHaveLength(1);
+        expect(scanOut.files[0].path).toBe('src/small.ts');
+      } finally {
+        delete process.env.ASTROLABE_MAX_FILE_SIZE;
+      }
+
+      rmSync(repo, { recursive: true, force: true });
+    });
   });
 });
