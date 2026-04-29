@@ -21,6 +21,7 @@ import {
   autoSetup,
   generateAgentFiles,
   startHttpServer,
+  generateWiki,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -412,6 +413,35 @@ program.command('setup')
     } else {
       console.log(`\n${configured} editor(s) configured. Restart your editor to activate Astrolabe MCP.`);
     }
+  });
+
+// ── wiki (LLM-powered documentation generation) ────────────────────────────
+program.command('wiki <repoPath>')
+  .description('Generate LLM-powered wiki documentation from knowledge graph (#269)')
+  .option('--model <model>', 'LLM model name', 'gpt-4o-mini')
+  .option('--base-url <url>', 'LLM API base URL')
+  .option('--force', 'Force full regeneration of wiki')
+  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; force?: boolean }) => {
+    const repoName = repoPath.split('/').pop() || repoPath;
+    const dbPath = join(repoPath, '.astrolabe', 'astrolabe.db');
+
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    const graph = store.loadGraph();
+    store.close();
+
+    console.log(`Generating wiki for ${repoName}...`);
+    const result = await generateWiki({
+      repoPath, repoName, graph,
+      model: opts.model, baseUrl: opts.baseUrl, force: opts.force,
+    });
+
+    console.log(`Wiki generated: ${result.pageCount} pages, ${result.moduleCount} modules`);
+    console.log(`Overview: ${result.overviewPath}`);
   });
 
 program.parse();
