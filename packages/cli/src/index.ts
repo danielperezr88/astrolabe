@@ -19,6 +19,7 @@ import {
   installHooks,
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
   autoSetup,
+  generateAgentFiles,
   startHttpServer,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
@@ -42,7 +43,9 @@ program
   .option('-o, --output <path>', 'Output database path', '.astrolabe/astrolabe.db')
   .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean }) => {
+  .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
+  .option('--skills', 'Generate per-community SKILL.md files (#267)')
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
     try {
@@ -153,6 +156,29 @@ program
       // #276: Install Claude Code hooks for auto-augmentation
       const hookResult = installHooks(repoPath);
       log.info('Claude Code hooks installed', { scripts: hookResult.scripts, config: hookResult.config });
+
+      // #268, #267: Generate AGENTS.md/CLAUDE.md and per-community skills
+      if (!opts.skipAgentsMd) {
+        // Count nodes by label
+        const lc: Record<string, number> = {};
+        for (const n of graph.iterNodes()) lc[n.label] = (lc[n.label] ?? 0) + 1;
+
+        const agentResult = generateAgentFiles(repoPath, {
+          repoName,
+          repoPath,
+          nodeCount,
+          relationshipCount: edgeCount,
+          processCount: lc['Process'] ?? 0,
+          communityCount: lc['Community'] ?? 0,
+          routeCount: lc['Route'] ?? 0,
+          toolCount: lc['Tool'] ?? 0,
+          lastCommit,
+          isIncremental: false, // full analysis path
+          graph: opts.skills ? graph : undefined,
+          skills: opts.skills ?? false,
+        });
+        log.info('Agent files generated', { agentsMd: agentResult.agentsMd, claudeMd: agentResult.claudeMd, skillsCount: agentResult.skillsCount });
+      }
 
       log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, repo: repoName });
     } catch (err) {
