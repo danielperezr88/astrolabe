@@ -693,6 +693,7 @@ function getResources() {
     { uri: 'astrolabe://repos', name: 'All Indexed Repositories', description: 'List all indexed repositories with stats', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/context', name: 'Repo Context', description: 'Codebase overview, stats, staleness check', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/clusters', name: 'Clusters', description: 'All functional clusters with cohesion scores', mimeType: 'text/plain' },
+    { uri: 'astrolabe://repo/{name}/cluster/{clusterName}', name: 'Cluster Detail', description: 'Cluster members and dependency details', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/processes', name: 'Processes', description: 'All execution flows', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/process/{processName}', name: 'Process Trace', description: 'Full process trace with steps', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/schema', name: 'Graph Schema', description: 'Node labels and relationship types', mimeType: 'text/plain' },
@@ -727,6 +728,33 @@ function readResource(uri: string): string | null {
         if (node.label === 'Community') clusters.push(`- ${node.properties.name ?? node.id} (${node.properties.symbolCount ?? 0} symbols, cohesion: ${node.properties.cohesion ?? 0})`);
       }
       return clusters.length === 0 ? 'No clusters detected.' : clusters.join('\n');
+    } catch { return null; }
+  }
+
+  // astrolabe://repo/{name}/cluster/{clusterName}
+  const ccMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/cluster\/(.+)$/);
+  if (ccMatch) {
+    try {
+      const ctx = backend.getRepo(ccMatch[1]);
+      const graph = ctx.loadGraph();
+      const clusterName = ccMatch[2];
+      const members: string[] = [];
+      let cohesion = 0;
+      for (const node of graph.iterNodes()) {
+        if (node.label !== 'Community') continue;
+        if ((node.properties.name === clusterName || node.id.includes(clusterName)) && node.properties.name) {
+          cohesion = (node.properties.cohesion as number) ?? 0;
+          for (const rel of graph.iterRelationships()) {
+            if (rel.type === 'MEMBER_OF' && rel.targetId === node.id) {
+              const sym = graph.getNode(rel.sourceId);
+              if (sym) members.push(`- ${sym.label.padEnd(12)} ${sym.properties.name ?? '?'} (${sym.properties.filePath ?? '?'})`);
+            }
+          }
+          break;
+        }
+      }
+      if (members.length === 0) return `Cluster "${clusterName}" not found.`;
+      return `Cluster: ${clusterName}\nCohesion: ${cohesion}\nMembers:\n${members.join('\n')}`;
     } catch { return null; }
   }
 
