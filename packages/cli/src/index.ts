@@ -15,7 +15,9 @@ import {
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry,
   generateSkill,
+  loadMeta, saveMeta, computeFileDiff, buildMeta,
 } from '@astrolabe/core';
+import type { ScanOutput } from '@astrolabe/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -40,41 +42,101 @@ program
     log.info('Starting analysis', { repoPath, output: opts.output });
     try {
       await initParser();
-      const graph = createKnowledgeGraph();
-      const context = createPhaseContext(repoPath, graph, () => undefined);
-      // Run ALL phases in ONE pipeline call so dependencies are satisfied (#54)
-      // Full 13-phase pipeline DAG (#136, #152)
-      await runPipeline([
-        scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
-        resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-        mroPhase, communityPhase, processTracingPhase,
-      ], context);
-      // Ensure output directory exists (#58)
       const outDir = dirname(opts.output);
       if (outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-      // #238: Resolve DB path to absolute so registry entry matches actual file location
       const dbPath = resolve(opts.output);
+      const repoName = basename(repoPath);
+      const lastCommit = getGitCommit(repoPath);
+      const onProgress = () => undefined;
+
+      // Phase 1: Always scan first — needed for meta.json and incremental diff
+      const scanGraph = createKnowledgeGraph();
+      const scanCtx = createPhaseContext(repoPath, scanGraph, onProgress);
+      await runPipeline([scanPhase], scanCtx);
+      const scanOutput = (scanCtx.state.get('output:scan') as ScanOutput | undefined);
+      if (!scanOutput) throw new Error('Scan phase did not produce output');
+      const currentHashes = new Map<string, string>();
+      for (const f of scanOutput.files) currentHashes.set(f.path, f.hash);
+
+      // #280: Attempt incremental analysis if previous analysis exists
+      const storedMeta = loadMeta(dirname(dbPath));
+      const dbExists = existsSync(dbPath);
+      let graph: ReturnType<typeof createKnowledgeGraph>;
+      let nodeCount = 0;
+      let edgeCount = 0;
+
+      if (storedMeta && dbExists) {
+        // ── Incremental mode ──
+        log.info('Incremental analysis enabled — comparing file hashes...');
+        const diff = computeFileDiff(currentHashes, storedMeta);
+        const totalChanged = diff.changed.length + diff.added.length + diff.deleted.length;
+        log.info('Incremental diff', {
+          changed: diff.changed.length, added: diff.added.length,
+          deleted: diff.deleted.length, unchanged: diff.unchanged.length,
+        });
+
+        // If nothing changed, skip analysis entirely but still save meta
+        if (totalChanged === 0 && lastCommit === storedMeta.lastCommit) {
+          log.info('No changes detected — analysis skipped.');
+          saveMeta(dirname(dbPath), buildMeta(currentHashes, lastCommit));
+          return;
+        }
+
+        // Load existing graph from DB, patch for deleted/changed files
+        const loadStore = createSqliteStore(dbPath);
+        graph = loadStore.loadGraph();
+        loadStore.close();
+
+        for (const fp of diff.deleted) graph.removeNodesByFile(fp);
+        for (const fp of diff.changed) graph.removeNodesByFile(fp);
+
+        // Run remaining phases with file filter
+        const ctx = createPhaseContext(repoPath, graph, onProgress);
+        ctx.state.set('output:scan', scanOutput);
+        ctx.state.set('incremental:changedPaths', new Set([...diff.changed, ...diff.added]));
+        await runPipeline([
+          structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
+          resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
+          mroPhase, communityPhase, processTracingPhase,
+        ], ctx);
+
+        nodeCount = graph.nodeCount;
+        edgeCount = graph.relationshipCount;
+        log.info('Incremental analysis complete', { nodes: nodeCount, edges: edgeCount });
+      } else {
+        // ── Full analysis (first run or missing meta/DB) ──
+        graph = createKnowledgeGraph();
+        const context = createPhaseContext(repoPath, graph, onProgress);
+        context.state.set('output:scan', scanOutput);
+        await runPipeline([
+          structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
+          resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
+          mroPhase, communityPhase, processTracingPhase,
+        ], context);
+        nodeCount = graph.nodeCount;
+        edgeCount = graph.relationshipCount;
+        log.info('Full analysis complete', { nodes: nodeCount, edges: edgeCount });
+      }
+
+      // Save graph to SQLite
       const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
-      const nodeCount = graph.nodeCount;
-      const edgeCount = graph.relationshipCount;
-
-      // Build FTS index so query/context commands work (#132)
       const fts = createFtsSearch(dbPath);
       fts.indexGraph(store);
       fts.close();
-
       store.close();
+
+      // Save meta.json with current file hashes for next incremental run
+      saveMeta(dirname(dbPath), buildMeta(currentHashes, lastCommit));
 
       // Register repo in global registry for multi-repo MCP support
       const repos = loadRegistry();
-      const repoName = basename(repoPath);
       const existingIdx = repos.findIndex((r) => r.path === repoPath);
-      const entry = { name: repoName, path: repoPath, dbPath, lastCommit: getGitCommit(repoPath), indexedAt: Date.now() };
+      const entry = { name: repoName, path: repoPath, dbPath, lastCommit, indexedAt: Date.now() };
       if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
       saveRegistry(repos);
 
-      log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, registered: repoName });
+      log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, repo: repoName });
     } catch (err) {
       log.error('Analysis failed', { error: String(err) });
       process.exit(1);

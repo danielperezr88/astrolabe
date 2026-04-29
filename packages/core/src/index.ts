@@ -40,3 +40,7 @@ export type { Logger, LogLevel, LogEntry } from './logging/logger.js';
 export { startMcpServer, loadRegistry, saveRegistry } from './mcp/index.js';
 export type { RegistryEntry } from './mcp/registry.js';
 export { generateSkill } from './skill/index.js';
+export { detectChanges } from './incremental/index.js';
+export type { IncrementalState } from './incremental/index.js';
+export { loadMeta, saveMeta, computeFileDiff, buildMeta } from './analysis/meta.js';
+export type { MetaFile, FileDiff } from './analysis/meta.js';

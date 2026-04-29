@@ -66,13 +66,19 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
     const { graph, repoPath } = context;
     const wasmDir = defaultWasmDir();
 
+    // #280: Support incremental indexing — only parse changed files when filter is set
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     let symbolCount = 0;
     let importCount = 0;
     let fileCount = 0;
     let errorCount = 0;
     const symbolCounts: Record<string, number> = {};
 
-    const parsable = scanOutput.files.filter(isParsable);
+    let parsable = scanOutput.files.filter(isParsable);
+    if (changedPaths) {
+      parsable = parsable.filter((f) => changedPaths.has(f.path));
+    }
 
     // Process in chunks to keep memory under control
     for (let i = 0; i < parsable.length; i += CHUNK_SIZE) {
