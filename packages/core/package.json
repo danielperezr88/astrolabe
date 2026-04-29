@@ -28,6 +28,7 @@
   ],
   "dependencies": {
     "@astrolabe/shared": "^0.1.0",
+    "@ladybugdb/core": "^0.16.0",
     "better-sqlite3": "^11.0.0",
     "web-tree-sitter": "^0.26.8"
   },
