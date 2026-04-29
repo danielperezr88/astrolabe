@@ -46,6 +46,8 @@ export { detectChanges } from './incremental/index.js';
 export type { IncrementalState } from './incremental/index.js';
 export { autoSetup } from './setup/index.js';
 export type { SetupResult } from './setup/index.js';
+export { startHttpServer } from './server/http-server.js';
+export type { ServeOptions } from './server/http-server.js';
 export { loadMeta, saveMeta, computeFileDiff, buildMeta } from './analysis/meta.js';
 export type { MetaFile, FileDiff } from './analysis/meta.js';
 export { installHooks, generateHooksConfig } from './hooks/index.js';

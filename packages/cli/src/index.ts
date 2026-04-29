@@ -19,6 +19,7 @@ import {
   installHooks,
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
   autoSetup,
+  startHttpServer,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -180,6 +181,18 @@ program
   .command('serve-mcp')
   .description('Start an MCP server for AI assistant integration')
   .action(async () => { console.error('Astrolabe MCP server starting...'); await startMcpServer(); });
+
+// ── serve (HTTP API) ──────────────────────────────────────────────────────
+program
+  .command('serve')
+  .description('Start an HTTP API server for web UI and headless integration (#262)')
+  .option('-p, --port <number>', 'Port to listen on', '4747')
+  .option('-h, --host <host>', 'Host to bind to', 'localhost')
+  .action((opts: { port: string; host: string }) => {
+    const server = startHttpServer({ port: parseInt(opts.port, 10), host: opts.host });
+    process.on('SIGINT', () => { server.close(); process.exit(0); });
+    process.on('SIGTERM', () => { server.close(); process.exit(0); });
+  });
 
 // ── status ────────────────────────────────────────────────────────────────────
 program
