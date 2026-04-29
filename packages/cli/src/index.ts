@@ -12,6 +12,7 @@ import {
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
   mroPhase, communityPhase, processTracingPhase,
   cobolPhase,
+  callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry,
@@ -120,6 +121,7 @@ program
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase,
           cobolPhase,
+          callResolutionPhase, scopeResolutionPhase,
         ], ctx);
 
         nodeCount = graph.nodeCount;

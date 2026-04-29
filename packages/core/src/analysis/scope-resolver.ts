@@ -153,8 +153,11 @@ const pythonResolver: ScopeResolver = {
       }
 
       // Find methods that belong to this class
+      // #365: Scope methods by file path — prevent cross-file class name collisions
       for (const method of graph.iterNodes()) {
-        if (method.label === 'Method' && method.properties.parentClass === name) {
+        if (method.label === 'Method'
+            && method.properties.parentClass === name
+            && method.properties.filePath === fp) {
           index.classScopes.get(node.id)!.methods.push({
             name: (method.properties.name as string) ?? '',
             nodeId: method.id,
@@ -221,6 +224,22 @@ function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
         scope.symbols.set((symNode.properties.name as string) ?? symNode.id, symNode);
       }
     }
+  }
+
+  // #363: Populate imports from Import nodes in the graph
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Import') continue;
+    const fp = (node.properties.filePath as string) ?? '';
+    const alias = (node.properties.alias as string) ?? (node.properties.name as string) ?? '';
+    const target = (node.properties.target as string) ?? (node.properties.importSource as string) ?? '';
+    if (!fp || !alias || !target) continue;
+
+    let scope = index.moduleScopes.get(fp);
+    if (!scope) {
+      scope = { filePath: fp, symbols: new Map(), imports: [] };
+      index.moduleScopes.set(fp, scope);
+    }
+    scope.imports.push({ alias, target });
   }
 
   // Build type bindings for O(1) symbol lookup

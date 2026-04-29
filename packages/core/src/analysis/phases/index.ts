@@ -12,6 +12,8 @@ export { mroPhase } from './mro.js';
 export { communityPhase } from './community.js';
 export { processTracingPhase } from './process-tracing.js';
 export { cobolPhase } from './cobol.js';
+export { callResolutionPhase } from '../call-processor.js';
+export { scopeResolutionPhase } from '../scope-resolver.js';
 export type { FileEntry, ScanOutput } from './scan.js';
 export type { StructureOutput } from './structure.js';
 export type { FrameworkOutput } from './framework.js';

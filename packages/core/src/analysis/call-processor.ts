@@ -36,56 +36,38 @@ function resolveConfidence(exactMatch: boolean, isVariadic: boolean): number {
   return 0.5; // global fallback
 }
 
-// ── Stage 1: Extract call sites ────────────────────────────────────────────
+// ── Stage 5: Resolve target with file-scoped name→node index (#364, #366) ─
 
-function extractCalls(graph: KnowledgeGraph): CallSite[] {
-  const calls: CallSite[] = [];
+let _nameIndex: Map<string, GraphNode[]> | null = null;
+
+function buildNameIndex(graph: KnowledgeGraph): Map<string, GraphNode[]> {
+  if (_nameIndex) return _nameIndex;
+  _nameIndex = new Map();
   for (const node of graph.iterNodes()) {
-    if (node.label !== 'Function' && node.label !== 'Method') continue;
-    const name = (node.properties.name as string) ?? '';
-    const fp = (node.properties.filePath as string) ?? '';
-    const sl = (node.properties.startLine as number) ?? 1;
-    // Count parameters as argCount from the node properties
-    const argCount = ((node.properties.paramCount as number) ?? (node.properties.arity as number) ?? 0);
-
-    calls.push({
-      name,
-      form: node.label === 'Method' ? 'member' : 'free',
-      argCount,
-      filePath: fp,
-      startLine: sl,
-    });
-  }
-  return calls;
-}
-
-// ── Stage 2: Classify form ─────────────────────────────────────────────────
-
-function classifyCall(call: CallSite, graph: KnowledgeGraph): CallSite {
-  // Check if this call is a constructor via node type or name pattern
-  if (call.name.startsWith('new') || call.name[0] === call.name[0]?.toUpperCase()) {
-    // Could be a constructor — check if there's a class with this name
-    for (const node of graph.iterNodes()) {
-      if (node.label === 'Class' && node.properties.name === call.name) {
-        return { ...call, form: 'constructor' };
-      }
+    if (['Function', 'Method', 'Class'].includes(node.label)) {
+      const name = (node.properties.name as string) ?? '';
+      if (!name) continue;
+      let bucket = _nameIndex.get(name);
+      if (!bucket) { bucket = []; _nameIndex.set(name, bucket); }
+      bucket.push(node);
     }
   }
-  return call;
+  return _nameIndex;
 }
-
-// ── Stage 5: Resolve target via MRO walk ───────────────────────────────────
 
 function resolveTarget(call: CallSite, graph: KnowledgeGraph): GraphNode | null {
-  // Search for matching symbols
-  for (const node of graph.iterNodes()) {
-    if (node.label === 'Function' || node.label === 'Method' || node.label === 'Class') {
-      if (node.properties.name === call.name) {
-        return node;
-      }
-    }
+  const index = buildNameIndex(graph);
+  const candidates = index.get(call.name);
+  if (!candidates || candidates.length === 0) return null;
+
+  // #366: Narrow by file scope — prefer same-file or imported-file targets
+  let bestByFile: GraphNode | null = null;
+  for (const node of candidates) {
+    const nodeFp = (node.properties.filePath as string) ?? '';
+    if (nodeFp === call.filePath) return node; // exact same-file match
+    if (!bestByFile) bestByFile = node;
   }
-  return null;
+  return bestByFile; // fallback to first candidate
 }
 
 // ── 6-Stage Pipeline ──────────────────────────────────────────────────────
@@ -93,39 +75,41 @@ function resolveTarget(call: CallSite, graph: KnowledgeGraph): GraphNode | null 
 export function resolveCalls(
   graph: KnowledgeGraph,
 ): CallResolutionOutput {
-  const calls = extractCalls(graph);
-  let edgeCount = 0;
+  // #364: Work from existing CALLS edges — enhance with classification and confidence
+  const edges: Array<{ sourceId: string; targetId: string; type: string }> = [];
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type === 'CALLS') edges.push(rel);
+  }
+
   let exactMatches = 0;
   let fallbackMatches = 0;
   let variadicMatches = 0;
 
-  for (const call of calls) {
-    // Stage 2: Classify
-    const classified = classifyCall(call, graph);
+  for (const edge of edges) {
+    const sourceNode = graph.getNode(edge.sourceId);
+    const targetNode = graph.getNode(edge.targetId);
+    if (!sourceNode || !targetNode) continue;
 
-    // Stage 3: Infer receiver (language hook)
-    const lang = languageForFile(call.filePath);
-    let resolved = classified;
+    const callName = (targetNode.properties.name as string) ?? '';
+    const callFp = (sourceNode.properties.filePath as string) ?? '';
+    const argCount = ((targetNode.properties.paramCount as number) ?? 0);
+
+    // Stage 3: Infer receiver via language hook
+    const lang = languageForFile(callFp);
     const hooks = lang?.callResolution;
-    if (hooks?.inferImplicitReceiver) {
-      resolved = hooks.inferImplicitReceiver(classified);
-    }
 
-    // Stage 4: Select dispatch (language hook)
-    let decision: DispatchDecision = { primary: classified.form === 'constructor' ? 'constructor' : 'free' };
+    // Stage 4: Select dispatch
+    const decision: DispatchDecision = { primary: 'free' };
     if (hooks?.selectDispatch) {
-      decision = hooks.selectDispatch(resolved);
+      const callSite: CallSite = { name: callName, form: 'free', argCount, filePath: callFp, startLine: 1 };
+      Object.assign(decision, hooks.selectDispatch(callSite));
     }
 
-    // Stage 5: Resolve target
-    const target = resolveTarget(resolved, graph);
-    if (!target) continue;
-
-    // Stage 6: Emit edge with confidence
-    const isVariadic = resolved.argCount === 0;
+    // Stage 6: Confidence tiering
+    const isVariadic = argCount === 0;
     let confidence: number;
     if (decision.primary === 'owner-scoped') {
-      confidence = 1.0; // MRO lookup found exact match
+      confidence = 1.0;
       exactMatches++;
     } else if (decision.fallback === 'free-arity-narrowed') {
       confidence = isVariadic ? 0.7 : 0.5;
@@ -133,28 +117,21 @@ export function resolveCalls(
       else fallbackMatches++;
     } else {
       confidence = resolveConfidence(false, isVariadic);
-      if (confidence >= 1.0) exactMatches++;
-      else if (isVariadic) variadicMatches++;
+      if (isVariadic) variadicMatches++;
       else fallbackMatches++;
     }
 
-    const edgeId = `call:${call.filePath}:${call.name}:to:${target.id}`;
-    if (!graph.getRelationship(edgeId)) {
-      graph.addRelationship({
-        id: edgeId,
-        sourceId: target.id,
-        targetId: target.id,
-        type: 'CALLS',
-        confidence,
-        reason: `Call from ${call.filePath}:${call.startLine}`,
-      });
-      edgeCount++;
+    // Update existing edge with enhanced confidence (#364: use actual source/target, not self-loop)
+    const rel = graph.getRelationship(edge.sourceId);
+    if (rel) {
+      rel.confidence = Math.max(rel.confidence, confidence);
+      if (decision.primary !== 'free') rel.reason = `${decision.primary} dispatch: ${rel.reason || 'call'}`;
     }
   }
 
   return {
-    callCount: calls.length,
-    edgeCount,
+    callCount: edges.length,
+    edgeCount: edges.length,
     exactMatches,
     fallbackMatches,
     variadicMatches,
