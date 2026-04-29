@@ -89,16 +89,17 @@ const HTTP_CLIENT_PATTERNS: Array<{
   namePattern: RegExp;
   urlExtractor: (body: string) => string | null;
 }> = [
-  { clientType: 'fetch', namePattern: /fetch/i, urlExtractor: (body) => extractUrlArg(body, 'fetch') },
-  { clientType: 'axios', namePattern: /axios/i, urlExtractor: (body) => extractUrlArg(body, 'axios') },
-  { clientType: 'got', namePattern: /got/i, urlExtractor: (body) => extractUrlArg(body, 'got') },
-  { clientType: 'request', namePattern: /request/i, urlExtractor: (body) => extractUrlArg(body, 'request') },
-  { clientType: 'httpClient', namePattern: /httpClient|http\.request|HttpClient/i, urlExtractor: (body) => extractUrlArg(body, 'httpClient') },
+  { clientType: 'fetch', namePattern: /\bfetch\s*\(/i, urlExtractor: (body) => extractUrlArg(body, 'fetch') },
+  { clientType: 'axios', namePattern: /\baxios\.(get|post|put|delete|patch|request)\s*\(/i, urlExtractor: (body) => extractUrlArg(body, 'axios') },
+  { clientType: 'got', namePattern: /\bgot\.(get|post|put|delete|patch)\s*\(/i, urlExtractor: (body) => extractUrlArg(body, 'got') },
+  { clientType: 'request', namePattern: /\b(request|superagent)\s*\(/i, urlExtractor: (body) => extractUrlArg(body, 'request') },
+  { clientType: 'httpClient', namePattern: /\b(httpClient|HttpClient|http\.request)\s*\(/i, urlExtractor: (body) => extractUrlArg(body, 'httpClient') },
 ];
 
 function extractUrlArg(body: string, _clientType: string): string | null {
-  // Extract first string argument after client call: fetch('url'), axios.get('url'), etc.
-  const match = body.match(/['"`]([^'"`]+\/[^'"`]*)['"`]/);
+  // Extract string URL argument from HTTP client calls.
+  // Matches: '/path', '/api/endpoint', 'https://host/path', or simple '/root'
+  const match = body.match(/['"`]((?:https?:\/\/[^'"`]+)|(?:\/[^'"`\s]*))['"`]/);
   return match ? match[1] : null;
 }
 
@@ -192,8 +193,9 @@ export function syncGroupContracts(groupName: string): ContractSyncResult[] {
       continue;
     }
 
+    let store: ReturnType<typeof createSqliteStore> | null = null;
     try {
-      const store = createSqliteStore(entry.dbPath);
+      store = createSqliteStore(entry.dbPath);
       const graph = store.loadGraph();
 
       const providers = extractProviders(graph).map((p) => ({ ...p, repoName: gr.repoName }));
@@ -201,11 +203,12 @@ export function syncGroupContracts(groupName: string): ContractSyncResult[] {
 
       allProviders.push(...providers);
       allConsumers.push(...consumers);
-      store.close();
 
       results.push({ repoName: gr.repoName, providerCount: providers.length, consumerCount: consumers.length, crossLinks: 0 });
     } catch (err) {
       results.push({ repoName: gr.repoName, providerCount: 0, consumerCount: 0, crossLinks: 0, error: (err as Error).message });
+    } finally {
+      store?.close(); // #386: always close to prevent connection leak
     }
   }
 
