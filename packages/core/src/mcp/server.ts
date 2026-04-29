@@ -18,6 +18,7 @@ import type { GraphNode } from '../core/types.js';
 import { loadRegistry, type RegistryEntry } from './registry.js';
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
 import { McpTransport } from './transport.js';
+import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -682,6 +683,106 @@ const TOOLS: Record<string, {
         return `=== ${r.repoName} ===\n${repoResults}`;
       });
       return { content: [{ type: 'text', text: lines.join('\n\n') }] };
+    },
+  },
+
+  'astrolabe.route_map': {
+    name: 'astrolabe.route_map',
+    description: 'Map API route handlers to their consumers. Finds orphaned routes.',
+    inputSchema: {
+      type: 'object',
+      properties: { repo: { type: 'string', description: 'Repository name from list_repos' } },
+      required: [],
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const routes = routeMap(graph);
+      if (routes.length === 0) return { content: [{ type: 'text', text: 'No routes detected in the knowledge graph.' }] };
+      const lines = routes.map((r) => {
+        const icon = r.isOrphaned ? '⚠ orphan' : '  ';
+        const consumers = r.consumers.length > 0 ? r.consumers.map((c) => c.name).join(', ') : 'none';
+        return `${icon} | ${r.method.toUpperCase().padEnd(7)} ${r.path.padEnd(30)} → ${r.handlerName.padEnd(25)} consumers: ${consumers}`;
+      });
+      return { content: [{ type: 'text', text: `Route Map (${routes.length} routes):\n${lines.join('\n')}` }] };
+    },
+  },
+
+  'astrolabe.tool_map': {
+    name: 'astrolabe.tool_map',
+    description: 'Map MCP/RPC tool definitions to their handlers and callers.',
+    inputSchema: {
+      type: 'object',
+      properties: { repo: { type: 'string', description: 'Repository name from list_repos' } },
+      required: [],
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const tools = toolMap(graph);
+      if (tools.length === 0) return { content: [{ type: 'text', text: 'No tools detected in the knowledge graph.' }] };
+      const lines = tools.map((t) => {
+        const icon = t.isUnused ? '⚠ unused' : '  ';
+        const callers = t.callers.length > 0 ? t.callers.map((c) => c.name).join(', ') : 'none';
+        return `${icon} | ${t.toolType.padEnd(8)} ${t.toolName.padEnd(25)} → ${t.handlerName.padEnd(25)} callers: ${callers}`;
+      });
+      return { content: [{ type: 'text', text: `Tool Map (${tools.length} tools):\n${lines.join('\n')}` }] };
+    },
+  },
+
+  'astrolabe.api_impact': {
+    name: 'astrolabe.api_impact',
+    description: 'Pre-change impact report for an API route handler or tool.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Symbol name (function handler, route handler, etc.)' },
+        repo: { type: 'string', description: 'Repository name from list_repos' },
+      },
+      required: ['name'],
+    },
+    handler: async (params) => {
+      const name = requireString(params, 'name');
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const impact = apiImpact(graph, name);
+      if (!impact) return { content: [{ type: 'text', text: `Symbol "${name}" not found.` }] };
+      const lines: string[] = [];
+      lines.push(`Impact for: ${impact.symbol}`);
+      if (impact.routes.length > 0) {
+        lines.push('\nRoutes:');
+        for (const r of impact.routes) {
+          lines.push(`  ${r.method.toUpperCase()} ${r.path} — ${r.risk}`);
+          if (r.consumers.length > 0) lines.push(`    Consumers: ${r.consumers.join(', ')}`);
+        }
+      }
+      if (impact.tools.length > 0) {
+        lines.push('\nTools:');
+        for (const t of impact.tools) lines.push(`  ${t.type}: ${t.name}`);
+      }
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  'astrolabe.shape_check': {
+    name: 'astrolabe.shape_check',
+    description: 'Detect API response shape mismatches between route handlers and consumers.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Route path (e.g., /api/users)' },
+        repo: { type: 'string', description: 'Repository name from list_repos' },
+      },
+      required: ['path'],
+    },
+    handler: async (params) => {
+      const path = requireString(params, 'path');
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const mismatches = shapeCheck(graph, path);
+      if (mismatches.length === 0) return { content: [{ type: 'text', text: `No shape mismatches detected for route "${path}".` }] };
+      const lines = mismatches.map((m) => `  ${m.severity.toUpperCase()}: ${m.field}`);
+      return { content: [{ type: 'text', text: `Shape Check for "${path}" (${mismatches.length} issues):\n${lines.join('\n')}` }] };
     },
   },
 };
