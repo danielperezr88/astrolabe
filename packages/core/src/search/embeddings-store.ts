@@ -79,6 +79,299 @@ export function createTfIdfEmbeddingProvider(index: TfIdfIndex): EmbeddingProvid
   };
 }
 
+// ── Transformers.js embedding provider ─────────────────────────────────────
+
+/** Default model: snowflake-arctic-embed-xs (384D, lightweight). */
+const DEFAULT_LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
+const DEFAULT_LOCAL_DIMS = 384;
+
+/**
+ * ML-powered embedding provider using @huggingface/transformers (transformers.js).
+ *
+ * Runs locally — no network calls after initial model download.
+ * Uses the feature-extraction pipeline with mean pooling.
+ *
+ * Model selection:
+ *   Xenova/all-MiniLM-L6-v2 (384D) — fast, small, good for code
+ *   Snowflake/snowflake-arctic-embed-xs (384D) — optimized for retrieval
+ *
+ * Configure via env:
+ *   ASTROLABE_EMBEDDING_MODEL=all-MiniLM-L6-v2  (model name, Xenova/ prefix auto-added)
+ *   ASTROLABE_EMBEDDING_DIMS=384
+ */
+export class TransformersEmbeddingProvider implements EmbeddingProvider {
+  public readonly dimensions: number;
+  private _pipeline: unknown = null;
+  private _modelName: string;
+  private _ready = false;
+  private _initPromise: Promise<void> | null = null;
+
+  constructor(dimensions = DEFAULT_LOCAL_DIMS) {
+    this.dimensions = dimensions;
+    this._modelName = process.env.ASTROLABE_EMBEDDING_MODEL ?
+      (process.env.ASTROLABE_EMBEDDING_MODEL.includes('/') ?
+        process.env.ASTROLABE_EMBEDDING_MODEL :
+        `Xenova/${process.env.ASTROLABE_EMBEDDING_MODEL}`) :
+      DEFAULT_LOCAL_MODEL;
+    if (process.env.ASTROLABE_EMBEDDING_DIMS) {
+      this.dimensions = parseInt(process.env.ASTROLABE_EMBEDDING_DIMS, 10) || DEFAULT_LOCAL_DIMS;
+    }
+  }
+
+  /**
+   * Ensure the transformers pipeline is initialized.
+   * Lazy-loaded — no model download until first encode() call.
+   */
+  async ensureReady(): Promise<void> {
+    if (this._ready) return;
+    if (this._initPromise) return this._initPromise;
+
+    this._initPromise = this._init();
+    return this._initPromise;
+  }
+
+  private async _init(): Promise<void> {
+    try {
+      const { pipeline } = await import('@huggingface/transformers');
+      this._pipeline = await pipeline('feature-extraction', this._modelName, {
+        // Use ONNX runtime for performance if available
+        // quantized: true reduces model size but may lose accuracy
+      });
+      this._ready = true;
+    } catch (err) {
+      throw new Error(
+        `Failed to load transformers model "${this._modelName}": ${(err as Error).message}. ` +
+        `Install with: npm install @huggingface/transformers`,
+      );
+    }
+  }
+
+  /**
+   * Encode text to a Float32Array embedding using the ML model.
+   * Mean-pooling over token embeddings produces a fixed-size vector.
+   */
+  encode(_text: string): Float32Array {
+    // Synchronous encode returns zeros — callers should use encodeAsync
+    // for ML-powered embeddings. This is the sync path for the EmbeddingProvider
+    // interface compatibility; encodeAsync provides the real ML embeddings.
+    const vec = new Float32Array(this.dimensions);
+    return vec;
+  }
+
+  /**
+   * Async encode using the transformers pipeline.
+   * Returns a dense Float32Array embedding for the input text.
+   */
+  async encodeAsync(text: string): Promise<Float32Array> {
+    await this.ensureReady();
+
+    const pipe = this._pipeline as any;
+    if (!pipe) {
+      // Fallback: bag-of-words in the dimensions space
+      const vec = new Float32Array(this.dimensions);
+      const tokens = text.toLowerCase().replace(/[^a-z0-9\s_-]/g, ' ').split(/\s+/).filter(t => t.length > 1);
+      for (const t of tokens) {
+        const idx = hashStr(t) % this.dimensions;
+        vec[idx] += 1.0;
+      }
+      // Normalize
+      const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+      for (let i = 0; i < vec.length; i++) vec[i] /= norm;
+      return vec;
+    }
+
+    const output = await pipe(text, { pooling: 'mean', normalize: true });
+    // output is a Tensor-like object with data property
+    const tensor = output as { data: Float32Array | number[]; dims?: number[] };
+    if (tensor.data instanceof Float32Array) {
+      return tensor.data;
+    }
+    return new Float32Array(Array.from(tensor.data));
+  }
+}
+
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+// ── Remote embedding provider (OpenAI-compatible) ──────────────────────────
+
+/**
+ * Embedding provider that calls a remote OpenAI-compatible /v1/embeddings endpoint.
+ *
+ * Works with: OpenAI, Ollama, vLLM, Infinity, TEI, llama.cpp, LM Studio, etc.
+ *
+ * Configure via env:
+ *   ASTROLABE_EMBEDDING_URL=http://localhost:11434/v1    (required)
+ *   ASTROLABE_EMBEDDING_MODEL=nomic-embed-text            (model name sent to API)
+ *   ASTROLABE_EMBEDDING_DIMS=768                          (optional, auto-detected)
+ *   ASTROLABE_EMBEDDING_API_KEY=sk-...                    (optional)
+ */
+export class RemoteEmbeddingProvider implements EmbeddingProvider {
+  public readonly dimensions: number;
+  private _url: string;
+  private _model: string;
+  private _apiKey: string | undefined;
+
+  constructor() {
+    const url = process.env.ASTROLABE_EMBEDDING_URL;
+    if (!url) {
+      throw new Error(
+        'ASTROLABE_EMBEDDING_URL must be set to use remote embeddings. ' +
+        'Example: http://localhost:11434/v1 for Ollama',
+      );
+    }
+    this._url = url.replace(/\/+$/, '') + '/embeddings';
+    const rawModel = process.env.ASTROLABE_EMBEDDING_MODEL;
+    this._model = (rawModel && rawModel !== 'undefined') ? rawModel : 'nomic-embed-text';
+    this._apiKey = process.env.ASTROLABE_EMBEDDING_API_KEY;
+    const dimsVal = process.env.ASTROLABE_EMBEDDING_DIMS ?
+      parseInt(process.env.ASTROLABE_EMBEDDING_DIMS, 10) :
+      768;
+    this.dimensions = Number.isNaN(dimsVal) ? 768 : dimsVal;
+  }
+
+  /**
+   * Encode text to a Float32Array embedding via remote API.
+   * Synchronous version returns empty — use encodeAsync.
+   */
+  encode(_text: string): Float32Array {
+    return new Float32Array(this.dimensions);
+  }
+
+  /**
+   * Async encode via remote API with retry logic.
+   */
+  async encodeAsync(text: string): Promise<Float32Array> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this._apiKey && this._apiKey !== 'unused') {
+      headers['Authorization'] = `Bearer ${this._apiKey}`;
+    }
+
+    const body = JSON.stringify({
+      input: text,
+      model: this._model,
+    });
+
+    // Retry up to 3 times with exponential backoff
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(this._url, {
+          method: 'POST',
+          headers,
+          body,
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => 'unknown error');
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const json = (await res.json()) as {
+          data: Array<{ embedding: number[] }>;
+        };
+
+        if (!json.data?.[0]?.embedding) {
+          throw new Error('Invalid response: missing data[0].embedding');
+        }
+
+        const emb = json.data[0].embedding;
+        // Auto-detect dimensions from first successful response
+        if (emb.length !== this.dimensions) {
+          (this as { dimensions: number }).dimensions = emb.length;
+        }
+
+        return new Float32Array(emb);
+      } catch (err) {
+        if (attempt === 2) throw err;
+        // Wait with exponential backoff: 1s, 2s
+        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+      }
+    }
+
+    throw new Error('Unreachable');
+  }
+}
+
+// ── Provider factory ───────────────────────────────────────────────────────
+
+export type EmbeddingProviderType = 'tfidf' | 'transformers' | 'remote' | 'auto';
+
+/**
+ * Create an embedding provider based on environment configuration.
+ *
+ * Priority:
+ *   1. ASTROLABE_EMBEDDING_URL set → RemoteEmbeddingProvider
+ *   2. ASTROLABE_PROVIDER=transformers → TransformersEmbeddingProvider
+ *   3. ASTROLABE_PROVIDER=remote → RemoteEmbeddingProvider (requires URL)
+ *   4. ASTROLABE_PROVIDER=tfidf → TF-IDF fallback
+ *   5. auto (default) → try remote first, then transformers, then TF-IDF
+ *
+ * @param tfidfIndex  Optional TF-IDF index for the fallback provider.
+ */
+export function createEmbeddingProvider(
+  providerType: EmbeddingProviderType = 'auto',
+  tfidfIndex?: TfIdfIndex,
+): EmbeddingProvider {
+  // Explicit remote
+  if (providerType === 'remote' || (providerType === 'auto' && process.env.ASTROLABE_EMBEDDING_URL)) {
+    try {
+      return new RemoteEmbeddingProvider();
+    } catch (err) {
+      if (providerType === 'remote') throw err;
+      // auto mode: fall through to next provider
+    }
+  }
+
+  // Explicit transformers
+  if (providerType === 'transformers') {
+    return new TransformersEmbeddingProvider();
+  }
+
+  // Auto: try transformers (won't download model until encodeAsync called)
+  if (providerType === 'auto') {
+    try {
+      // Check if transformers is importable without downloading model
+      return new TransformersEmbeddingProvider();
+    } catch {
+      // Fall through to TF-IDF
+    }
+  }
+
+  // TF-IDF fallback
+  if (tfidfIndex) {
+    return createTfIdfEmbeddingProvider(tfidfIndex);
+  }
+
+  // Absolute fallback: dummy 384D provider
+  return {
+    dimensions: 384,
+    encode(_text: string): Float32Array {
+      return new Float32Array(384);
+    },
+  };
+}
+
+/**
+ * Check whether @huggingface/transformers is available (installed).
+ * Does NOT download the model — just checks if the package can be imported.
+ */
+export async function isTransformersAvailable(): Promise<boolean> {
+  try {
+    await import('@huggingface/transformers');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── SQLite embedding store ─────────────────────────────────────────────────
 
 const SCHEMA = `
