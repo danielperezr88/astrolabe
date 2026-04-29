@@ -16,6 +16,7 @@
  */
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
+import type { GraphNode } from '@astrolabe/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,18 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
     const sortedFiles = topologicalFiles(importGraph);
     const typeMap = buildTypeMap(graph);
 
+    // Pre-build type node index for O(1) lookup (#393)
+    const typeNodesByName = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      const tpLabel = node.label;
+      if (!['Class', 'Interface', 'Enum', 'TypeAlias', 'Struct', 'Trait'].includes(tpLabel)) continue;
+      const tpName = node.properties.name as string | undefined;
+      if (!tpName) continue;
+      let arr = typeNodesByName.get(tpName);
+      if (!arr) { arr = []; typeNodesByName.set(tpName, arr); }
+      arr.push(node);
+    }
+
     let propagatedEdges = 0;
 
     // Track resolved types per file for transitive propagation (#165)
@@ -188,62 +201,59 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
         if (returnType) {
           const resolvedType = availableTypes.get(returnType);
           if (resolvedType) {
-            // Store resolved type name for downstream consumption
             node.properties.resolved_returnType = returnType;
-
-            // Create RETURNS_TYPE edge to the target type symbol
-            for (const typeNode of graph.iterNodes()) {
-              if (typeNode.properties.name === returnType &&
-                  typeNode.properties.filePath &&
-                  typeNode.label === resolvedType) {
-                const edgeId = `returns:${node.id}:${typeNode.id}`;
+            // Use pre-built index for O(1) lookup (#393) with same-file preference (#394)
+            const candidates = typeNodesByName.get(returnType);
+            if (candidates) {
+              // Prefer same-file, then first match
+              const sameFile = candidates.find((c) => c.properties.filePath === filePath);
+              const best = sameFile ?? candidates[0];
+              if (best.label === resolvedType) {
+                const edgeId = `returns:${node.id}:${best.id}`;
                 if (!graph.getRelationship(edgeId)) {
                   graph.addRelationship({
                     id: edgeId,
                     sourceId: node.id,
-                    targetId: typeNode.id,
+                    targetId: best.id,
                     type: 'RETURNS_TYPE',
                     confidence: 0.8,
-                    reason: `returnType: ${returnType} resolves to ${typeNode.label}`,
+                    reason: `returnType: ${returnType} resolves to ${best.label}`,
                   });
                   propagatedEdges++;
                 }
-                break;
               }
             }
           }
         }
 
-        // #376: Resolve fieldType / declaredType similarly
+        // #376: Resolve declaredType similarly
         const declaredType = node.properties.declaredType as string | undefined;
         if (declaredType) {
           const resolvedType = availableTypes.get(declaredType);
           if (resolvedType) {
             node.properties.resolved_declaredType = declaredType;
-            for (const typeNode of graph.iterNodes()) {
-              if (typeNode.properties.name === declaredType &&
-                  typeNode.properties.filePath &&
-                  typeNode.label === resolvedType) {
-                const edgeId = `declares:${node.id}:${typeNode.id}`;
+            const candidates = typeNodesByName.get(declaredType);
+            if (candidates) {
+              const sameFile = candidates.find((c) => c.properties.filePath === filePath);
+              const best = sameFile ?? candidates[0];
+              if (best.label === resolvedType) {
+                const edgeId = `declares:${node.id}:${best.id}`;
                 if (!graph.getRelationship(edgeId)) {
                   graph.addRelationship({
                     id: edgeId,
                     sourceId: node.id,
-                    targetId: typeNode.id,
+                    targetId: best.id,
                     type: 'DECLARES_TYPE',
                     confidence: 0.8,
-                    reason: `declaredType: ${declaredType} resolves to ${typeNode.label}`,
+                    reason: `declaredType: ${declaredType} resolves to ${best.label}`,
                   });
                   propagatedEdges++;
                 }
-                break;
               }
             }
           }
         }
       }
-
-      propagatedEdges++;
     }
 
     return {

@@ -11,6 +11,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initParser, parseFile, defaultWasmDir } from '../../src/analysis/parser.js';
 import type { FileParseResult } from '../../src/analysis/language-definition.js';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -79,20 +82,15 @@ function evalSymbols(actual: FileParseResult, expected: ExpectedSymbol[]): EvalR
 }
 
 async function runEval(fixture: EvalFixture): Promise<EvalResult> {
-  // Write fixture source to temp file, parse it
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const os = require('node:os');
+  const tmpDir = tmpdir();
+  const filePath = join(tmpDir, `eval-${Date.now()}.${fixture.language}`);
 
-  const tmpDir = os.tmpdir();
-  const filePath = path.join(tmpDir, `eval-${Date.now()}.${fixture.language}`);
-
-  fs.writeFileSync(filePath, fixture.source, 'utf-8');
+  writeFileSync(filePath, fixture.source, 'utf-8');
   let result: FileParseResult;
   try {
     result = await parseFile(filePath, defaultWasmDir());
   } finally {
-    try { fs.unlinkSync(filePath); } catch {}
+    try { unlinkSync(filePath); } catch {}
   }
 
   return evalSymbols(result, fixture.expectedSymbols);
