@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import GraphView from './components/GraphView';
 import SearchBar from './components/SearchBar';
 import Sidebar from './components/Sidebar';
@@ -14,31 +14,43 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   // Fetch available repos
   useEffect(() => {
     fetch(`${API}/repos`)
-      .then((r) => r.json())
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: ApiRepos) => setRepos(data.repos || []))
       .catch(() => setError('Cannot reach Astrolabe server. Run: astrolabe serve'));
   }, []);
 
   // Load repo context and clusters
   const selectRepo = useCallback(async (name: string) => {
+    abortRef.current?.abort(); // #345: cancel stale requests
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const signal = controller.signal;
+
     setSelectedRepo(name);
     setLoading(true);
     setError('');
 
     try {
       const [ctxRes, clRes] = await Promise.all([
-        fetch(`${API}/repo/${encodeURIComponent(name)}/context`),
-        fetch(`${API}/repo/${encodeURIComponent(name)}/clusters`),
+        fetch(`${API}/repo/${encodeURIComponent(name)}/context`, { signal }),
+        fetch(`${API}/repo/${encodeURIComponent(name)}/clusters`, { signal }),
       ]);
+      if (signal.aborted) return;
+      // #344: check HTTP status before parsing
+      if (!ctxRes.ok) throw new Error(`HTTP ${ctxRes.status}`);
+      if (!clRes.ok) throw new Error(`HTTP ${clRes.status}`);
       const ctx = await ctxRes.json();
       const cl = await clRes.json();
       setRepoInfo(ctx);
       setClusters(cl.clusters || []);
-    } catch {
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
       setError('Failed to load repo data');
     } finally {
       setLoading(false);
@@ -48,16 +60,26 @@ export default function App() {
   // Search
   const search = useCallback(async (query: string) => {
     if (!selectedRepo) return;
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const signal = controller.signal;
+
     setLoading(true);
     try {
       const res = await fetch(`${API}/repo/${encodeURIComponent(selectedRepo)}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, limit: 30 }),
+        signal,
       });
+      if (signal.aborted) return;
+      // #344: check HTTP status
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSearchResults(data.results || []);
-    } catch {
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
       setError('Search failed');
     } finally {
       setLoading(false);

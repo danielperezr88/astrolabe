@@ -9,6 +9,7 @@
 import { dirname } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { GraphNode } from '../../core/types.js';
+import { languageForFile } from '../languages/index.js';
 
 export interface ResolutionOutput {
   edgeCount: number;
@@ -74,8 +75,18 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
       const sourceModule = impNode.properties.name as string;
       if (!importerFile || !sourceModule) continue;
 
+      // #279, #347: Apply language-specific import resolution strategy
+      const lang = languageForFile(importerFile);
+      const semantics = lang?.importSemantics ?? 'named';
+      let resolvedSource = sourceModule;
+
+      // Namespace (Python): dotted paths resolve to directory-prefixed files
+      if (semantics === 'namespace') {
+        resolvedSource = sourceModule.replace(/\./g, '/'); // my.module → my/module
+      }
+
       const baseDir = dirname(importerFile);
-      const resolved = resolveModule(baseDir, sourceModule);
+      const resolved = resolveModule(baseDir, resolvedSource);
 
       // Named imports: only match symbols with imported names (#182)
       const importedNames = impNode.properties.importedNames as string[] | undefined;
