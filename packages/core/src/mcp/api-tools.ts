@@ -129,42 +129,41 @@ export function toolMap(graph: KnowledgeGraph): ToolMapEntry[] {
 
   const callers = new Map<string, Array<{ id: string; name: string; filePath: string }>>();
 
+  // #334: Pre-build handler-to-tool and tool-to-handler indices for O(1) lookup
+  const handlerToTool = new Map<string, string>();
+  const toolToHandler = new Map<string, string>();
+  for (const hr of graph.iterRelationshipsByType('HANDLES_TOOL')) {
+    handlerToTool.set(hr.sourceId, hr.targetId);
+    toolToHandler.set(hr.targetId, hr.sourceId);
+  }
+
   for (const rel of graph.iterRelationships()) {
     if (rel.type !== 'CALLS') continue;
     const calleeId = rel.targetId;
 
-    // Check if the callee is a tool handler
-    for (const [toolId] of toolNodes) {
-      // Find HANDLES_TOOL edge linking handler → tool
-      const handlesRel = graph.iterRelationshipsByType('HANDLES_TOOL');
-      for (const hr of handlesRel) {
-        if (hr.targetId === toolId && hr.sourceId === calleeId) {
-          const caller = graph.getNode(rel.sourceId);
-          if (caller) {
-            const entry = callers.get(toolId) ?? [];
-            entry.push({
-              id: caller.id,
-              name: (caller.properties.name as string) ?? caller.id,
-              filePath: (caller.properties.filePath as string) ?? '?',
-            });
-            callers.set(toolId, entry);
-          }
-        }
+    // O(1): Check if callee is a tool handler
+    const toolId = handlerToTool.get(calleeId);
+    if (toolId && toolNodes.has(toolId)) {
+      const caller = graph.getNode(rel.sourceId);
+      if (caller) {
+        const entry = callers.get(toolId) ?? [];
+        entry.push({
+          id: caller.id,
+          name: (caller.properties.name as string) ?? caller.id,
+          filePath: (caller.properties.filePath as string) ?? '?',
+        });
+        callers.set(toolId, entry);
       }
     }
   }
 
   const results: ToolMapEntry[] = [];
   for (const [toolId, tool] of toolNodes) {
-    const handlerRel = graph.iterRelationshipsByType('HANDLES_TOOL');
-    let handlerId = toolId;
+    const handlerId = toolToHandler.get(toolId) ?? toolId;
     let handlerName = tool.name;
-    for (const hr of handlerRel) {
-      if (hr.targetId === toolId) {
-        handlerId = hr.sourceId;
-        const handler = graph.getNode(hr.sourceId);
-        if (handler) handlerName = (handler.properties.name as string) ?? handlerId;
-      }
+    if (handlerId !== toolId) {
+      const handler = graph.getNode(handlerId);
+      if (handler) handlerName = (handler.properties.name as string) ?? handlerId;
     }
 
     const callerList = callers.get(toolId) ?? [];
