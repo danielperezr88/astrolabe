@@ -632,5 +632,126 @@ describe('Parser', () => {
       expect(exts).toContain('.tsx');
       expect(exts).toContain('.py');
     });
+
+    // #395: .vue is registered via TypeScript extensions
+    it('recognizes .vue extension as TypeScript for SFC preprocessing', async () => {
+      const { getAllExtensions } = await import('../../src/analysis/parser.js');
+      const exts = getAllExtensions();
+      expect(exts).toContain('.vue');
+    });
+  });
+
+  // ── #405: Overload Disambiguation ───────────────────────────────────────
+  describe('overload disambiguation (#405)', () => {
+    it('generates distinct IDs for same-name methods with different parameter counts', async () => {
+      const { symbolId } = await import('../../src/analysis/language-definition.js');
+
+      const id1 = symbolId('Method', 'src/foo.ts', 'save', 10, { parameterCount: 1 });
+      const id2 = symbolId('Method', 'src/foo.ts', 'save', 20, { parameterCount: 2 });
+
+      expect(id1).toBe('Method:src/foo.ts:save#1:L10');
+      expect(id2).toBe('Method:src/foo.ts:save#2:L20');
+      expect(id1).not.toBe(id2);
+    });
+
+    it('includes parameter types in ID when available', async () => {
+      const { symbolId } = await import('../../src/analysis/language-definition.js');
+
+      const id = symbolId('Method', 'src/foo.ts', 'save', 15, {
+        parameterCount: 2,
+        parameterTypes: ['string', 'number'],
+      });
+
+      expect(id).toBe('Method:src/foo.ts:save#2~string,number:L15');
+    });
+
+    it('omits parameter count for non-method labels', async () => {
+      const { symbolId } = await import('../../src/analysis/language-definition.js');
+
+      const id = symbolId('Class', 'src/foo.ts', 'User', 5);
+
+      expect(id).toBe('Class:src/foo.ts:User:L5');
+    });
+
+    it('omits parameter count when count is 0 or undefined', async () => {
+      const { symbolId } = await import('../../src/analysis/language-definition.js');
+
+      const id1 = symbolId('Function', 'src/foo.ts', 'noop', 1, { parameterCount: 0 });
+      const id2 = symbolId('Function', 'src/foo.ts', 'noop', 1);
+
+      expect(id1).toBe('Function:src/foo.ts:noop:L1');
+      expect(id2).toBe('Function:src/foo.ts:noop:L1');
+    });
+  });
+
+  // ── #395: Vue SFC Preprocessing ─────────────────────────────────────────
+  describe('Vue SFC preprocessing (#395)', () => {
+    it('extracts <script setup> content from .vue file', async () => {
+      const { preprocessVueSfc } = await import('../../src/analysis/languages/vue.js');
+
+      const vueFile = writeFixture(
+        'Component.vue',
+        nl(
+          '<template>',
+          '  <div>{{ msg }}</div>',
+          '</template>',
+          '',
+          '<script setup lang="ts">',
+          'import { ref } from "vue";',
+          'const msg = ref("hello");',
+          '</script>',
+        ),
+      );
+
+      const result = preprocessVueSfc(vueFile);
+      expect(result).not.toBeNull();
+      expect(result!.isSetup).toBe(true);
+      expect(result!.content).toContain('import { ref } from "vue"');
+      expect(result!.content).not.toContain('<template>');
+      expect(result!.content).not.toContain('<script');
+    });
+
+    it('extracts regular <script> content from .vue file', async () => {
+      const { preprocessVueSfc } = await import('../../src/analysis/languages/vue.js');
+
+      const vueFile = writeFixture(
+        'LegacyComponent.vue',
+        nl(
+          '<script>',
+          'export default {',
+          '  data() { return { count: 0 }; }',
+          '};',
+          '</script>',
+        ),
+      );
+
+      const result = preprocessVueSfc(vueFile);
+      expect(result).not.toBeNull();
+      expect(result!.isSetup).toBe(false);
+      expect(result!.content).toContain('export default');
+    });
+
+    it('returns null for .vue file with no script block', async () => {
+      const { preprocessVueSfc } = await import('../../src/analysis/languages/vue.js');
+
+      const vueFile = writeFixture(
+        'TemplateOnly.vue',
+        '<template><div>Hello</div></template>\n',
+      );
+
+      const result = preprocessVueSfc(vueFile);
+      expect(result).toBeNull();
+    });
+
+    it('VUE_BUILT_INS includes common composables', async () => {
+      const { VUE_BUILT_INS } = await import('../../src/analysis/languages/vue.js');
+
+      expect(VUE_BUILT_INS.has('ref')).toBe(true);
+      expect(VUE_BUILT_INS.has('computed')).toBe(true);
+      expect(VUE_BUILT_INS.has('defineProps')).toBe(true);
+      expect(VUE_BUILT_INS.has('onMounted')).toBe(true);
+      expect(VUE_BUILT_INS.has('useRouter')).toBe(true);
+      expect(VUE_BUILT_INS.has('nonexistent')).toBe(false);
+    });
   });
 });
