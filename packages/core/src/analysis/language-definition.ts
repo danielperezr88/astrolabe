@@ -17,6 +17,33 @@ export type ImportSemantics = 'named' | 'wildcard-leaf' | 'wildcard-transitive' 
 /** #278: MRO (Method Resolution Order) strategy per language. */
 export type MroStrategy = 'c3' | 'first-wins' | 'none';
 
+// ── Call-resolution hooks (#284) ───────────────────────────────────────────
+
+/** Classification of a call site extracted from source. */
+export interface CallSite {
+  name: string;
+  form: 'free' | 'member' | 'constructor';
+  receiver?: string;
+  argCount: number;
+  filePath: string;
+  startLine: number;
+}
+
+/** Strategy selected by a language for resolving a call. */
+export interface DispatchDecision {
+  primary: 'owner-scoped' | 'free' | 'constructor';
+  fallback?: 'free-arity-narrowed';
+  ancestryView?: 'instance' | 'singleton';
+}
+
+/** Language-specific hooks for the 6-stage call-resolution DAG (#284). */
+export interface CallResolutionHooks {
+  /** Stage 3: Rewrite bare calls to self.method (e.g., Python, Ruby). */
+  inferImplicitReceiver?: (call: CallSite) => CallSite;
+  /** Stage 4: Choose resolution strategy based on language semantics. */
+  selectDispatch?: (call: CallSite) => DispatchDecision;
+}
+
 // ── Query pattern ──────────────────────────────────────────────────────────
 
 /**
@@ -97,6 +124,8 @@ export interface LanguageDefinition {
   readonly importSemantics: ImportSemantics;
   /** #278: MRO strategy for method resolution inheritance chains. */
   readonly mroStrategy: MroStrategy;
+  /** #284: Call-resolution hooks for language-specific behavior. */
+  readonly callResolution?: CallResolutionHooks;
 
   /**
    * Load the WASM grammar(s) and return a Language instance.
