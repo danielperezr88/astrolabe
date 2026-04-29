@@ -183,63 +183,67 @@ export function toolMap(graph: KnowledgeGraph): ToolMapEntry[] {
 
 // ── api_impact ─────────────────────────────────────────────────────────────
 
-export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactResult | null {
-  // Find the symbol
-  let targetId = '';
+export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactResult[] {
+  // #335: Find ALL matching symbols, not just the first
+  const targetIds: string[] = [];
   for (const node of graph.iterNodes()) {
     if (node.properties.name === symbolName) {
-      targetId = node.id;
-      break;
+      targetIds.push(node.id);
     }
   }
-  if (!targetId) return null;
+  if (targetIds.length === 0) return [];
 
-  // Find related routes
-  const routes: ApiImpactResult['routes'] = [];
-  for (const node of graph.iterNodes()) {
-    if (node.label !== 'Route') continue;
-    // Check if this route's handler is connected to our target
-    const handlesRel = graph.iterRelationshipsByType('HANDLES_ROUTE');
-    for (const hr of handlesRel) {
-      if (hr.targetId === node.id && hr.sourceId === targetId) {
-        const consumers: string[] = [];
-        for (const rel of graph.iterRelationships()) {
-          if (rel.type === 'CALLS' && rel.targetId === targetId) {
-            const caller = graph.getNode(rel.sourceId);
-            if (caller) consumers.push((caller.properties.name as string) ?? caller.id);
+  const results: ApiImpactResult[] = [];
+
+  for (const targetId of targetIds) {
+    // Find related routes
+    const routes: ApiImpactResult['routes'] = [];
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Route') continue;
+      const handlesRel = graph.iterRelationshipsByType('HANDLES_ROUTE');
+      for (const hr of handlesRel) {
+        if (hr.targetId === node.id && hr.sourceId === targetId) {
+          const consumers: string[] = [];
+          for (const rel of graph.iterRelationships()) {
+            if (rel.type === 'CALLS' && rel.targetId === targetId) {
+              const caller = graph.getNode(rel.sourceId);
+              if (caller) consumers.push((caller.properties.name as string) ?? caller.id);
+            }
           }
+          routes.push({
+            method: (node.properties.method as string) ?? '?',
+            path: (node.properties.path as string) ?? '?',
+            consumers,
+            risk: consumers.length > 0 ? 'BREAKING: has consumers' : 'safe to change',
+          });
         }
-        routes.push({
-          method: (node.properties.method as string) ?? '?',
-          path: (node.properties.path as string) ?? '?',
-          consumers,
-          risk: consumers.length > 0 ? 'BREAKING: has consumers' : 'safe to change',
-        });
       }
     }
-  }
 
-  // Find related tools
-  const tools: ApiImpactResult['tools'] = [];
-  for (const node of graph.iterNodes()) {
-    if (node.label !== 'Tool') continue;
-    const handlesRel = graph.iterRelationshipsByType('HANDLES_TOOL');
-    for (const hr of handlesRel) {
-      if (hr.targetId === node.id && hr.sourceId === targetId) {
-        tools.push({
-          type: (node.properties.toolType as string) ?? '?',
-          name: (node.properties.name as string) ?? node.id,
-        });
+    // Find related tools
+    const tools: ApiImpactResult['tools'] = [];
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Tool') continue;
+      const handlesRel = graph.iterRelationshipsByType('HANDLES_TOOL');
+      for (const hr of handlesRel) {
+        if (hr.targetId === node.id && hr.sourceId === targetId) {
+          tools.push({
+            type: (node.properties.toolType as string) ?? '?',
+            name: (node.properties.name as string) ?? node.id,
+          });
+        }
       }
     }
+
+    results.push({
+      symbol: `${symbolName} (${targetId})`,
+      routes,
+      tools,
+      shapeDrift: [],
+    });
   }
 
-  return {
-    symbol: symbolName,
-    routes,
-    tools,
-    shapeDrift: [], // requires type annotation analysis (future)
-  };
+  return results;
 }
 
 // ── shape_check ────────────────────────────────────────────────────────────

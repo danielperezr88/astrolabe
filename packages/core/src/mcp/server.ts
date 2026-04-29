@@ -746,19 +746,21 @@ const TOOLS: Record<string, {
       const ctx = backend.getRepo(params.repo as string);
       const graph = ctx.loadGraph();
       const impact = apiImpact(graph, name);
-      if (!impact) return { content: [{ type: 'text', text: `Symbol "${name}" not found.` }] };
+      if (impact.length === 0) return { content: [{ type: 'text', text: `Symbol "${name}" not found.` }] };
       const lines: string[] = [];
-      lines.push(`Impact for: ${impact.symbol}`);
-      if (impact.routes.length > 0) {
-        lines.push('\nRoutes:');
-        for (const r of impact.routes) {
-          lines.push(`  ${r.method.toUpperCase()} ${r.path} — ${r.risk}`);
-          if (r.consumers.length > 0) lines.push(`    Consumers: ${r.consumers.join(', ')}`);
+      for (const imp of impact) {
+        lines.push(`\nImpact for: ${imp.symbol}`);
+        if (imp.routes.length > 0) {
+          lines.push('Routes:');
+          for (const r of imp.routes) {
+            lines.push(`  ${r.method.toUpperCase()} ${r.path} — ${r.risk}`);
+            if (r.consumers.length > 0) lines.push(`    Consumers: ${r.consumers.join(', ')}`);
+          }
         }
-      }
-      if (impact.tools.length > 0) {
-        lines.push('\nTools:');
-        for (const t of impact.tools) lines.push(`  ${t.type}: ${t.name}`);
+        if (imp.tools.length > 0) {
+          lines.push('Tools:');
+          for (const t of imp.tools) lines.push(`  ${t.type}: ${t.name}`);
+        }
       }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
