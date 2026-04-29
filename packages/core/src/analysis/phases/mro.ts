@@ -12,6 +12,7 @@
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { GraphNode } from '../../core/types.js';
+import { languageForFile } from '../languages/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,36 @@ export interface MroOutput {
   maxDepth: number;
   /** Number of HAS_METHOD edges created for method resolution. */
   methodEdgeCount: number;
+}
+
+// ── First-Wins Walk (#351) ─────────────────────────────────────────────────
+
+/**
+ * Simple parent-first DFS walk for languages without C3 (Java, C#, Go, etc.).
+ * Visits each parent in declaration order, skipping duplicates.
+ */
+function firstWinsWalk(
+  classId: string,
+  parentMap: Map<string, string[]>,
+): string[] {
+  const result: string[] = [classId];
+  const seen = new Set<string>([classId]);
+  const stack = [...(parentMap.get(classId) ?? [])];
+
+  while (stack.length > 0) {
+    const current = stack.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    result.push(current);
+
+    // Push this parent's parents in order
+    const grandparents = parentMap.get(current) ?? [];
+    for (const gp of grandparents) {
+      if (!seen.has(gp)) stack.push(gp);
+    }
+  }
+
+  return result;
 }
 
 // ── C3 Linearization ───────────────────────────────────────────────────────
@@ -177,7 +208,19 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
       extendsEdgeCount += parentIds.length;
 
       if (parentIds.length > 0) {
-        const mro = c3Linearize(cls.id, parentMap, cache);
+        // #278, #351: Apply language-specific MRO strategy
+        const fp = cls.properties.filePath as string | undefined;
+        const lang = fp ? languageForFile(fp) : undefined;
+        const strategy = lang?.mroStrategy ?? 'c3';
+
+        let mro: string[];
+        if (strategy === 'none') {
+          mro = [cls.id]; // Single inheritance — no parent walk
+        } else if (strategy === 'first-wins') {
+          mro = firstWinsWalk(cls.id, parentMap);
+        } else {
+          mro = c3Linearize(cls.id, parentMap, cache);
+        }
 
         const depth = mro.length - 1;
         if (depth > maxDepth) maxDepth = depth;

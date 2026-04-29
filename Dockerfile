@@ -15,8 +15,8 @@ COPY packages/shared/package.json packages/shared/
 RUN npm ci --ignore-scripts
 
 COPY . .
-RUN npm run build --workspace packages/core --if-present || true
-RUN npm run build --workspace packages/cli --if-present || true
+RUN npm run build --workspace packages/core
+RUN npm run build --workspace packages/cli
 
 FROM node:20-alpine
 
@@ -28,7 +28,11 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./
 
-ENV ASTROLABE_API_KEY=""
+# #349: Security — run as non-root user
+RUN addgroup -S astrolabe && adduser -S astrolabe -G astrolabe
+RUN chown -R astrolabe:astrolabe /app
+USER astrolabe
+
 ENV NODE_ENV=production
 
 EXPOSE 4747

@@ -2,6 +2,7 @@ node_modules/
 packages/*/node_modules/
 packages/*/dist/
 .astrolabe/
+.git/
 *.db
 *.db-wal
 *.db-shm
