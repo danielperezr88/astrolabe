@@ -28,6 +28,9 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
     let crossRefCount = 0;
     let fileCount = 0;
 
+    // #280: Support incremental indexing — only process changed/added files
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     // Collect markdown files with their heading data
     const mdFiles: Array<{
       id: string; filePath: string;
@@ -39,6 +42,7 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
       if (node.label !== 'File') continue;
       const fp = node.properties.filePath as string | undefined;
       if (!fp || !/\.(md|mdx)$/i.test(fp)) continue;
+      if (changedPaths && !changedPaths.has(fp)) continue;
 
       try {
         const content = await readFile(join(context.repoPath, fp), 'utf-8');

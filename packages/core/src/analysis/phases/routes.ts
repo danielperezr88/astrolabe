@@ -34,10 +34,14 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
     let routeCount = 0;
     const frameworks = new Set<string>();
 
+    // #280: Support incremental indexing — only process changed/added files
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     for (const node of graph.iterNodes()) {
       if (node.label !== 'File') continue;
       const fp = node.properties.filePath as string | undefined;
       if (!fp) continue;
+      if (changedPaths && !changedPaths.has(fp)) continue;
 
       // Scan related directories and common entry point files (#198)
       if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp)) continue;

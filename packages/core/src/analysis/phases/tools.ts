@@ -26,10 +26,14 @@ export const toolsPhase: PhaseDefinition<ToolsOutput> = {
     let toolCount = 0;
     const toolTypes = new Set<string>();
 
+    // #280: Support incremental indexing — only process changed/added files
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     for (const node of graph.iterNodes()) {
       if (node.label !== 'File') continue;
       const fp = node.properties.filePath as string | undefined;
       if (!fp) continue;
+      if (changedPaths && !changedPaths.has(fp)) continue;
 
       try {
         const content = await readFile(join(context.repoPath, fp), 'utf-8');

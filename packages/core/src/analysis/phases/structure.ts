@@ -77,6 +77,9 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       return { fileCount: 0, folderCount: 0, maxDepth: 0, packageCount: 0 };
     }
 
+    // #280: Support incremental indexing — only process changed/added files
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     // Track which folders we've seen (to avoid duplicate nodes)
     const folderIds = new Set<string>();
     let fileCount = 0;
@@ -84,6 +87,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
 
     // ── Create File nodes ─────────────────────────────────────────────────
     for (const entry of scanOutput.files) {
+      if (changedPaths && !changedPaths.has(entry.path)) continue;
       const id = `file:${entry.path}`;
       const fileName = entry.path.split('/').pop() || entry.path;
       const node: GraphNode = {
@@ -156,6 +160,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
     let packageCount = 0;
 
     for (const entry of scanOutput.files) {
+      if (changedPaths && !changedPaths.has(entry.path)) continue;
       const fileName = entry.path.split('/').pop() || '';
       if (!PACKAGE_MANIFESTS.includes(fileName)) continue;
 

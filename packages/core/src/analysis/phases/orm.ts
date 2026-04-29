@@ -29,9 +29,13 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
     let modelCount = 0;
     let queryEdgeCount = 0;
 
+    // #280: Support incremental indexing — only process changed/added files
+    const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+
     // Detect Prisma schema
     const prismaSchema = join(context.repoPath, 'prisma', 'schema.prisma');
-    if (existsSync(prismaSchema)) {
+    const prismaChanged = !changedPaths || changedPaths.has('prisma/schema.prisma');
+    if (prismaChanged && existsSync(prismaSchema)) {
       try {
         const content = await readFile(prismaSchema, 'utf-8');
         const modelRegex = /model\s+(\w+)\s*\{/g;
