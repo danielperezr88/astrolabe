@@ -13,7 +13,7 @@ import type { KnowledgeGraph, GraphNode } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { SqliteStore } from './sqlite.js';
+import { createSqliteStore } from './sqlite.js'; // #360: ESM import, not require()
 
 // ── LadybugDB dynamic import ───────────────────────────────────────────────
 
@@ -32,6 +32,14 @@ async function getLbug() {
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type StoreBackend = 'sqlite' | 'ladybug';
+
+/** #362: LbugStore has its own interface (async methods — different from synchronous SqliteStore). */
+export interface LbugStoreIface {
+  init(): Promise<void>;
+  saveGraph(graph: KnowledgeGraph): Promise<void>;
+  loadGraph(): Promise<KnowledgeGraph>;
+  close(): Promise<void>;
+}
 
 // ── Ladybug Store ─────────────────────────────────────────────────────────
 
@@ -84,16 +92,11 @@ export class LbugStore {
 
     for (const [label, nodes] of nodesByLabel) {
       for (const node of nodes) {
-        const name = (node.properties.name as string) ?? node.id;
-        const fp = (node.properties.filePath as string) ?? '';
-        const sl = (node.properties.startLine as number) ?? 1;
-        const el = (node.properties.endLine as number) ?? sl;
-        const exported = (node.properties.isExported as boolean) ?? false;
-        const kind = (node.properties.kind as string) ?? '';
-
+        // #361: Store all properties as JSON blob — preserves custom props (route method, tool type, etc.)
+        const props = JSON.stringify(node.properties);
         await this.db.run(
-          `MERGE (n:${label} {id: $id}) SET n.name = $name, n.filePath = $fp, n.startLine = $sl, n.endLine = $el, n.isExported = $exported, n.kind = $kind`,
-          { id: node.id, name, fp, sl, el, exported, kind },
+          `MERGE (n:${label} {id: $id}) SET n.props = $props`,
+          { id: node.id, props },
         );
       }
     }
@@ -125,17 +128,13 @@ export class LbugStore {
           const n = typeof row === 'object' ? row : { n: row };
           const node = n.n || n;
           if (!node?.id) continue;
+          // #361: Parse JSON properties blob
+          let properties: Record<string, unknown> = {};
+          try { properties = node.props ? JSON.parse(node.props) : {}; } catch { /* skip bad JSON */ }
           graph.addNode({
             id: node.id,
             label: label as any,
-            properties: {
-              name: node.name ?? '',
-              filePath: node.filePath ?? undefined,
-              startLine: node.startLine ?? undefined,
-              endLine: node.endLine ?? undefined,
-              isExported: node.isExported ?? false,
-              kind: node.kind ?? undefined,
-            },
+            properties,
           });
         }
       } catch {
@@ -168,12 +167,8 @@ export class LbugStore {
 
 // ── Backend-agnostic factory ───────────────────────────────────────────────
 
-export function createStore(dbPath: string, backend: StoreBackend = 'sqlite'): SqliteStore | LbugStore {
+/** #360, #362: LbugStore is async; SqliteStore is sync. Use type union, not interface. */
+export function createStore(dbPath: string, backend: StoreBackend = 'sqlite'): LbugStoreIface | ReturnType<typeof createSqliteStore> {
   if (backend === 'ladybug') return new LbugStore(dbPath);
-  // Default to SQLite
-  const { createSqliteStore } = require('./sqlite.js');
   return createSqliteStore(dbPath);
 }
-
-// Re-export SqliteStore interface for consumers
-export type { SqliteStore } from './sqlite.js';
