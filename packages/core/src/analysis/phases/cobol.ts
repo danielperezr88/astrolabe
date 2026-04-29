@@ -7,6 +7,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import { getPhaseOutput } from '../../core/pipeline.js';
 import type { ScanOutput } from '../phases/scan.js';
@@ -63,7 +64,7 @@ export const cobolPhase: PhaseDefinition<CobolOutput> = {
 
       // If no PROGRAM-ID found, use filename
       if (!programName) {
-        programName = file.path.split('/').pop()?.replace(/\.(cbl|cob|cobol)$/i, '') ?? 'unknown';
+        programName = basename(file.path).replace(/\.(cbl|cob|cobol)$/i, '');
         const id = `cobol:program:${file.path}:${programName}`;
         if (!graph.getNode(id)) {
           graph.addNode({

@@ -30,12 +30,16 @@ export interface WikiResult {
   overviewPath: string;
 }
 
-function callLlm(prompt: string, opts: WikiOptions): Promise<string> {
-  const apiKey = opts.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-  if (!apiKey) return Promise.resolve(''); // offline mode
+function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
+  // #355: Only use OpenAI-compatible keys (OPENAI_API_KEY or explicit --api-key)
+  const apiKey = opts.apiKey || process.env.OPENAI_API_KEY || '';
+  if (!apiKey) return Promise.resolve('');
 
   const url = opts.baseUrl || 'https://api.openai.com/v1/chat/completions';
   const model = opts.model || 'gpt-4o-mini';
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000); // #356: 30s timeout
 
   return fetch(url, {
     method: 'POST',
@@ -49,10 +53,22 @@ function callLlm(prompt: string, opts: WikiOptions): Promise<string> {
       max_tokens: 500,
       temperature: 0.3,
     }),
+    signal: controller.signal,
   })
-    .then((r) => r.json())
+    .then((r) => {
+      clearTimeout(timeout);
+      // #356: Check HTTP status before parsing
+      if (!r.ok) throw new Error(`LLM API error: ${r.status} ${r.statusText}`);
+      return r.json();
+    })
     .then((data: any) => data.choices?.[0]?.message?.content || '')
-    .catch(() => '');
+    .catch((e) => {
+      clearTimeout(timeout);
+      if ((e as Error).name === 'AbortError') {
+        console.warn(`[wiki] LLM call timed out for "${moduleName}"`);
+      }
+      return '';
+    });
 }
 
 async function generateModuleDescription(
@@ -61,12 +77,12 @@ async function generateModuleDescription(
   opts: WikiOptions,
 ): Promise<string> {
   if (!opts.apiKey && !process.env.OPENAI_API_KEY) {
-    // Offline mode: use community name as description
+    // #355: Offline mode — only OPENAI_API_KEY supported (not Anthropic)
     return `The **${moduleName}** module contains ${symbols.length} key symbols and handles functionality related to ${moduleName.replace(/-/g, ' ')}.\n\nKey symbols: ${symbols.slice(0, 10).map((s) => `\`${s}\``).join(', ')}.`;
   }
 
   const prompt = `Write a 2-3 sentence description of a software module named "${moduleName}" containing these symbols: ${symbols.slice(0, 15).join(', ')}. Focus on the module's purpose and what it provides. Be concise.`;
-  return callLlm(prompt, opts);
+  return callLlm(prompt, opts, moduleName);
 }
 
 export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
@@ -104,10 +120,18 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
   }
 
   let pageCount = 0;
+  const usedNames = new Set<string>(); // #357: collision-safe naming
 
   // Generate per-module pages
   for (const [name, symbols] of communities) {
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    let safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    // #357: ensure uniqueness — append short hash if name collides
+    if (usedNames.has(safeName)) {
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash) + name.charCodeAt(i) | 0;
+      safeName += '_' + Math.abs(hash).toString(16).slice(0, 6);
+    }
+    usedNames.add(safeName);
     const description = await generateModuleDescription(name, symbols, opts);
 
     const content = [

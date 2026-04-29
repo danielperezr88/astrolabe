@@ -11,6 +11,7 @@ import {
   createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
   mroPhase, communityPhase, processTracingPhase,
+  cobolPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry,
@@ -118,6 +119,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase,
+          cobolPhase,
         ], ctx);
 
         nodeCount = graph.nodeCount;
@@ -132,6 +134,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase,
+          cobolPhase,
         ], context);
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
