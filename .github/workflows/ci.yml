@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-test:
+    name: Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: packages/core/coverage/
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+        env:
+          ASTROLABE_INTEGRATION: '1'
+
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: [unit-test, integration-test]
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Download coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+      - name: Generate PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Read coverage summary if available
+            let coverageText = 'Coverage data not available.';
+            try {
+              const summaryPath = path.join('coverage', 'coverage-summary.json');
+              if (fs.existsSync(summaryPath)) {
+                const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf-8'));
+                const total = summary.total || {};
+                coverageText = [
+                  `| Metric | Value |`,
+                  `|--------|-------|`,
+                  `| Lines | ${(total.lines?.pct || 0).toFixed(1)}% |`,
+                  `| Statements | ${(total.statements?.pct || 0).toFixed(1)}% |`,
+                  `| Functions | ${(total.functions?.pct || 0).toFixed(1)}% |`,
+                  `| Branches | ${(total.branches?.pct || 0).toFixed(1)}% |`,
+                ].join('\n');
+              }
+            } catch {}
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Coverage Report\n\n${coverageText}\n\nTests: ${context.payload.pull_request ? 'PR checks passed' : 'N/A'}`,
+            });
