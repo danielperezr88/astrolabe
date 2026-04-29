@@ -18,6 +18,7 @@ import {
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
+  autoSetup,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -334,6 +335,33 @@ groupCmd.command('status <name>')
       const staleIcon = r.stale ? '⚠' : '✓';
       const indexed = r.indexedAt ? new Date(r.indexedAt).toISOString() : 'never';
       console.log(`  ${staleIcon} ${r.path} → ${r.repoName} (indexed: ${indexed})`);
+    }
+  });
+
+// ── setup (auto-detect editors and configure MCP) ─────────────────────────
+program.command('setup')
+  .description('Auto-detect editors (Cursor, Windsurf, Claude Code, etc.) and write MCP config')
+  .option('--force', 'Overwrite existing configurations')
+  .action((opts: { force?: boolean }) => {
+    const results = autoSetup(opts.force ?? false);
+    let configured = 0;
+
+    for (const r of results) {
+      if (r.configured) {
+        console.log(`  ✓ ${r.editor} — ${r.path}`);
+        configured++;
+      } else if (r.skipped) {
+        console.log(`  - ${r.editor}: ${r.skipped}`);
+      } else if (r.error) {
+        console.log(`  ✗ ${r.editor}: ${r.error}`);
+      }
+    }
+
+    if (configured === 0 && results.every((r) => !r.configured && !r.skipped)) {
+      console.log('\nNo supported editors detected. Manually configure MCP:');
+      console.log('  https://github.com/danielperezr88/astrolabe#mcp-integration');
+    } else {
+      console.log(`\n${configured} editor(s) configured. Restart your editor to activate Astrolabe MCP.`);
     }
   });
 
