@@ -17,6 +17,7 @@ import type { FtsSearch } from '../search/fts.js';
 import type { GraphNode } from '../core/types.js';
 import { loadRegistry, type RegistryEntry } from './registry.js';
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
+import { syncGroupContracts, getGroupContracts } from './contracts.js';
 import { McpTransport } from './transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
@@ -852,6 +853,61 @@ RETURNS: { nodes: [...], edges: [...], nodeCount, edgeCount }`,
         return `=== ${r.repoName} ===\n${repoResults}`;
       });
       return { content: [{ type: 'text', text: lines.join('\n\n') }] };
+    },
+  },
+
+  'astrolabe.group_sync': {
+    name: 'astrolabe.group_sync',
+    description: `Extract HTTP API contracts from all repos in a group and cross-link providers to consumers.
+
+Detects:
+- Providers: Route handlers (Express, Flask, Laravel, etc.) from Route nodes
+- Consumers: HTTP client calls (fetch, axios, got, request, httpClient) from Function nodes
+- Cross-links: Matches consumers to providers across repo boundaries by path similarity
+
+Results are persisted in the group config for subsequent group_contracts queries.
+AFTER THIS: use group_contracts({name: "groupName"}) to inspect extracted contracts.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name from group_list' },
+      },
+      required: ['name'],
+    },
+    handler: async (params) => {
+      const name = requireString(params, 'name');
+      const results = syncGroupContracts(name);
+      const lines = results.map((r) => {
+        const icon = r.error ? '✗ ERROR' : '✓';
+        return `${icon} | ${r.repoName}: ${r.providerCount} providers, ${r.consumerCount} consumers, ${r.crossLinks} cross-links${r.error ? ` (${r.error})` : ''}`;
+      });
+      const totalLinks = results.reduce((sum, r) => sum + r.crossLinks, 0);
+      return { content: [{ type: 'text', text: `Contract sync for group "${name}":\n${lines.join('\n')}\n\nTotal cross-repo links: ${totalLinks}\n\nNext: use group_contracts({name: "${name}"}) to inspect contracts.` }] };
+    },
+  },
+
+  'astrolabe.group_contracts': {
+    name: 'astrolabe.group_contracts',
+    description: `Inspect extracted cross-repo contracts for a group. Returns providers, consumers, and cross-links.
+
+Call group_sync first if contracts are stale or not yet extracted.
+Returns JSON with providers (method/path/handler), consumers (urlPattern/function/clientType), and crossLinks (matched pairs with confidence scores).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name from group_list' },
+      },
+      required: ['name'],
+    },
+    handler: async (params) => {
+      const name = requireString(params, 'name');
+      const contracts = getGroupContracts(name);
+      if (!contracts) {
+        return { content: [{ type: 'text', text: `No contracts extracted for group "${name}". Run group_sync first.` }] };
+      }
+      const summary = `Group: ${name}\nExtracted: ${new Date(contracts.extractedAt).toISOString()}\nProviders: ${contracts.providers.length}\nConsumers: ${contracts.consumers.length}\nCross-links: ${contracts.crossLinks.length}\n`;
+      const nextHint = '\n\nFor full contract data, use context or query tools on specific provider/consumer symbols.';
+      return { content: [{ type: 'text', text: summary + JSON.stringify({ crossLinks: contracts.crossLinks.slice(0, 50) }, null, 2) + nextHint }] };
     },
   },
 

@@ -32,6 +32,8 @@ export interface RepoGroup {
   createdAt: number;
   /** Repositories in this group, keyed by hierarchy path. */
   repos: Record<string, GroupRepo>;
+  /** Cross-repo contracts (populated by group sync). */
+  contracts?: Record<string, unknown>;
 }
 
 export interface GroupsConfig {
