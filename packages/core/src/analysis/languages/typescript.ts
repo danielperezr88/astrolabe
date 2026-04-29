@@ -162,6 +162,10 @@ const decoratorPatterns: QueryPattern[] = [
   { query: '(decorator (call_expression function: (identifier) @name)) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
   // @Decorator (no args)
   { query: '(decorator (identifier) @name) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
+  // #342: @Namespace.Decorator(args) — qualified member expressions (NestJS, Angular)
+  { query: '(decorator (call_expression function: (member_expression object: (identifier) @ns property: (property_identifier) @name))) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
+  // #342: @Namespace.Decorator (no args) — qualified member expression without call
+  { query: '(decorator (member_expression object: (identifier) @ns property: (property_identifier) @name)) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
 ];
 
 // ── Language definition ────────────────────────────────────────────────────
