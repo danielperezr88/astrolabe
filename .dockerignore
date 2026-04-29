@@ -1,0 +1,9 @@
+node_modules/
+packages/*/node_modules/
+packages/*/dist/
+.astrolabe/
+*.db
+*.db-wal
+*.db-shm
+.env
+.DS_Store

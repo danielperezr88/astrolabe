@@ -1,0 +1,19 @@
+# Astrolabe Docker Compose (#273)
+# Start: docker compose up -d
+# The API key protects the HTTP API when exposed.
+
+services:
+  astrolabe:
+    build: .
+    ports:
+      - "4747:4747"
+    volumes:
+      - ./:/workspace:ro
+      - astrolabe_data:/root/.astrolabe
+    environment:
+      - ASTROLABE_API_KEY=${ASTROLABE_API_KEY:-}
+    command: ["npx", "astrolabe", "serve", "--host", "0.0.0.0"]
+    restart: unless-stopped
+
+volumes:
+  astrolabe_data:
