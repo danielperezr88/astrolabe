@@ -7,14 +7,9 @@
  * can add custom content outside the block.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-
-// Resolve the source directory for locating bundled skill files
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = join(__filename, '..');
 import type { KnowledgeGraph } from '../core/types.js';
 import type { RegistryEntry } from '../mcp/registry.js';
 
@@ -175,8 +170,9 @@ export function generateAgentFiles(repoPath: string, opts: GenerateOptions): Age
 
   // #267: Generate per-community SKILL.md files
   if (opts.skills && opts.graph) {
-    installCoreSkills(repoPath);
     skillsCount = generateCommunitySkills(repoPath, opts);
+    // #358: Install core skills AFTER community skills (rmSync clears dir first)
+    installCoreSkills(repoPath);
   }
 
   return { agentsMd, claudeMd, skillsCount };
@@ -189,16 +185,16 @@ function installCoreSkills(repoPath: string): void {
 
   if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
 
-  const coreSkills = [
-    { name: 'exploring', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'exploring.md') },
-    { name: 'debugging', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'debugging.md') },
-    { name: 'impact-analysis', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'impact-analysis.md') },
-    { name: 'refactoring', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'refactoring.md') },
+  // #359: Inline core skill content — works in both dev and published packages
+  const coreSkills: Array<{ name: string; content: string }> = [
+    { name: 'exploring', content: '# Exploring — Navigate Unfamiliar Code\n\nUse Astrolabe to understand codebase structure before editing.\n\n## Quick Start\n- `astrolabe://repo/{name}/context` — Repo overview\n- `astrolabe.query {"query": "<keyword>"}` — Search symbols\n- `astrolabe.context {"name": "<symbol>"}` — 360° view\n\n## Pro Tips\n- Start with `context` before any edit\n- Use `filter_by_label` to find entry points\n- Read `cluster` to understand module boundaries' },
+    { name: 'debugging', content: '# Debugging — Trace Bugs Through Call Chains\n\nUse Astrolabe to follow bug symptoms to root causes.\n\n## Quick Start\n- `astrolabe.query {"query": "<function>"}` — Find the symbol\n- `astrolabe.context {"name": "<function>"}` — Get call chain\n- `astrolabe.impact {"target": "<function>", "direction": "upstream"}` — Find callers\n\n## Pro Tips\n- Check for HIGH/WILL BREAK in impact results\n- Use `detect_changes` after fixing to verify' },
+    { name: 'impact-analysis', content: '# Impact Analysis — Blast Radius Before Changes\n\nUse Astrolabe to calculate impact before committing.\n\n## Quick Start\n- `astrolabe.impact {"scope": "unstaged"}` — Pre-commit check\n- `astrolabe.api_impact {"name": "<handler>"}` — Route impact\n- `astrolabe.tool_map` — Tool usage map\n\n## Risk Levels\n- LOW: No consumers → safe\n- MEDIUM: Internal callers → add tests\n- HIGH: Exported callers → check carefully\n- WILL BREAK: Do NOT proceed without migration plan' },
+    { name: 'refactoring', content: '# Refactoring — Plan Safe Refactors\n\nUse Astrolabe to plan and execute safe refactors.\n\n## Quick Start\n1. `astrolabe.impact {"target": "<symbol>", "depth": 2}` — See all consumers\n2. Rename/move in code\n3. `astrolabe detect_changes` — Verify only expected changes\n4. `astrolabe analyze .` — Re-index if needed\n\n## Patterns\n- **Rename**: impact → rename → detect_changes\n- **Extract**: clusters → move files → analyze\n- **Migrate**: tool_map + route_map → incremental migration' },
   ];
 
-  for (const { name, path } of coreSkills) {
-    if (!existsSync(path)) continue;
-    copyFileSync(path, join(skillsDir, `${name}.md`));
+  for (const { name, content } of coreSkills) {
+    writeFileSync(join(skillsDir, `${name}.md`), content, 'utf-8');
   }
 }
 
