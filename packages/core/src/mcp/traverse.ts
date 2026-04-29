@@ -154,8 +154,8 @@ export function executeTraversal(
 
   // Step 1+: Traverse chain
   if (query.traverse && query.traverse.length > 0) {
-    // Add start node context before traversal (so edges reference them)
-    const startNodeSet = new Set(nodeItems.map((n) => n.id));
+    // #384: Track added node IDs in Set for O(1) duplicate check
+    const addedIds = new Set(nodeItems.map((n) => n.id));
 
     for (const step of query.traverse) {
       const { nextIds, edges } = traverseEdges(graph, currentIds, step);
@@ -169,7 +169,8 @@ export function executeTraversal(
       // Collect destination node items
       for (const id of nextIds) {
         if (nodeItems.length >= limit) break;
-        if (startNodeSet.has(id) || nodeItems.some((n) => n.id === id)) continue;
+        if (addedIds.has(id)) continue;
+        addedIds.add(id);
         const node = graph.getNode(id);
         if (node) {
           nodeItems.push(nodeToItem(node));

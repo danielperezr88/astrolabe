@@ -270,11 +270,26 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       return;
     }
 
-    // #329: Auth middleware
-    if (!authMiddleware(req, res)) return;
-
+    // #383: Health check must skip auth for bridge auto-detection
     const url = new URL(req.url ?? '/', `http://${host}:${port}`);
     const path = url.pathname;
+
+    if (req.method === 'GET' && path === '/api/health') {
+      const registry = loadRegistry();
+      return json(res, {
+        status: 'ok',
+        uptime: process.uptime(),
+        repos: registry.map((r) => ({
+          name: r.name,
+          path: r.path,
+          indexedAt: r.indexedAt,
+          lastCommit: r.lastCommit,
+        })),
+      });
+    }
+
+    // #329: Auth middleware
+    if (!authMiddleware(req, res)) return;
 
     try {
       // GET /api/repos
@@ -306,21 +321,6 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       if (req.method === 'POST' && imMatch) {
         const body = await parseBody(req);
         return await handleImpact(res, decodeURIComponent(imMatch[1]), body);
-      }
-
-      // Health check — also serves as bridge auto-detect endpoint (#377)
-      if (req.method === 'GET' && path === '/api/health') {
-        const registry = loadRegistry();
-        return json(res, {
-          status: 'ok',
-          uptime: process.uptime(),
-          repos: registry.map((r) => ({
-            name: r.name,
-            path: r.path,
-            indexedAt: r.indexedAt,
-            lastCommit: r.lastCommit,
-          })),
-        });
       }
 
       // 404
