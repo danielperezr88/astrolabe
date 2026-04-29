@@ -18,6 +18,7 @@ import type { ScanOutput, FileEntry } from '../phases/scan.js';
 import type { ParsedSymbol, ParsedImport, ParsedRelationship } from '../language-definition.js';
 import { parseFile, defaultWasmDir } from '../parser.js';
 import type { GraphNode, GraphRelationship } from '../../core/types.js';
+import { parseFilesParallel, type WorkerParseResult } from '../workers/pool.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +69,8 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
 
     // #280: Support incremental indexing — only parse changed files when filter is set
     const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
+    // #272: Support --skip-workers flag for sequential fallback
+    const skipWorkers = context.state.get('skipWorkers') === true;
 
     let symbolCount = 0;
     let importCount = 0;
@@ -80,7 +83,56 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
       parsable = parsable.filter((f) => changedPaths.has(f.path));
     }
 
-    // Process in chunks to keep memory under control
+    // #272: Use worker pool for parallel parsing when available
+    if (!skipWorkers && parsable.length > 50) {
+      const fileInfos = parsable.map((f) => ({ path: f.absolutePath, size: f.size }));
+      const { results, stats } = await parseFilesParallel(
+        fileInfos,
+        async (filePath: string) => {
+          const r = await parseFile(filePath, wasmDir);
+          return {
+            filePath: r.filePath,
+            symbols: r.symbols,
+            imports: r.imports,
+            relationships: r.relationships,
+            error: r.error,
+          } as WorkerParseResult;
+        },
+      );
+
+      // Emit results from pool
+      for (const [absPath, workerResult] of results) {
+        fileCount++;
+        if (workerResult.error) {
+          errorCount++;
+          continue;
+        }
+        const relPath = relative(repoPath, absPath).replace(/\\/g, '/');
+        for (const sym of workerResult.symbols) {
+          emitSymbol(graph, sym as ParsedSymbol, relPath);
+          symbolCount++;
+          symbolCounts[sym.label] = (symbolCounts[sym.label] ?? 0) + 1;
+        }
+        for (const imp of workerResult.imports) {
+          const edgeCount = emitImport(graph, imp as ParsedImport, relPath);
+          importCount += edgeCount;
+        }
+        for (const rel of workerResult.relationships) {
+          emitRelationship(graph, rel as ParsedRelationship, relPath);
+        }
+        inferParentClasses(graph, relPath);
+      }
+      errorCount = stats.errorCount;
+
+      // Log pool stats via progress callback
+      context.onProgress('parse-emit', 100,
+        `Parsed ${fileCount} files (${stats.workerCount} workers, ${stats.chunkCount} chunks, ${stats.durationMs}ms)`,
+      );
+
+      return { symbolCount, importCount, fileCount, errorCount, symbolCounts };
+    }
+
+    // Sequential fallback: process in chunks to keep memory under control
     for (let i = 0; i < parsable.length; i += CHUNK_SIZE) {
       const chunk = parsable.slice(i, i + CHUNK_SIZE);
 

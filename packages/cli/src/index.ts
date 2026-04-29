@@ -37,7 +37,8 @@ program
   .description('Analyze a codebase and build the knowledge graph')
   .option('-o, --output <path>', 'Output database path', '.astrolabe/astrolabe.db')
   .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string }) => {
+  .option('--skip-workers', 'Disable parallel parsing (sequential only)')
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
     try {
@@ -93,6 +94,7 @@ program
         // Run remaining phases with file filter
         const ctx = createPhaseContext(repoPath, graph, onProgress);
         ctx.state.set('output:scan', scanOutput);
+        ctx.state.set('skipWorkers', opts.skipWorkers ?? false);
         ctx.state.set('incremental:changedPaths', new Set([...diff.changed, ...diff.added]));
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,

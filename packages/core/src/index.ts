@@ -44,3 +44,5 @@ export { detectChanges } from './incremental/index.js';
 export type { IncrementalState } from './incremental/index.js';
 export { loadMeta, saveMeta, computeFileDiff, buildMeta } from './analysis/meta.js';
 export type { MetaFile, FileDiff } from './analysis/meta.js';
+export { parseFilesParallel, DEFAULT_WORKERS } from './analysis/workers/pool.js';
+export type { WorkerParseResult, PoolStats } from './analysis/workers/pool.js';
