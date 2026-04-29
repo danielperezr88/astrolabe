@@ -8,7 +8,6 @@
  * Tools: list_repos, query, context, impact, detect_changes, filter_by_label
  */
 
-import { createInterface } from 'node:readline';
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { createSqliteStore } from '../persist/sqlite.js';
@@ -18,6 +17,7 @@ import type { FtsSearch } from '../search/fts.js';
 import type { GraphNode } from '../core/types.js';
 import { loadRegistry, type RegistryEntry } from './registry.js';
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
+import { McpTransport } from './transport.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -931,21 +931,22 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
 }
 
 export async function startMcpServer(): Promise<void> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  // #274: Dual-framing transport with security hardening
+  const transport = new McpTransport(process.stdin, process.stdout);
 
   // Graceful shutdown
-  process.on('SIGINT', () => { backend.shutdown(); process.exit(0); });
-  process.on('SIGTERM', () => { backend.shutdown(); process.exit(0); });
+  process.on('SIGINT', () => { backend.shutdown(); transport.close(); process.exit(0); });
+  process.on('SIGTERM', () => { backend.shutdown(); transport.close(); process.exit(0); });
 
-  for await (const line of rl) {
+  transport.on('message', async (data: unknown) => {
     try {
-      const req = JSON.parse(line) as JsonRpcRequest;
+      const req = data as JsonRpcRequest;
       const res = await handleRequest(req);
       if (res !== null) {
-        process.stdout.write(JSON.stringify(res) + '\n');
+        transport.send(res);
       }
     } catch {
-      process.stderr.write('{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}\n');
+      // Parse error already handled by transport
     }
-  }
+  });
 }
