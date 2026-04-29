@@ -157,7 +157,6 @@ async function handleClusters(res: ServerResponse, repoName: string) {
 
   try {
     const ctx = getRepo(entry.dbPath, repoName);
-    // #330: Cache loaded graph in connection pool
     if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
     const graph = ctx.graph;
     const clusters: unknown[] = [];
@@ -170,6 +169,65 @@ async function handleClusters(res: ServerResponse, repoName: string) {
       });
     }
     json(res, { clusters });
+  } catch (err) {
+    error(res, String(err), 500);
+  }
+}
+
+async function handleGraph(res: ServerResponse, repoName: string, clusterId?: string) {
+  const entries = loadRegistry();
+  const entry = entries.find((e) => e.name === repoName);
+  if (!entry) return error(res, `Repo "${repoName}" not found`, 404);
+
+  try {
+    const ctx = getRepo(entry.dbPath, repoName);
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
+
+    const nodeLimit = 200;
+    const edgeLimit = 400;
+    const nodes: unknown[] = [];
+    const edges: unknown[] = [];
+    const memberIds = new Set<string>();
+
+    // If cluster specified, collect its members first
+    if (clusterId) {
+      for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+        if (rel.targetId === clusterId) memberIds.add(rel.sourceId);
+      }
+    }
+
+    // Collect nodes (members first if cluster specified)
+    for (const node of graph.iterNodes()) {
+      if (nodes.length >= nodeLimit) break;
+      if (clusterId && !memberIds.has(node.id)) continue;
+      // Skip structural nodes
+      if (node.label === 'File' || node.label === 'Folder') continue;
+      nodes.push({
+        id: node.id,
+        label: node.label,
+        name: node.properties.name ?? node.id,
+        filePath: node.properties.filePath ?? '',
+        startLine: node.properties.startLine ?? 0,
+      });
+    }
+
+    // Collect edges between collected nodes
+    const nodeIdSet = new Set(nodes.map((n: any) => n.id));
+    for (const rel of graph.iterRelationships()) {
+      if (edges.length >= edgeLimit) break;
+      if (rel.type === 'CONTAINS') continue; // skip structural edges
+      if (nodeIdSet.has(rel.sourceId) && nodeIdSet.has(rel.targetId)) {
+        edges.push({
+          sourceId: rel.sourceId,
+          targetId: rel.targetId,
+          type: rel.type,
+          confidence: rel.confidence,
+        });
+      }
+    }
+
+    json(res, { nodes, edges, nodeCount: nodes.length, edgeCount: edges.length });
   } catch (err) {
     error(res, String(err), 500);
   }
@@ -307,6 +365,13 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       const clMatch = path.match(/^\/api\/repo\/([^/]+)\/clusters$/);
       if (req.method === 'GET' && clMatch) {
         return await handleClusters(res, decodeURIComponent(clMatch[1]));
+      }
+
+      // GET /api/repo/:name/graph[?cluster=id] — graph data for visualization (#372)
+      const grMatch = path.match(/^\/api\/repo\/([^/]+)\/graph$/);
+      if (req.method === 'GET' && grMatch) {
+        const clusterId = url.searchParams.get('cluster') ?? undefined;
+        return await handleGraph(res, decodeURIComponent(grMatch[1]), clusterId);
       }
 
       // POST /api/repo/:name/query

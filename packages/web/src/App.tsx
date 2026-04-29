@@ -8,6 +8,16 @@ const API = '/api';
 
 type ConnStatus = 'checking' | 'connected' | 'offline';
 
+interface GraphNode {
+  id: string; label: string; name: string; filePath: string; startLine: number;
+}
+interface GraphEdge {
+  sourceId: string; targetId: string; type: string; confidence: number;
+}
+interface GraphData {
+  nodes: GraphNode[]; edges: GraphEdge[]; nodeCount: number; edgeCount: number;
+}
+
 export default function App() {
   const [repos, setRepos] = useState<Array<{ name: string; path: string }>>([]);
   const [selectedRepo, setSelectedRepo] = useState<string>('');
@@ -17,6 +27,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [connStatus, setConnStatus] = useState<ConnStatus>('checking');
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [selectedClusterId, setSelectedClusterId] = useState<string>('');
   const abortRef = useRef<AbortController | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
 
@@ -47,6 +59,32 @@ export default function App() {
       .then((data: ApiRepos) => setRepos(data.repos || []))
       .catch(() => {}); // repos already set from health check if available
   }, [connStatus]);
+
+  // Load graph for a specific cluster (#372)
+  const selectCluster = useCallback(async (clusterId: string) => {
+    if (!selectedRepo) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const signal = controller.signal;
+
+    setSelectedClusterId(clusterId);
+    setLoading(true);
+
+    try {
+      const url = `${API}/repo/${encodeURIComponent(selectedRepo)}/graph?cluster=${encodeURIComponent(clusterId)}`;
+      const res = await fetch(url, { signal });
+      if (signal.aborted) return;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGraphData(data);
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+      setError('Failed to load graph data');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedRepo]);
 
   // Load repo context and clusters
   const selectRepo = useCallback(async (name: string) => {
@@ -127,7 +165,12 @@ export default function App() {
         {connStatus === 'connected' && repos.length > 0 && <div style={{ padding: '0.25rem 1rem', color: '#3fb950', background: '#0d1b14', fontSize: '0.75rem' }}>Connected • {repos.length} repo{repos.length !== 1 ? 's' : ''} indexed</div>}
         {error && <div style={{ padding: '1rem', color: '#f85149', background: '#490202' }}>{error}</div>}
         {loading && <div style={{ padding: '1rem', color: '#58a6ff' }}>Loading...</div>}
-        <GraphView repoName={selectedRepo} clusters={clusters} />
+        <GraphView
+          repoName={selectedRepo}
+          clusters={clusters}
+          graphData={graphData}
+          loading={loading}
+        />
       </main>
     </div>
   );
