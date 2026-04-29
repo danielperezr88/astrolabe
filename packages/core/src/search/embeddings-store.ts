@@ -11,7 +11,10 @@
 
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import type { TfIdfIndex } from './embeddings.js';
+
+const _require = createRequire(import.meta.url);
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +34,8 @@ export interface EmbeddingEntry {
 export interface EmbeddingProvider {
   /** Compute a float32 embedding for a text string. */
   encode(text: string): Float32Array;
+  /** Async encode (ML providers require this — sync encode may throw). */
+  encodeAsync?(text: string): Promise<Float32Array>;
   /** Dimensionality of the embeddings produced. */
   dimensions: number;
 }
@@ -151,11 +156,10 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
    * Mean-pooling over token embeddings produces a fixed-size vector.
    */
   encode(_text: string): Float32Array {
-    // Synchronous encode returns zeros — callers should use encodeAsync
-    // for ML-powered embeddings. This is the sync path for the EmbeddingProvider
-    // interface compatibility; encodeAsync provides the real ML embeddings.
-    const vec = new Float32Array(this.dimensions);
-    return vec;
+    throw new Error(
+      'TransformersEmbeddingProvider.encode() is not supported. ' +
+      'Use encodeAsync() via EmbeddingStore.getOrComputeAsync() instead.',
+    );
   }
 
   /**
@@ -240,7 +244,10 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
    * Synchronous version returns empty — use encodeAsync.
    */
   encode(_text: string): Float32Array {
-    return new Float32Array(this.dimensions);
+    throw new Error(
+      'RemoteEmbeddingProvider.encode() is not supported. ' +
+      'Use encodeAsync() via EmbeddingStore.getOrComputeAsync() instead.',
+    );
   }
 
   /**
@@ -283,9 +290,12 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
         }
 
         const emb = json.data[0].embedding;
-        // Auto-detect dimensions from first successful response
+        // Validate dimensionality — reject mismatches instead of silently mutating (#382)
         if (emb.length !== this.dimensions) {
-          (this as { dimensions: number }).dimensions = emb.length;
+          throw new Error(
+            `Dimensionality mismatch: expected ${this.dimensions}, got ${emb.length} from ${this._url}. ` +
+            `Set ASTROLABE_EMBEDDING_DIMS=${emb.length} to match the remote model.`,
+          );
         }
 
         return new Float32Array(emb);
@@ -335,13 +345,13 @@ export function createEmbeddingProvider(
     return new TransformersEmbeddingProvider();
   }
 
-  // Auto: try transformers (won't download model until encodeAsync called)
+  // Auto: check if transformers is actually installed (#380)
   if (providerType === 'auto') {
     try {
-      // Check if transformers is importable without downloading model
+      _require.resolve('@huggingface/transformers');
       return new TransformersEmbeddingProvider();
     } catch {
-      // Fall through to TF-IDF
+      // Not installed, fall through to TF-IDF
     }
   }
 
@@ -447,7 +457,10 @@ export class EmbeddingStore {
   }
 
   /**
-   * Compute or retrieve cached embedding for a node.
+   * Compute or retrieve cached embedding for a node (sync path — TF-IDF only).
+   *
+   * ML providers (Transformers, Remote) throw here. Use getOrComputeAsync() for
+   * ML-based embeddings.
    */
   getOrCompute(
     node: { id: string; properties: Record<string, unknown> },
@@ -462,6 +475,33 @@ export class EmbeddingStore {
     const name = (node.properties.name as string) ?? node.id;
     const text = `${node.properties.label ?? (node as any).label ?? ''} ${name}`;
     const vec = provider.encode(text);
+    this.upsert(node.id, hash, vec);
+    return vec;
+  }
+
+  /**
+   * Async embed with caching (#381). Uses encodeAsync when available (ML providers),
+   * falls back to sync encode() for TF-IDF providers.
+   *
+   * Cache hit returns immediately — no API call. Cache miss calls encodeAsync(),
+   * persists result, and returns it.
+   */
+  async getOrComputeAsync(
+    node: { id: string; properties: Record<string, unknown> },
+    provider: EmbeddingProvider,
+  ): Promise<Float32Array> {
+    const hash = EmbeddingStore.contentHash(node);
+    const cached = this.get(node.id);
+    if (cached && cached.contentHash === hash) {
+      return new Float32Array(cached.vector.buffer);
+    }
+
+    const name = (node.properties.name as string) ?? node.id;
+    const text = `${node.properties.label ?? (node as any).label ?? ''} ${name}`;
+
+    const vec = provider.encodeAsync
+      ? await provider.encodeAsync(text)
+      : provider.encode(text);
     this.upsert(node.id, hash, vec);
     return vec;
   }

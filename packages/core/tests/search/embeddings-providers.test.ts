@@ -25,12 +25,11 @@ describe('TransformersEmbeddingProvider (#371)', () => {
     expect(provider.dimensions).toBe(768);
   });
 
-  it('sync encode returns zero vector of correct size (placeholder)', () => {
+  it('sync encode throws for ML providers (#379)', () => {
     const provider = new TransformersEmbeddingProvider(384);
-    const vec = provider.encode('test function');
-    expect(vec.length).toBe(384);
-    // Sync encode returns zeros — real embeddings via encodeAsync
-    expect(vec.every((v) => v === 0)).toBe(true);
+    expect(() => provider.encode('test function')).toThrow(
+      'TransformersEmbeddingProvider.encode() is not supported',
+    );
   });
 
   it('encodeAsync falls back to bag-of-words hash when pipeline unavailable', async () => {
@@ -188,16 +187,16 @@ describe('RemoteEmbeddingProvider (#371)', () => {
     }
   });
 
-  it('sync encode returns zero vector', () => {
+  it('sync encode throws for remote provider (#379)', () => {
     const origUrl = process.env.ASTROLABE_EMBEDDING_URL;
     const origDims = process.env.ASTROLABE_EMBEDDING_DIMS;
     process.env.ASTROLABE_EMBEDDING_URL = 'http://localhost:8080/v1';
     delete process.env.ASTROLABE_EMBEDDING_DIMS;
     try {
       const provider = new RemoteEmbeddingProvider();
-      const vec = provider.encode('test');
-      expect(vec.length).toBeGreaterThan(0);
-      expect(vec.every((v) => v === 0)).toBe(true);
+      expect(() => provider.encode('test')).toThrow(
+        'RemoteEmbeddingProvider.encode() is not supported',
+      );
     } finally {
       process.env.ASTROLABE_EMBEDDING_URL = origUrl;
       process.env.ASTROLABE_EMBEDDING_DIMS = origDims;
