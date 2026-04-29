@@ -7,9 +7,14 @@
  * can add custom content outside the block.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+
+// Resolve the source directory for locating bundled skill files
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = join(__filename, '..');
 import type { KnowledgeGraph } from '../core/types.js';
 import type { RegistryEntry } from '../mcp/registry.js';
 
@@ -170,10 +175,31 @@ export function generateAgentFiles(repoPath: string, opts: GenerateOptions): Age
 
   // #267: Generate per-community SKILL.md files
   if (opts.skills && opts.graph) {
+    installCoreSkills(repoPath);
     skillsCount = generateCommunitySkills(repoPath, opts);
   }
 
   return { agentsMd, claudeMd, skillsCount };
+}
+
+// ── Core Agent Skills (#267) ────────────────────────────────────────────────
+
+function installCoreSkills(repoPath: string): void {
+  const skillsDir = join(repoPath, '.astrolabe', 'skills');
+
+  if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
+
+  const coreSkills = [
+    { name: 'exploring', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'exploring.md') },
+    { name: 'debugging', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'debugging.md') },
+    { name: 'impact-analysis', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'impact-analysis.md') },
+    { name: 'refactoring', path: join(__dirname, '..', '..', 'src', 'agents', 'skills', 'refactoring.md') },
+  ];
+
+  for (const { name, path } of coreSkills) {
+    if (!existsSync(path)) continue;
+    copyFileSync(path, join(skillsDir, `${name}.md`));
+  }
 }
 
 // ── Community Skills (#267) ─────────────────────────────────────────────────
