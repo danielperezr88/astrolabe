@@ -395,10 +395,42 @@ function extractDecorators(
       const decoratorName = nameNode.node.text;
       const startLine = nameNode.node.startPosition.row + 1;
 
+      // #341: Walk up to find the decorated declaration's name
+      const decoratedNode = nameNode.node.parent;
+      let sourceName = '';
+      let sourceStartLine = startLine;
+
+      if (decoratedNode) {
+        // The parent of a decorator is a declaration (class, method, etc.)
+        // Walk children to find the 'name' node
+        for (let i = 0; i < decoratedNode.childCount; i++) {
+          const child = decoratedNode.child(i);
+          if (child && (child.type === 'identifier' || child.type === 'type_identifier' || child.type === 'property_identifier')) {
+            const fieldName = decoratedNode.fieldNameForChild && decoratedNode.fieldNameForChild(i);
+            if (fieldName === 'name' || !fieldName) {
+              sourceName = child.text;
+              sourceStartLine = child.startPosition.row + 1;
+              break;
+            }
+          }
+        }
+        // Fallback: if name not found via field, use the first identifier-like child
+        if (!sourceName) {
+          for (let i = 0; i < decoratedNode.childCount; i++) {
+            const child = decoratedNode.child(i);
+            if (child && child.type === 'identifier') {
+              sourceName = child.text;
+              sourceStartLine = child.startPosition.row + 1;
+              break;
+            }
+          }
+        }
+      }
+
       relationships.push({
         filePath: normalisedPath,
-        sourceName: '', // Will be resolved by the outer capture context
-        sourceStartLine: startLine,
+        sourceName,
+        sourceStartLine,
         targetName: decoratorName,
         type: 'DECORATES',
       });
