@@ -28,6 +28,7 @@ import { symbolId } from './language-definition.js';
 import { languageForExtension, languageForFile } from './languages/index.js';
 import { AstCache } from './ast-cache.js';
 import type { NodeLabel } from '@astrolabe/shared';
+import { preprocessVueSfc } from './languages/vue.js';
 
 // ── Module-level state ─────────────────────────────────────────────────────
 
@@ -252,12 +253,25 @@ function extractSymbols(
     const endLine = outerNode.node.endPosition.row + 1;
     const exported = isExported(match, outerCapture);
 
-    const id = symbolId(label, filePath, name, startLine);
-    // Dedup by filePath|name|startLine (exclude label) so the same node
+    // #405: Compute parameter count for overload disambiguation
+    let paramCount: number | undefined;
+    if (label === 'Method' || label === 'Function' || label === 'Constructor') {
+      // Walk the AST to find the `parameters` child (standard tree-sitter convention)
+      for (let i = 0; i < outerNode.node.childCount; i++) {
+        const child = outerNode.node.child(i);
+        if (child && (child.type === 'parameters' || child.type === 'formal_parameters')) {
+          paramCount = child.namedChildCount;
+          break;
+        }
+      }
+    }
+
+    const id = symbolId(label, filePath, name, startLine, { parameterCount: paramCount });
+    // Dedup by filePath|name|startLine|paramCount (exclude label) so the same node
     // matched by multiple patterns produces only one entry.
     // Use label priority: more specific labels (Method, Constructor) beat
     // less specific ones (Function) to fix Rust impl method dedup (#178).
-    const dedupKey = `${filePath}|${name}|${startLine}`;
+    const dedupKey = `${filePath}|${name}|${startLine}|${paramCount ?? 0}`;
     const existing = seen.get(dedupKey);
 
     if (shouldReplaceDedup(existing, { id, filePath, name, label, startLine, endLine, isExported: exported })) {
@@ -565,6 +579,22 @@ export async function parseFile(
       relationships: [],
       error: `Failed to read file: ${(err as Error).message}`,
     };
+  }
+
+  // #395: Vue SFC preprocessing — extract <script> block content
+  if (ext === '.vue') {
+    const sfc = preprocessVueSfc(normalisedPath);
+    if (!sfc) {
+      return {
+        filePath: normalisedPath,
+        language: 'vue',
+        symbols: [],
+        imports: [],
+        relationships: [],
+        error: 'No <script> block found in Vue SFC',
+      };
+    }
+    content = sfc.content;
   }
 
   // Parse — reuse cached parser per language (#168)

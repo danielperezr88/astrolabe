@@ -243,10 +243,28 @@ export function captureRange(
 /**
  * Build a stable, unique id for a symbol node within a file.
  *
- * Format: `<label>:<filePath>:<name>`
+ * Format: `<label>:<filePath>:<name>[#<paramCount>][~<typeHash>]`
  * For anonymous / unnamed symbols, appends startLine to guarantee uniqueness.
+ *
+ * #405: Overload disambiguation via parameter-count and type-hash suffixes.
+ * - `Method:file:MyClass.save#1` — single-parameter version
+ * - `Method:file:MyClass.save#2` — two-parameter version
+ * - `Method:file:MyClass.save#1~int,string` — type-hash disambiguation for same-arity
  */
-export function symbolId(label: NodeLabel, filePath: string, name: string, startLine?: number): string {
-  const base = `${label}:${filePath}:${name}`;
+export function symbolId(
+  label: NodeLabel,
+  filePath: string,
+  name: string,
+  startLine?: number,
+  overload?: { parameterCount?: number; parameterTypes?: string[] },
+): string {
+  let base = `${label}:${filePath}:${name}`;
+  if (overload?.parameterCount != null && overload.parameterCount > 0) {
+    base += `#${overload.parameterCount}`;
+    if (overload.parameterTypes && overload.parameterTypes.length > 0) {
+      const hash = overload.parameterTypes.map((t) => t.replace(/[^a-zA-Z0-9<>,_[\]]/g, '')).join(',');
+      base += `~${hash}`;
+    }
+  }
   return startLine != null ? `${base}:L${startLine}` : base;
 }

@@ -161,6 +161,114 @@ class LocalBackend {
     return loadRegistry();
   }
 
+  // ── #401: @group Routing ──────────────────────────────────────────────
+
+  /**
+   * Resolve `@groupName` or `@groupName/memberPath` to actual repo context(s).
+   * Returns { contexts, groupName, memberPath?, servicePath? }.
+   */
+  resolveGroupRepos(repoParam: string): {
+    contexts: Array<{ repo: RepoContext; memberPath: string }>;
+    groupName: string;
+  } {
+    const clean = repoParam.startsWith('@') ? repoParam.substring(1) : repoParam;
+    const slashIdx = clean.indexOf('/');
+    const groupName = slashIdx >= 0 ? clean.substring(0, slashIdx) : clean;
+    const memberPath = slashIdx >= 0 ? clean.substring(slashIdx + 1) : undefined;
+
+    const groups = listGroups();
+    const group = groups.find((g) => g.name === groupName);
+    if (!group) throw new Error(`Group "${groupName}" not found. Available: ${groups.map((g) => g.name).join(', ')}`);
+
+    const entries = Object.entries(group.repos);
+    if (entries.length === 0) throw new Error(`Group "${groupName}" has no repos.`);
+
+    let targetEntries = entries;
+    if (memberPath) {
+      targetEntries = entries.filter(([path]) => path === memberPath);
+      if (targetEntries.length === 0) throw new Error(`Member "${memberPath}" not in group "${groupName}". Available: ${entries.map(([p]) => p).join(', ')}`);
+    }
+
+    const contexts: Array<{ repo: RepoContext; memberPath: string }> = [];
+    for (const [path, gr] of targetEntries) {
+      try {
+        const ctx = this.getRepo(gr.repoName);
+        contexts.push({ repo: ctx, memberPath: path });
+      } catch {
+        // skip repos that can't be loaded
+      }
+    }
+
+    return { contexts, groupName };
+  }
+
+  /** #401: Query across group repos with optional service filtering. */
+  queryGroup(query: string, repoParam: string, service?: string, limit = 20) {
+    const { contexts, groupName } = this.resolveGroupRepos(repoParam);
+    const allResults: Array<{
+      repoName: string;
+      definitions: Array<{ name: string; type: string; filePath: string }>;
+      processes: Array<Record<string, unknown>>;
+      process_symbols: Array<Record<string, unknown>>;
+    }> = [];
+
+    for (const { repo, memberPath } of contexts) {
+      const result = this.query(query, repo.entry.name, limit);
+
+      // #402: Filter by service path if provided
+      if (service) {
+        const svcPrefix = service.replace(/^\/|\/$/g, '');
+        const filteredDefs = result.definitions.filter((d) => d.filePath.startsWith(svcPrefix));
+        const filteredSyms = result.process_symbols.filter((s) =>
+          (s.filePath as string).startsWith(svcPrefix));
+        if (filteredDefs.length === 0 && filteredSyms.length === 0 && result.processes.length === 0) continue;
+        allResults.push({
+          repoName: `${groupName}/${memberPath}`,
+          definitions: filteredDefs,
+          processes: result.processes,
+          process_symbols: filteredSyms,
+        });
+      } else {
+        const repoName = `${groupName}/${memberPath}`;
+        if (result.definitions.length > 0 || result.processes.length > 0) {
+          allResults.push({ repoName, ...result });
+        }
+      }
+    }
+
+    return {
+      group: groupName,
+      service: service || null,
+      repos: allResults.length,
+      results: allResults,
+    };
+  }
+
+  /** #401: Context across group repos with optional service filtering. */
+  contextGroup(nameOrUid: string, repoParam: string, service?: string) {
+    const { contexts, groupName } = this.resolveGroupRepos(repoParam);
+    const allMatches: Array<{ repoName: string; match: Record<string, unknown> }> = [];
+
+    for (const { repo, memberPath } of contexts) {
+      const result = this.context(nameOrUid, repo.entry.name);
+      if (!('error' in result)) {
+        allMatches.push({ repoName: `${groupName}/${memberPath}`, match: result as unknown as Record<string, unknown> });
+      }
+    }
+
+    if (allMatches.length === 0) {
+      return { error: `Symbol "${nameOrUid}" not found in any repo of group "${groupName}".` };
+    }
+
+    return {
+      group: groupName,
+      service: service || null,
+      total_matches: allMatches.reduce((s, m) => s + ((m.match.match_count as number) ?? 0), 0),
+      repos: allMatches,
+    };
+  }
+
+
   query(query: string, repo?: string, limit = 20) {
     const ctx = this.getRepo(repo);
     const results = ctx.fts.search(query, limit);
@@ -629,19 +737,31 @@ const TOOLS: Record<string, {
 
   'astrolabe.query': {
     name: 'astrolabe.query',
-    description: 'Hybrid search over the knowledge graph. Returns process-grouped results for architectural context.',
+    description: `Hybrid search over the knowledge graph. Returns process-grouped results for architectural context.
+
+GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group, or "@<groupName>/<memberPath>" to scope to one member. Use "service" for monorepo subdirectory filtering.`,
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search term (symbol name, concept, etc.)' },
         limit: { type: 'number', description: 'Max results', default: 20 },
-        repo: { type: 'string', description: 'Repository name (optional if only one indexed)' },
+        repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode. Omit if only one repo indexed.' },
+        service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
       },
       required: ['query'],
     },
     handler: async (params) => {
       const query = requireString(params, 'query');
-      const result = backend.query(query, params.repo as string, requireNumber(params, 'limit', 20));
+      const repo = params.repo as string | undefined;
+      const service = params.service as string | undefined;
+      let result: unknown;
+
+      if (repo?.startsWith('@')) {
+        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20));
+      } else {
+        result = backend.query(query, repo, requireNumber(params, 'limit', 20));
+      }
+
       const nextHint = '\n\nNext: use context({name: "foundSymbol"}) to get 360-degree view of any result.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
@@ -649,18 +769,30 @@ const TOOLS: Record<string, {
 
   'astrolabe.context': {
     name: 'astrolabe.context',
-    description: '360-degree symbol view — callers, callees, process membership for one symbol.',
+    description: `360-degree symbol view — callers, callees, process membership for one symbol.
+
+GROUP MODE: set "repo" to "@<groupName>" to search all member repos, or "@<groupName>/<memberPath>" for one member.`,
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Symbol name or node ID' },
-        repo: { type: 'string', description: 'Repository name' },
+        repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode' },
+        service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
       },
       required: ['name'],
     },
     handler: async (params) => {
       const name = requireString(params, 'name');
-      const result = backend.context(name, params.repo as string);
+      const repo = params.repo as string | undefined;
+      const service = params.service as string | undefined;
+      let result: unknown;
+
+      if (repo?.startsWith('@')) {
+        result = backend.contextGroup(name, repo, service);
+      } else {
+        result = backend.context(name, repo);
+      }
+
       const nextHint = '\n\nNext: use impact({target: "symbolName", direction: "upstream"}) for blast radius analysis.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
@@ -668,27 +800,115 @@ const TOOLS: Record<string, {
 
   'astrolabe.impact': {
     name: 'astrolabe.impact',
-    description: 'Blast radius analysis — what depends on this symbol, and what depends on those? Grouped by depth with risk levels.',
+    description: `Blast radius analysis — what depends on this symbol, grouped by depth with risk levels.
+
+GROUP MODE: set "repo" to "@<groupName>" to anchor impact in a group member and fan out across repos.
+crossDepth: cross-repo hop depth via contract bridge (default 0 = single repo, 1+ = fan out).
+subgroup: limit cross-repo fan-out to specific member repos.
+service: monorepo path prefix filter (only active in group mode).`,
     inputSchema: {
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Symbol name or node ID to analyze' },
         direction: { type: 'string', enum: ['upstream', 'downstream'], default: 'upstream' },
-        maxDepth: { type: 'number', description: 'How many levels to traverse', default: 5 },
+        maxDepth: { type: 'number', description: 'How many levels to traverse in local graph', default: 5 },
         minConfidence: { type: 'number', description: 'Minimum edge confidence (0.0-1.0)', default: 0.3 },
-        repo: { type: 'string', description: 'Repository name' },
+        crossDepth: { type: 'number', description: 'Cross-repo hop depth via contract bridge (0 = single repo only)', default: 0 },
+        repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode' },
+        service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
+        subgroup: { type: 'string', description: 'Optional group subgroup prefix limiting cross-repo fan-out' },
       },
-      required: ['target'],
+      required: ['target', 'direction'],
     },
     handler: async (params) => {
       const target = requireString(params, 'target');
-      const result = backend.impact(
-        target,
-        (params.direction as 'upstream' | 'downstream') ?? 'upstream',
-        params.repo as string,
-        requireNumber(params, 'maxDepth', 5),
-        requireNumber(params, 'minConfidence', 0.3),
-      );
+      const repo = params.repo as string | undefined;
+      const crossDepth = requireNumber(params, 'crossDepth', 0);
+      let result: unknown;
+
+      if (repo?.startsWith('@') && crossDepth > 0) {
+        // #400: Cross-repo impact with boundary fan-out
+        const { contexts, groupName } = backend.resolveGroupRepos(repo);
+        // Anchor in first available context
+        const anchor = contexts[0];
+        if (!anchor) return { content: [{ type: 'text', text: JSON.stringify({ error: `No repos found in group "${groupName}"` }) }] };
+
+        const localResult = backend.impact(
+          target,
+          (params.direction as 'upstream' | 'downstream') ?? 'upstream',
+          anchor.repo.entry.name,
+          requireNumber(params, 'maxDepth', 5),
+          requireNumber(params, 'minConfidence', 0.3),
+        );
+
+        // Cross-repo fan-out via contract links
+        const crossResults: unknown[] = [];
+        if (crossDepth > 0 && contexts.length > 1) {
+          const groupName = repo.startsWith('@') ? repo.substring(1).split('/')[0] : '';
+          const subgroup = params.subgroup as string | undefined;
+          try {
+            const contracts = getGroupContracts(groupName);
+            if (contracts) {
+              const affectedSymbols = new Set<string>();
+              if (!('error' in localResult)) {
+                for (const dg of Object.values((localResult as any).depth_groups ?? {})) {
+                  for (const item of (dg as any).items ?? []) {
+                    affectedSymbols.add(item.name);
+                  }
+                }
+              }
+
+              for (const link of contracts.crossLinks) {
+                // Check if any affected symbol is a provider consumed by another repo
+                const linkConsumed = affectedSymbols.has(link.provider.path) || affectedSymbols.has(link.consumer.functionName);
+                if (!linkConsumed) continue;
+
+                const targetRepo = link.consumer.repoName;
+                if (subgroup && !targetRepo.includes(subgroup)) continue;
+
+                try {
+                  const crossResult = backend.impact(
+                    link.consumer.functionName,
+                    'downstream',
+                    targetRepo,
+                    requireNumber(params, 'maxDepth', 3),
+                    requireNumber(params, 'minConfidence', 0.3),
+                  );
+                  crossResults.push({ repo: targetRepo, contract: link.contractType, link, result: crossResult });
+                } catch { /* skip unreachable repos */ }
+              }
+            }
+          } catch { /* group not found or no contracts */ }
+        }
+
+        result = {
+          group: groupName,
+          anchor: anchor.repo.entry.name,
+          local_impact: localResult,
+          cross_repo: crossResults.length > 0 ? crossResults : undefined,
+          cross_depth: crossDepth,
+        };
+      } else if (repo?.startsWith('@')) {
+        // Group mode without cross-depth — just anchor
+        const { contexts } = backend.resolveGroupRepos(repo);
+        const anchor = contexts[0];
+        result = backend.impact(
+          target,
+          (params.direction as 'upstream' | 'downstream') ?? 'upstream',
+          anchor?.repo.entry.name,
+          requireNumber(params, 'maxDepth', 5),
+          requireNumber(params, 'minConfidence', 0.3),
+        );
+      } else {
+        result = backend.impact(
+          target,
+          (params.direction as 'upstream' | 'downstream') ?? 'upstream',
+          repo,
+          requireNumber(params, 'maxDepth', 5),
+          requireNumber(params, 'minConfidence', 0.3),
+        );
+      }
+
       const nextHint = '\n\nNext: use detect_changes() before committing to verify your changes match expected impact.';
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
@@ -905,9 +1125,12 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       if (!contracts) {
         return { content: [{ type: 'text', text: `No contracts extracted for group "${name}". Run group_sync first.` }] };
       }
-      const summary = `Group: ${name}\nExtracted: ${new Date(contracts.extractedAt).toISOString()}\nProviders: ${contracts.providers.length}\nConsumers: ${contracts.consumers.length}\nCross-links: ${contracts.crossLinks.length}\n`;
+      const sharedLibCount = (contracts as any).sharedLibs?.length ?? 0;
+      const summary = `Group: ${name}\nExtracted: ${new Date(contracts.extractedAt).toISOString()}\nProviders: ${contracts.providers.length}\nConsumers: ${contracts.consumers.length}\nCross-links: ${contracts.crossLinks.length}${sharedLibCount > 0 ? `\nShared libraries: ${sharedLibCount}` : ''}\n`;
       const nextHint = '\n\nFor full contract data, use context or query tools on specific provider/consumer symbols.';
-      return { content: [{ type: 'text', text: summary + JSON.stringify({ crossLinks: contracts.crossLinks.slice(0, 50) }, null, 2) + nextHint }] };
+      const payload: Record<string, unknown> = { crossLinks: contracts.crossLinks.slice(0, 50) };
+      if (sharedLibCount > 0) payload.sharedLibs = (contracts as any).sharedLibs.slice(0, 20);
+      return { content: [{ type: 'text', text: summary + JSON.stringify(payload, null, 2) + nextHint }] };
     },
   },
 
@@ -1019,12 +1242,15 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
 function getResources() {
   return [
     { uri: 'astrolabe://repos', name: 'All Indexed Repositories', description: 'List all indexed repositories with stats', mimeType: 'text/plain' },
+    { uri: 'astrolabe://setup', name: 'Astrolabe Setup Content', description: 'Returns AGENTS.md content for all indexed repos. Useful for setup/onboarding.', mimeType: 'text/markdown' },
     { uri: 'astrolabe://repo/{name}/context', name: 'Repo Context', description: 'Codebase overview, stats, staleness check', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/clusters', name: 'Clusters', description: 'All functional clusters with cohesion scores', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/cluster/{clusterName}', name: 'Cluster Detail', description: 'Cluster members and dependency details', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/processes', name: 'Processes', description: 'All execution flows', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/process/{processName}', name: 'Process Trace', description: 'Full process trace with steps', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/schema', name: 'Graph Schema', description: 'Node labels and relationship types', mimeType: 'text/plain' },
+    { uri: 'astrolabe://group/{name}/contracts', name: 'Group Contract Registry', description: 'Cross-repo contract registry for a repository group. Optional query: type, repo, unmatchedOnly (true|false).', mimeType: 'text/yaml' },
+    { uri: 'astrolabe://group/{name}/status', name: 'Group Index Status', description: 'Per-repo index and contract-registry staleness for a repository group', mimeType: 'text/yaml' },
   ];
 }
 
@@ -1135,7 +1361,159 @@ function readResource(uri: string): string | null {
     }
   }
 
+  // #404: astrolabe://setup — AGENTS.md content for all indexed repos
+  if (uri === 'astrolabe://setup') {
+    return generateSetupResource();
+  }
+
+  // #399: astrolabe://group/{name}/contracts — contract registry
+  const gcMatch = uri.match(/^astrolabe:\/\/group\/([^/]+)\/(contracts|status)$/);
+  if (gcMatch) {
+    const groupName = gcMatch[1];
+    const resourceType = gcMatch[2];
+    if (resourceType === 'status') {
+      return generateGroupStatusResource(groupName);
+    }
+    return generateGroupContractsResource(groupName, uri);
+  }
+
   return null;
+}
+
+/**
+ * #404: Generate AGENTS.md-like content for all indexed repos.
+ * Useful for setup/onboarding when an AI agent first connects.
+ */
+function generateSetupResource(): string {
+  const repos = backend.listRepos();
+
+  if (repos.length === 0) {
+    return '# Astrolabe\n\nNo repositories indexed. Run: `astrolabe analyze <path>` in a repository.';
+  }
+
+  const sections: string[] = [];
+
+  for (const repo of repos) {
+    let nodeCount = 0;
+    let relCount = 0;
+    try {
+      const ctx = backend.getRepo(repo.name);
+      const graph = ctx.loadGraph();
+      nodeCount = graph.nodeCount;
+      relCount = graph.relationshipCount;
+    } catch { /* repo not loaded */ }
+
+    sections.push([
+      `# Astrolabe — ${repo.name}`,
+      '',
+      `This project is indexed by Astrolabe as **${repo.name}** (${nodeCount} symbols, ${relCount} relationships).`,
+      '',
+      '## Tools',
+      '',
+      '| Tool | What it gives you |',
+      '|------|-------------------|',
+      '| `astrolabe.query` | Hybrid search over the knowledge graph |',
+      '| `astrolabe.context` | 360-degree symbol view (callers, callees, processes) |',
+      '| `astrolabe.impact` | Blast radius analysis with depth grouping |',
+      '| `astrolabe.detect_changes` | Git-diff impact mapping |',
+      '| `astrolabe.rename` | Graph-assisted multi-file rename preview |',
+      '| `astrolabe.cypher` | Graph traversal queries |',
+      '| `astrolabe.list_repos` | Discover indexed repos |',
+      '',
+      '## Resources',
+      '',
+      `- \`astrolabe://repo/${repo.name}/context\` — Stats, staleness check`,
+      `- \`astrolabe://repo/${repo.name}/clusters\` — All functional areas`,
+      `- \`astrolabe://repo/${repo.name}/processes\` — All execution flows`,
+      `- \`astrolabe://repo/${repo.name}/schema\` — Graph schema for traversal`,
+    ].join('\n'));
+  }
+
+  return sections.join('\n\n---\n\n');
+}
+
+/**
+ * #399: Generate group status resource content.
+ */
+function generateGroupStatusResource(groupName: string): string {
+  try {
+    const status = getGroupStatus(groupName);
+    const lines: string[] = [`group: "${status.name}"`, `repos: ${status.repoCount}`, '', 'members:'];
+    for (const repo of status.repos) {
+      const icon = repo.stale ? '⚠ STALE' : '✓ current';
+      const indexed = repo.indexedAt ? new Date(repo.indexedAt).toISOString() : 'never';
+      lines.push(`  - path: "${repo.path}"`);
+      lines.push(`    repo: "${repo.repoName}"`);
+      lines.push(`    status: "${icon}"`);
+      lines.push(`    indexed: "${indexed}"`);
+      if (repo.lastCommit) lines.push(`    commit: "${repo.lastCommit.substring(0, 7)}"`);
+      if (repo.nodeCount !== undefined) lines.push(`    symbols: ${repo.nodeCount}`);
+      if (repo.edgeCount !== undefined) lines.push(`    edges: ${repo.edgeCount}`);
+    }
+    return lines.join('\n');
+  } catch (e: any) {
+    return `error: ${e.message}`;
+  }
+}
+
+/**
+ * #399: Generate group contracts resource content.
+ * Supports optional query params: ?type=, ?repo=, ?unmatchedOnly=true|false
+ */
+function generateGroupContractsResource(groupName: string, uri: string): string {
+  try {
+    const contracts = getGroupContracts(groupName);
+    if (!contracts) {
+      return `group: "${groupName}"\ncontracts: []\n# No contracts extracted. Run group_sync first.`;
+    }
+
+    // Parse query params from URI
+    let filterType: string | undefined;
+    let filterRepo: string | undefined;
+    let unmatchedOnly: boolean | undefined;
+    try {
+      const u = new URL(uri);
+      filterType = u.searchParams.get('type')?.trim() || undefined;
+      filterRepo = u.searchParams.get('repo')?.trim() || undefined;
+      const uo = u.searchParams.get('unmatchedOnly');
+      if (uo === 'true' || uo === '1') unmatchedOnly = true;
+      else if (uo === 'false' || uo === '0') unmatchedOnly = false;
+    } catch { /* no query params */ }
+
+    // Apply filters
+    let crossLinks = contracts.crossLinks;
+    if (filterType === 'http' || !filterType) { /* HTTP is default, all current links are HTTP */ }
+    if (filterRepo) {
+      crossLinks = crossLinks.filter((cl) =>
+        cl.provider.repoName === filterRepo || cl.consumer.repoName === filterRepo);
+    }
+    if (unmatchedOnly) {
+      crossLinks = crossLinks.filter((cl) => cl.confidence < 0.5);
+    }
+
+    const lines: string[] = [
+      `group: "${groupName}"`,
+      `extracted: "${new Date(contracts.extractedAt).toISOString()}"`,
+      `providers: ${contracts.providers.length}`,
+      `consumers: ${contracts.consumers.length}`,
+      `crossLinks: ${crossLinks.length}`,
+      '',
+    ];
+
+    if (crossLinks.length > 0) {
+      lines.push('contracts:');
+      for (const cl of crossLinks.slice(0, 50)) {
+        lines.push(`  - provider: "${cl.provider.repoName} ${cl.provider.method} ${cl.provider.path}"`);
+        lines.push(`    consumer: "${cl.consumer.repoName} ${cl.consumer.functionName}"`);
+        lines.push(`    confidence: ${cl.confidence.toFixed(2)}`);
+      }
+      if (crossLinks.length > 50) lines.push(`  # ... and ${crossLinks.length - 50} more`);
+    }
+
+    return lines.join('\n');
+  } catch (e: any) {
+    return `error: ${e.message}`;
+  }
 }
 
 // ── Prompts ────────────────────────────────────────────────────────────────

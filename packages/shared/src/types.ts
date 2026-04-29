@@ -24,6 +24,7 @@ export const SUPPORTED_LANGUAGES = [
   'cpp',
   'dart',
   'kotlin',
+  'vue',
 ] as const;
 
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];

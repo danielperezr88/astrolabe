@@ -174,7 +174,8 @@ const decoratorPatterns: QueryPattern[] = [
 
 export const typescriptLanguage: LanguageDefinition = {
   name: 'typescript',
-  extensions: ['.ts', '.mts', '.cts'],
+  // #395: .vue files reused with TypeScript grammar after SFC preprocessing
+  extensions: ['.ts', '.mts', '.cts', '.vue'],
   wasmFile: 'tree-sitter-typescript.wasm',
   extraWasmFiles: ['tree-sitter-tsx.wasm'],
 
