@@ -8,7 +8,7 @@
  * Hooks are written to `.claude/hooks/` during `astrolabe analyze`.
  */
 
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ── Hook script templates ──────────────────────────────────────────────────
@@ -48,9 +48,9 @@ function getAstrolabeCli() {
 function querySymbols(filePath, repoRoot) {
   try {
     const relPath = path.relative(repoRoot, filePath).replace(/\\\\/g, '/');
-    const result = execSync(
-      \`\${getAstrolabeCli()} list --label Function --db "\${repoRoot}/.astrolabe/astrolabe.db" 2>/dev/null\`,
-      { encoding: 'utf-8', timeout: 5000, cwd: repoRoot }
+    const result = require('child_process').execFileSync(
+      'npx', ['-y', '@astrolabe/cli', 'list', '--label', 'Function', '--db', `${repoRoot}/.astrolabe/astrolabe.db`],
+      { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const lines = result.split('\\n').filter(l => l.includes(relPath));
     return lines.slice(0, 15);
@@ -61,8 +61,9 @@ function querySymbols(filePath, repoRoot) {
 
 function getToolInput(hookInput) {
   // Parse Claude Code hook input JSON from stdin
+  // #326: Use fd 0 instead of /dev/stdin for Windows compatibility
   try {
-    const raw = require('fs').readFileSync('/dev/stdin', 'utf-8');
+    const raw = require('fs').readFileSync(0, 'utf-8');
     return JSON.parse(raw);
   } catch {
     return hookInput || {};
@@ -142,7 +143,7 @@ const path = require('path');
 
 function getToolInput(hookInput) {
   try {
-    const raw = require('fs').readFileSync('/dev/stdin', 'utf-8');
+    const raw = require('fs').readFileSync(0, 'utf-8');
     return JSON.parse(raw);
   } catch {
     return hookInput || {};
@@ -248,18 +249,62 @@ export function installHooks(repoPath: string): { scripts: number; config: boole
     mkdirSync(hooksDir, { recursive: true });
   }
 
-  // Write pre-tool-use script
-  writeFileSync(join(hooksDir, 'astrolabe-pre-tool-use.js'), PRE_TOOL_USE_SCRIPT, 'utf-8');
+  // #327: Only write hook scripts if they don't exist (idempotent)
+  const prePath = join(hooksDir, 'astrolabe-pre-tool-use.js');
+  const postPath = join(hooksDir, 'astrolabe-post-tool-use.js');
+  let scriptsWritten = 0;
 
-  // Write post-tool-use script
-  writeFileSync(join(hooksDir, 'astrolabe-post-tool-use.js'), POST_TOOL_USE_SCRIPT, 'utf-8');
+  if (!existsSync(prePath)) {
+    writeFileSync(prePath, PRE_TOOL_USE_SCRIPT, 'utf-8');
+    scriptsWritten++;
+  }
+  if (!existsSync(postPath)) {
+    writeFileSync(postPath, POST_TOOL_USE_SCRIPT, 'utf-8');
+    scriptsWritten++;
+  }
 
-  // Write hooks.json config
-  writeFileSync(
-    join(hooksDir, 'hooks.json'),
-    JSON.stringify(generateHooksConfig(), null, 2),
-    'utf-8',
+  // #327: Merge Astrolabe hooks into existing hooks.json instead of overwriting
+  const configPath = join(hooksDir, 'hooks.json');
+  let existingConfig: any = { hooks: [] };
+
+  if (existsSync(configPath)) {
+    try {
+      existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      // Corrupt config — start fresh
+      existingConfig = { hooks: [] };
+    }
+  }
+
+  // Ensure hooks array exists
+  if (!Array.isArray(existingConfig.hooks)) {
+    existingConfig.hooks = [];
+  }
+
+  // Check if Astrolabe hooks are already registered
+  const astrolabePre = existingConfig.hooks.some(
+    (h: any) => h.type === 'PreToolUse' && h.hooks?.some((sh: any) => sh.command?.includes('astrolabe-pre-tool-use')),
+  );
+  const astrolabePost = existingConfig.hooks.some(
+    (h: any) => h.type === 'PostToolUse' && h.hooks?.some((sh: any) => sh.command?.includes('astrolabe-post-tool-use')),
   );
 
-  return { scripts: 2, config: true };
+  const newHooks = generateHooksConfig() as any;
+  let merged = false;
+
+  if (!astrolabePre || !astrolabePost) {
+    for (const hook of newHooks.hooks) {
+      const isPre = hook.type === 'PreToolUse';
+      if ((isPre && !astrolabePre) || (!isPre && !astrolabePost)) {
+        existingConfig.hooks.push(hook);
+        merged = true;
+      }
+    }
+
+    if (merged) {
+      writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
+    }
+  }
+
+  return { scripts: scriptsWritten, config: merged || (!astrolabePre && !astrolabePost) };
 }

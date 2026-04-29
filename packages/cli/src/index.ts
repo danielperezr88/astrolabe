@@ -94,6 +94,14 @@ program
         for (const fp of diff.deleted) graph.removeNodesByFile(fp);
         for (const fp of diff.changed) graph.removeNodesByFile(fp);
 
+        // #318: Clean stale Community/Process nodes before re-running global phases
+        // These phases operate on the entire graph and re-create output each run.
+        for (const node of [...graph.iterNodes()]) {
+          if (node.label === 'Community' || node.label === 'Process') {
+            graph.removeNode(node.id);
+          }
+        }
+
         // Run remaining phases with file filter
         const ctx = createPhaseContext(repoPath, graph, onProgress);
         ctx.state.set('output:scan', scanOutput);

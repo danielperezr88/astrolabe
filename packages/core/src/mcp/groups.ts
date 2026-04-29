@@ -7,10 +7,12 @@
  * Groups are persisted to ~/.astrolabe/groups.json.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { loadRegistry } from './registry.js';
+import { createFtsSearch } from '../search/fts.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -77,7 +79,10 @@ export function loadGroups(): GroupsConfig {
 }
 
 export function saveGroups(config: GroupsConfig): void {
-  writeFileSync(groupsPath(), JSON.stringify(config, null, 2), 'utf-8');
+  const path = groupsPath();
+  const tmp = path + '.tmp-' + randomUUID();
+  writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf-8');
+  renameSync(tmp, path);
 }
 
 // ── Group operations ───────────────────────────────────────────────────────
@@ -192,7 +197,6 @@ export function groupQuery(
   const group = getGroup(groupName);
   if (!group) throw new Error(`Group "${groupName}" does not exist.`);
 
-  const { createFtsSearch } = require('../search/fts.js');
   const registry = loadRegistry();
   const output: Array<{ repoName: string; results: Array<{ label: string; name: string; filePath: string; rank: number }> }> = [];
 
@@ -206,14 +210,17 @@ export function groupQuery(
       fts.close();
       output.push({
         repoName: gr.repoName,
-        results: results.map((r: any) => ({
+        results: results.map((r) => ({
           label: r.label,
           name: r.name,
           filePath: r.filePath,
-          rank: r.rank,
+          rank: (r as any).rank ?? 0,
         })),
       });
-    } catch { /* skip unreachable DBs */ }
+    } catch (err) {
+      // #324: Log error but continue with other repos in the group
+      console.warn(`[groups] Failed to query ${gr.repoName}: ${(err as Error).message}`);
+    }
   }
 
   return output;

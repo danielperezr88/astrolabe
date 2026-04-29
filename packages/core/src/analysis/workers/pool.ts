@@ -51,17 +51,15 @@ const CHUNK_BYTE_BUDGET = 20 * 1024 * 1024; // 20 MB
 // ── Worker path resolution ─────────────────────────────────────────────────
 
 function resolveWorkerPath(): string | null {
-  // Try compiled path first (production)
+  // Try compiled path (production)
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
 
   const prodPath = join(__dirname, 'parse-worker.js');
   if (existsSync(prodPath)) return prodPath;
 
-  // Try source path (dev)
-  const srcPath = join(__dirname, 'parse-worker.ts');
-  if (existsSync(srcPath)) return srcPath;
-
+  // #319: Do NOT return .ts source path — Node.js worker_threads cannot
+  // execute TypeScript directly. If .js doesn't exist, fall back to sequential.
   return null;
 }
 
@@ -157,49 +155,95 @@ export async function parseFilesParallel(
     };
   }
 
-  // Dispatch chunks to workers in round-robin
-  const batchResults = new Map<number, WorkerParseResult[]>();
-  const pending = new Set<number>();
+  // #315-317, #320: Event-driven dispatch — Promise per chunk, no busy-wait polling
+  const chunkResults = new Map<number, WorkerParseResult[]>();
+  const workerBusy = new Array(workers.length).fill(false);
   let nextBatchId = 0;
   let nextChunkIdx = 0;
+  let activeBatches = 0;
 
-  // Queue initial batch per worker
-  for (let wi = 0; wi < workers.length && nextChunkIdx < chunks.length; wi++) {
+  // Resolve when all chunks are processed or timed out
+  const maxWaitMs = 300_000; // 5 min timeout
+  let resolveAll: (() => void) | null = null;
+  const allDone = new Promise<void>((resolve) => { resolveAll = resolve; });
+  const timeout = setTimeout(() => resolveAll?.(), maxWaitMs);
+
+  function dispatchChunk(worker: Worker, wi: number): void {
+    if (nextChunkIdx >= chunks.length) return;
     const batchId = nextBatchId++;
     const chunk = chunks[nextChunkIdx++];
-    pending.add(batchId);
+    activeBatches++;
+    workerBusy[wi] = true;
 
-    workers[wi].postMessage({ type: 'parse', files: chunk, id: batchId });
-    workers[wi].on('message', (msg: { type: string; batchId: number; results: WorkerParseResult[]; errors: number }) => {
-      if (msg.type === 'result') {
-        batchResults.set(msg.batchId, msg.results);
+    worker.postMessage({ type: 'parse', files: chunk, id: batchId });
+
+    // #316: Use once() to prevent listener stacking
+    const onResult = (msg: { type: string; batchId: number; results: WorkerParseResult[]; errors: number }) => {
+      if (msg.type === 'result' && msg.batchId === batchId) {
+        chunkResults.set(msg.batchId, msg.results);
         totalErrors += msg.errors;
-        pending.delete(msg.batchId);
+        activeBatches--;
+        workerBusy[wi] = false;
+        worker.removeListener('message', onResult);
+
+        // #315: Dispatch next chunk to this now-free worker
+        if (nextChunkIdx < chunks.length) {
+          dispatchChunk(worker, wi);
+        } else if (activeBatches === 0) {
+          resolveAll?.();
+        }
       }
-    });
+    };
+
+    worker.on('message', onResult);
   }
 
-  // Process remaining chunks as workers free up
-  const maxWaitMs = 300_000; // 5 min timeout
-  const pollStart = Date.now();
+  // #320: Error/exit handlers with sequential fallback
+  const workerFailedChunks: string[][] = [];
 
-  while (pending.size > 0) {
-    // Assign new chunk to any free worker (round-robin)
+  for (let wi = 0; wi < workers.length; wi++) {
+    workers[wi].on('error', (err) => {
+      console.warn(`[worker-pool] Worker ${wi} error: ${String(err)}`);
+    });
+
+    workers[wi].on('exit', (code) => {
+      if (code !== 0 && workerBusy[wi]) {
+        // Worker crashed mid-parse — collect its pending chunks for fallback
+        console.warn(`[worker-pool] Worker ${wi} exited with code ${code}, falling back to sequential`);
+        // Find any chunks that were dispatched to this worker
+        for (let ci = wi; ci < chunks.length; ci += workers.length) {
+          if (!chunkResults.has(ci)) {
+            workerFailedChunks.push(chunks[ci]);
+          }
+        }
+      }
+    });
+
+    // #315: Initial dispatch — one chunk per worker
     if (nextChunkIdx < chunks.length) {
-      for (let wi = 0; wi < workers.length && nextChunkIdx < chunks.length; wi++) {
-        const batchId = nextBatchId++;
-        const chunk = chunks[nextChunkIdx++];
-        pending.add(batchId);
-        workers[wi].postMessage({ type: 'parse', files: chunk, id: batchId });
+      dispatchChunk(workers[wi], wi);
+    }
+  }
+
+  // Wait for all chunks to complete or timeout
+  await allDone;
+  clearTimeout(timeout);
+
+  // #320: Sequential fallback for failed chunks
+  for (const failedChunk of workerFailedChunks) {
+    for (const filePath of failedChunk) {
+      try {
+        const r = await parseFile(filePath);
+        results.set(r.filePath, r);
+        if (r.error) totalErrors++;
+      } catch {
+        totalErrors++;
       }
     }
-
-    if (Date.now() - pollStart > maxWaitMs) break;
-    await new Promise((r) => setTimeout(r, 50));
   }
 
   // Collect results
-  for (const [, batch] of batchResults) {
+  for (const [, batch] of chunkResults) {
     for (const r of batch) {
       results.set(r.filePath, r);
     }
