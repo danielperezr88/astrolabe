@@ -211,7 +211,7 @@ function hashStr(s: string): number {
  *
  * Configure via env:
  *   ASTROLABE_EMBEDDING_URL=http://localhost:11434/v1    (required)
- *   ASTROLABE_EMBEDDING_MODEL=nomic-embed-text            (model name sent to API)
+ *   ASTROLABE_EMBEDDING_MODEL=snowflake-arctic-embed-xs   (model name sent to API)
  *   ASTROLABE_EMBEDDING_DIMS=768                          (optional, auto-detected)
  *   ASTROLABE_EMBEDDING_API_KEY=sk-...                    (optional)
  */
@@ -231,7 +231,7 @@ export class RemoteEmbeddingProvider implements EmbeddingProvider {
     }
     this._url = url.replace(/\/+$/, '') + '/embeddings';
     const rawModel = process.env.ASTROLABE_EMBEDDING_MODEL;
-    this._model = (rawModel && rawModel !== 'undefined') ? rawModel : 'nomic-embed-text';
+    this._model = (rawModel && rawModel !== 'undefined') ? rawModel : 'snowflake-arctic-embed-xs';
     this._apiKey = process.env.ASTROLABE_EMBEDDING_API_KEY;
     const dimsVal = process.env.ASTROLABE_EMBEDDING_DIMS ?
       parseInt(process.env.ASTROLABE_EMBEDDING_DIMS, 10) :

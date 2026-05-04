@@ -41,6 +41,12 @@ export interface ParseEmitOutput {
 /** Files per chunk — process in batches to avoid memory pressure. */
 const CHUNK_SIZE = 500;
 
+/** Worker pool activation: file count threshold (#272, configurable via env). */
+const DEFAULT_FILE_THRESHOLD = 15;
+
+/** Worker pool activation: total size threshold (512 KB). */
+const DEFAULT_SIZE_THRESHOLD = 512 * 1024;
+
 /** File extensions that we can parse (derived from language registry to avoid desync) (#166). */
 import { getAllExtensions } from '../parser.js';
 
@@ -91,7 +97,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
     }
 
     // #272: Use worker pool for parallel parsing when available
-    if (!skipWorkers && parsable.length > 50) {
+    const fileThreshold = parseInt(process.env.ASTROLABE_WORKER_THRESHOLD || '', 10) || DEFAULT_FILE_THRESHOLD;
+    const totalSize = parsable.reduce((sum, f) => sum + f.size, 0);
+    const shouldUseWorkers = !skipWorkers && (parsable.length > fileThreshold || totalSize > DEFAULT_SIZE_THRESHOLD);
+
+    if (shouldUseWorkers) {
       const fileInfos = parsable.map((f) => ({ path: f.absolutePath, size: f.size }));
       const { results, stats } = await parseFilesParallel(
         fileInfos,

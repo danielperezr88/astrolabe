@@ -7,7 +7,7 @@
  * can add custom content outside the block.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, readdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { KnowledgeGraph } from '../core/types.js';
@@ -173,6 +173,8 @@ export function generateAgentFiles(repoPath: string, opts: GenerateOptions): Age
     skillsCount = generateCommunitySkills(repoPath, opts);
     // #358: Install core skills AFTER community skills (rmSync clears dir first)
     installCoreSkills(repoPath);
+    // #358: Install skills to editor directories (Claude Code, Cursor)
+    installSkillFilesToEditors(repoPath);
   }
 
   return { agentsMd, claudeMd, skillsCount };
@@ -195,6 +197,32 @@ function installCoreSkills(repoPath: string): void {
 
   for (const { name, content } of coreSkills) {
     writeFileSync(join(skillsDir, `${name}.md`), content, 'utf-8');
+  }
+}
+
+// ── Editor Skill Installation (#358) ─────────────────────────────────────────
+
+/**
+ * Copy skill files from .astrolabe/skills to editor-specific directories.
+ * Installs to .claude/skills/generated/ (Claude Code) and .cursor/skills/generated/ (Cursor).
+ */
+function installSkillFilesToEditors(repoPath: string): void {
+  const skillsDir = join(repoPath, '.astrolabe', 'skills');
+  if (!existsSync(skillsDir)) return;
+
+  const editors = [
+    { root: '.claude', sub: 'skills/generated' },
+    { root: '.cursor', sub: 'skills/generated' },
+  ];
+
+  const files = readdirSync(skillsDir).filter((f) => f.endsWith('.md'));
+
+  for (const { root, sub } of editors) {
+    const targetDir = join(repoPath, root, sub);
+    if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+    for (const file of files) {
+      copyFileSync(join(skillsDir, file), join(targetDir, file));
+    }
   }
 }
 

@@ -135,7 +135,7 @@ describe('RemoteEmbeddingProvider (#371)', () => {
       const provider = new RemoteEmbeddingProvider();
       expect(provider.dimensions).toBe(768); // default
       expect((provider as any)._url).toBe('http://localhost:11434/v1/embeddings');
-      expect((provider as any)._model).toBe('nomic-embed-text');
+      expect((provider as any)._model).toBe('snowflake-arctic-embed-xs');
     } finally {
       process.env.ASTROLABE_EMBEDDING_URL = origUrl;
       process.env.ASTROLABE_EMBEDDING_API_KEY = origKey;
