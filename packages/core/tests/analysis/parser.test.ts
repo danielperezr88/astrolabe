@@ -23,6 +23,11 @@ import type { FileParseResult } from '../../src/analysis/language-definition.js'
 const wasmDir = resolve(process.cwd(), 'wasm');
 let tmpDir: string;
 
+/** Check if a specific WASM grammar file exists. */
+function hasWasm(file: string): boolean {
+  return existsSync(join(wasmDir, file));
+}
+
 /**
  * Write a fixture file into the temp directory.
  * Returns the absolute path to the file.
@@ -752,6 +757,272 @@ describe('Parser', () => {
       expect(VUE_BUILT_INS.has('onMounted')).toBe(true);
       expect(VUE_BUILT_INS.has('useRouter')).toBe(true);
       expect(VUE_BUILT_INS.has('nonexistent')).toBe(false);
+    });
+  });
+
+  // ── #432: Symbol metadata extraction ────────────────────────────────────
+  describe('symbol metadata extraction (#432)', () => {
+    // ── TypeScript metadata ──────────────────────────────────────────────
+    describe('TypeScript', () => {
+      let tsMetaFile: string;
+
+      beforeAll(() => {
+        tsMetaFile = writeFixture(
+          'metadata.ts',
+          nl(
+            'class MyClass {',
+            '  private static async fetchData(url: string, opts?: RequestInit): Promise<Response> {',
+            '    return fetch(url, opts);',
+            '  }',
+            '  public getData(): string[] { return []; }',
+            '}',
+            '',
+            'function typedFn(name: string, age: number): boolean { return true; }',
+            '',
+            'const arrowTyped = (x: number, y: string): void => {};',
+          ),
+        );
+      });
+
+      it('extracts parameterTypes for method with typed params', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'fetchData');
+        expect(method).toBeDefined();
+        expect(method!.properties).toBeDefined();
+        expect(method!.properties!.parameterTypes).toEqual(['string', 'RequestInit']);
+      });
+
+      it('extracts returnType for method', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'fetchData');
+        expect(method).toBeDefined();
+        expect(method!.properties!.returnType).toBe('Promise<Response>');
+      });
+
+      it('extracts visibility for private method', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'fetchData');
+        expect(method).toBeDefined();
+        expect(method!.properties!.visibility).toBe('private');
+      });
+
+      it('extracts visibility for public method', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'getData');
+        expect(method).toBeDefined();
+        expect(method!.properties!.visibility).toBe('public');
+      });
+
+      it('extracts isStatic flag', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'fetchData');
+        expect(method).toBeDefined();
+        expect(method!.properties!.isStatic).toBe(true);
+      });
+
+      it('extracts isAsync flag', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'fetchData');
+        expect(method).toBeDefined();
+        expect(method!.properties!.isAsync).toBe(true);
+      });
+
+      it('extracts parameterTypes and returnType for function declaration', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'typedFn');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.parameterTypes).toEqual(['string', 'number']);
+        expect(fn!.properties!.returnType).toBe('boolean');
+      });
+
+      it('extracts parameterTypes and returnType for arrow function', async () => {
+        const result = await parseFile(tsMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'arrowTyped');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.parameterTypes).toEqual(['number', 'string']);
+        expect(fn!.properties!.returnType).toBe('void');
+      });
+    });
+
+    // ── Python metadata ──────────────────────────────────────────────────
+    describe('Python', () => {
+      let pyMetaFile: string;
+
+      beforeAll(() => {
+        pyMetaFile = writeFixture(
+          'metadata.py',
+          nl(
+            'def typed_function(name: str, age: int) -> bool:',
+            '    pass',
+            '',
+            'async def async_function(data: list) -> None:',
+            '    pass',
+            '',
+            'def _private_helper(x: int) -> str:',
+            '    pass',
+            '',
+            'def __mangled(x: int) -> str:',
+            '    pass',
+          ),
+        );
+      });
+
+      it('extracts parameterTypes for typed Python function', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'typed_function');
+        expect(fn).toBeDefined();
+        expect(fn!.properties).toBeDefined();
+        expect(fn!.properties!.parameterTypes).toEqual(['str', 'int']);
+      });
+
+      it('extracts returnType for Python function', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'typed_function');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.returnType).toBe('bool');
+      });
+
+      it('extracts isAsync for async Python function', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'async_function');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.isAsync).toBe(true);
+      });
+
+      it('extracts returnType for async Python function', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === 'async_function');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.returnType).toBe('None');
+      });
+
+      it('extracts visibility for _prefixed Python function (protected)', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === '_private_helper');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.visibility).toBe('protected');
+      });
+
+      it('extracts visibility for __prefixed Python function (private)', async () => {
+        const result = await parseFile(pyMetaFile, wasmDir);
+        const fn = result.symbols.find((s) => s.name === '__mangled');
+        expect(fn).toBeDefined();
+        expect(fn!.properties!.visibility).toBe('private');
+      });
+    });
+
+    // ── Java metadata ────────────────────────────────────────────────────
+    describe.runIf(hasWasm('tree-sitter-java.wasm'))('Java', () => {
+      let javaMetaFile: string;
+
+      beforeAll(() => {
+        javaMetaFile = writeFixture(
+          'Metadata.java',
+          nl(
+            'public class Metadata {',
+            '  public static void main(String[] args) {}',
+            '  private String getName(int id) { return ""; }',
+            '  protected abstract void process();',
+            '}',
+          ),
+        );
+      });
+
+      it('extracts visibility for public static Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'main');
+        expect(method).toBeDefined();
+        expect(method!.properties).toBeDefined();
+        expect(method!.properties!.visibility).toBe('public');
+      });
+
+      it('extracts isStatic for static Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'main');
+        expect(method).toBeDefined();
+        expect(method!.properties!.isStatic).toBe(true);
+      });
+
+      it('extracts returnType for Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'getName');
+        expect(method).toBeDefined();
+        expect(method!.properties!.returnType).toBe('String');
+      });
+
+      it('extracts visibility for private Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'getName');
+        expect(method).toBeDefined();
+        expect(method!.properties!.visibility).toBe('private');
+      });
+
+      it('extracts parameterTypes for Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'getName');
+        expect(method).toBeDefined();
+        expect(method!.properties!.parameterTypes).toEqual(['int']);
+      });
+
+      it('extracts isAbstract for abstract Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'process');
+        expect(method).toBeDefined();
+        expect(method!.properties!.isAbstract).toBe(true);
+      });
+
+      it('extracts visibility for protected Java method', async () => {
+        const result = await parseFile(javaMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'process');
+        expect(method).toBeDefined();
+        expect(method!.properties!.visibility).toBe('protected');
+      });
+    });
+
+    // ── C# metadata ──────────────────────────────────────────────────────
+    describe.runIf(hasWasm('tree-sitter-c-sharp.wasm'))('C#', () => {
+      let csMetaFile: string;
+
+      beforeAll(() => {
+        csMetaFile = writeFixture(
+          'Metadata.cs',
+          nl(
+            'public class Metadata {',
+            '  public static void Main(string[] args) {}',
+            '  private int Compute(int x, int y) { return 0; }',
+            '}',
+          ),
+        );
+      });
+
+      it('extracts visibility for public static C# method', async () => {
+        const result = await parseFile(csMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'Main');
+        expect(method).toBeDefined();
+        expect(method!.properties).toBeDefined();
+        expect(method!.properties!.visibility).toBe('public');
+      });
+
+      it('extracts isStatic for static C# method', async () => {
+        const result = await parseFile(csMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'Main');
+        expect(method).toBeDefined();
+        expect(method!.properties!.isStatic).toBe(true);
+      });
+
+      it('extracts returnType for C# method', async () => {
+        const result = await parseFile(csMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'Compute');
+        expect(method).toBeDefined();
+        expect(method!.properties!.returnType).toBe('int');
+      });
+
+      it('extracts parameterTypes for C# method', async () => {
+        const result = await parseFile(csMetaFile, wasmDir);
+        const method = result.symbols.find((s) => s.name === 'Compute');
+        expect(method).toBeDefined();
+        expect(method!.properties!.parameterTypes).toEqual(['int', 'int']);
+      });
     });
   });
 });

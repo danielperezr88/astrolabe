@@ -227,6 +227,7 @@ function extractSymbols(
   matches: QueryMatch[],
   patterns: LanguageDefinition['symbolPatterns'],
   filePath: string,
+  languageName: string,
 ): { symbols: ParsedSymbol[]; relationships: ParsedRelationship[] } {
   const seen = new Map<string, ParsedSymbol>();
   const relationships: ParsedRelationship[] = [];
@@ -315,6 +316,22 @@ function extractSymbols(
         }
       }
     }
+
+    // #432: Extract metadata from AST for function-like symbols
+    if (label === 'Function' || label === 'Method' || label === 'Constructor') {
+      const metadata = extractSymbolMetadata(outerNode.node, label, languageName);
+      if (Object.keys(metadata).length > 0) {
+        const entry = seen.get(dedupKey);
+        if (entry) {
+          if (!entry.properties) entry.properties = {};
+          for (const [key, value] of Object.entries(metadata)) {
+            if (entry.properties[key] === undefined) {
+              entry.properties[key] = value;
+            }
+          }
+        }
+      }
+    }
   }
 
   return { symbols: Array.from(seen.values()), relationships };
@@ -391,6 +408,305 @@ function extractImports(
   }
 
   return Array.from(grouped.values());
+}
+
+// ── Symbol metadata extraction (#432) ────────────────────────────────────────
+
+/** Tree-sitter node types that represent function-like constructs. */
+const FUNCTION_LIKE_TYPES = new Set([
+  'function_declaration', 'method_definition', 'function_expression',
+  'arrow_function', 'function_definition', 'method_declaration',
+  'constructor_declaration', 'abstract_method_signature',
+]);
+
+/** Parameter container node types across all supported languages. */
+const PARAM_CONTAINER_TYPES = new Set(['formal_parameters', 'parameters', 'parameter_list']);
+
+/**
+ * Find the actual function-like node within an outer capture node.
+ * For direct captures (function_declaration, method_definition), returns itself.
+ * For wrapped captures (lexical_declaration containing arrow_function), finds the inner node.
+ */
+function findFunctionNode(outerNode: any): any {
+  if (FUNCTION_LIKE_TYPES.has(outerNode.type)) return outerNode;
+  for (let i = 0; i < outerNode.childCount; i++) {
+    const child = outerNode.child(i);
+    if (!child) continue;
+    if (FUNCTION_LIKE_TYPES.has(child.type)) return child;
+    if (child.type === 'variable_declarator') {
+      for (let j = 0; j < child.childCount; j++) {
+        const inner = child.child(j);
+        if (inner && FUNCTION_LIKE_TYPES.has(inner.type)) return inner;
+      }
+    }
+  }
+  return outerNode;
+}
+
+/** Find the parameter container node within a function node. */
+function findParamsNode(funcNode: any): any {
+  if (funcNode.childForFieldName) {
+    const byField = funcNode.childForFieldName('parameters');
+    if (byField) return byField;
+  }
+  for (let i = 0; i < funcNode.childCount; i++) {
+    const child = funcNode.child(i);
+    if (child && PARAM_CONTAINER_TYPES.has(child.type)) return child;
+  }
+  return null;
+}
+
+/** Find a direct child node by its type name. */
+function findChildByType(node: any, type: string): any {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && child.type === type) return child;
+  }
+  return null;
+}
+
+/**
+ * #432: Extract metadata (parameterTypes, returnType, visibility, isStatic, isAsync, isAbstract)
+ * from a tree-sitter AST node for Function/Method/Constructor symbols.
+ * Only includes properties that are explicitly present in the source code.
+ */
+function extractSymbolMetadata(
+  node: any,
+  label: string,
+  languageName: string,
+): Record<string, unknown> {
+  if (label !== 'Function' && label !== 'Method' && label !== 'Constructor') return {};
+
+  const props: Record<string, unknown> = {};
+  const funcNode = findFunctionNode(node);
+
+  switch (languageName) {
+    case 'typescript':
+    case 'tsx':
+    case 'javascript':
+      extractTsJsMetadata(node, funcNode, props);
+      break;
+    case 'python':
+      extractPythonMetadata(funcNode, props);
+      break;
+    case 'java':
+      extractJavaMetadata(funcNode, props);
+      break;
+    case 'csharp':
+      extractCSharpMetadata(funcNode, props);
+      break;
+  }
+
+  return props;
+}
+
+// ── TypeScript / JavaScript metadata ─────────────────────────────────────
+
+function extractTsJsMetadata(
+  outerNode: any,
+  funcNode: any,
+  props: Record<string, unknown>,
+): void {
+  // Modifiers: check both outer capture node and inner function node
+  for (const target of [outerNode, funcNode]) {
+    for (let i = 0; i < target.childCount; i++) {
+      const child = target.child(i);
+      if (!child) continue;
+      if (child.type === 'accessibility_modifier') {
+        const t = child.text;
+        if (t === 'public' || t === 'private' || t === 'protected') props.visibility = t;
+      }
+      if (child.type === 'static' || child.text === 'static') props.isStatic = true;
+      if (child.type === 'async' || child.text === 'async') props.isAsync = true;
+      if (child.type === 'abstract' || child.text === 'abstract') props.isAbstract = true;
+    }
+  }
+
+  // Parameter types
+  const params = findParamsNode(funcNode);
+  if (params) {
+    const types = extractParamTypesTs(params);
+    if (types) props.parameterTypes = types;
+  }
+
+  // Return type
+  const rt = extractReturnTypeTs(funcNode);
+  if (rt) props.returnType = rt;
+}
+
+function extractParamTypesTs(paramsNode: any): string[] | undefined {
+  const types: string[] = [];
+  let hasAny = false;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const param = paramsNode.namedChild(i);
+    if (!param) { types.push(''); continue; }
+    // required_parameter / optional_parameter have 'type' field pointing to type_annotation
+    const ta = param.childForFieldName
+      ? param.childForFieldName('type') ?? findChildByType(param, 'type_annotation')
+      : findChildByType(param, 'type_annotation');
+    if (ta) {
+      const inner = ta.childForFieldName ? ta.childForFieldName('type') : null;
+      const text = inner ? inner.text : ta.text.replace(/^:\s*/, '');
+      types.push(text);
+      if (text) hasAny = true;
+    } else {
+      types.push('');
+    }
+  }
+  return hasAny ? types : undefined;
+}
+
+function extractReturnTypeTs(funcNode: any): string | undefined {
+  const rt = funcNode.childForFieldName
+    ? funcNode.childForFieldName('return_type')
+    : null;
+  if (rt) {
+    const inner = rt.childForFieldName ? rt.childForFieldName('type') : null;
+    return inner ? inner.text : rt.text.replace(/^:\s*/, '');
+  }
+  const ta = findChildByType(funcNode, 'type_annotation');
+  if (ta) return ta.text.replace(/^:\s*/, '');
+  return undefined;
+}
+
+// ── Python metadata ──────────────────────────────────────────────────────
+
+function extractPythonMetadata(funcNode: any, props: Record<string, unknown>): void {
+  // async check — "async" is a keyword child of function_definition
+  for (let i = 0; i < funcNode.childCount; i++) {
+    const child = funcNode.child(i);
+    if (child && child.text === 'async') { props.isAsync = true; break; }
+  }
+
+  // Parameter types
+  const params = findParamsNode(funcNode);
+  if (params) {
+    const types = extractParamTypesPython(params);
+    if (types) props.parameterTypes = types;
+  }
+
+  // Return type (field: 'return_type')
+  const rt = funcNode.childForFieldName ? funcNode.childForFieldName('return_type') : null;
+  if (rt) props.returnType = rt.text;
+
+  // Visibility convention: _prefix = protected, __prefix (not __dunder__) = private
+  const nameNode = funcNode.childForFieldName ? funcNode.childForFieldName('name') : null;
+  if (nameNode) {
+    const name = nameNode.text;
+    if (name.startsWith('__') && !name.endsWith('__')) props.visibility = 'private';
+    else if (name.startsWith('_') && !name.startsWith('__')) props.visibility = 'protected';
+  }
+}
+
+function extractParamTypesPython(paramsNode: any): string[] | undefined {
+  const types: string[] = [];
+  let hasAny = false;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const param = paramsNode.namedChild(i);
+    if (!param) { types.push(''); continue; }
+    if (param.type === 'typed_parameter' || param.type === 'typed_default_parameter') {
+      const t = param.childForFieldName ? param.childForFieldName('type') : null;
+      if (t) {
+        types.push(t.text);
+        hasAny = true;
+        continue;
+      }
+    }
+    types.push('');
+  }
+  return hasAny ? types : undefined;
+}
+
+// ── Java metadata ────────────────────────────────────────────────────────
+
+function extractJavaMetadata(funcNode: any, props: Record<string, unknown>): void {
+  // Modifiers are in a 'modifiers' child node
+  const modifiers = findChildByType(funcNode, 'modifiers');
+  if (modifiers) {
+    for (let i = 0; i < modifiers.childCount; i++) {
+      const m = modifiers.child(i);
+      if (!m) continue;
+      const t = m.text;
+      if (t === 'public' || t === 'private' || t === 'protected') props.visibility = t;
+      if (t === 'static') props.isStatic = true;
+      if (t === 'abstract') props.isAbstract = true;
+    }
+  }
+
+  // Return type (for methods, not constructors)
+  if (funcNode.type === 'method_declaration') {
+    const rt = funcNode.childForFieldName ? funcNode.childForFieldName('type') : null;
+    if (rt) props.returnType = rt.text;
+  }
+
+  // Parameter types
+  const params = findParamsNode(funcNode);
+  if (params) {
+    const types = extractParamTypesJava(params);
+    if (types) props.parameterTypes = types;
+  }
+}
+
+function extractParamTypesJava(paramsNode: any): string[] | undefined {
+  const types: string[] = [];
+  let hasAny = false;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const param = paramsNode.namedChild(i);
+    if (!param) { types.push(''); continue; }
+    const t = param.childForFieldName ? param.childForFieldName('type') : null;
+    if (t) {
+      types.push(t.text);
+      hasAny = true;
+    } else {
+      types.push('');
+    }
+  }
+  return hasAny ? types : undefined;
+}
+
+// ── C# metadata ──────────────────────────────────────────────────────────
+
+function extractCSharpMetadata(funcNode: any, props: Record<string, unknown>): void {
+  // Modifiers are individual 'modifier' children (not wrapped in a container)
+  for (let i = 0; i < funcNode.childCount; i++) {
+    const child = funcNode.child(i);
+    if (!child || child.type !== 'modifier') continue;
+    const t = child.text;
+    if (t === 'public' || t === 'private' || t === 'protected' || t === 'internal') props.visibility = t;
+    if (t === 'static') props.isStatic = true;
+    if (t === 'async') props.isAsync = true;
+    if (t === 'abstract') props.isAbstract = true;
+  }
+
+  // Return type
+  if (funcNode.type === 'method_declaration') {
+    const rt = funcNode.childForFieldName ? funcNode.childForFieldName('type') : null;
+    if (rt) props.returnType = rt.text;
+  }
+
+  // Parameter types
+  const params = findParamsNode(funcNode);
+  if (params) {
+    const types = extractParamTypesCSharp(params);
+    if (types) props.parameterTypes = types;
+  }
+}
+
+function extractParamTypesCSharp(paramsNode: any): string[] | undefined {
+  const types: string[] = [];
+  let hasAny = false;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const param = paramsNode.namedChild(i);
+    if (!param) { types.push(''); continue; }
+    const t = param.childForFieldName ? param.childForFieldName('type') : null;
+    if (t) {
+      types.push(t.text);
+      hasAny = true;
+    } else {
+      types.push('');
+    }
+  }
+  return hasAny ? types : undefined;
 }
 
 // ── Shared extraction helper (#169) ────────────────────────────────────────
@@ -490,7 +806,7 @@ function extractFromTree(
       allSymbolMatches.push(m);
     }
   }
-  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath);
+  const { symbols, relationships } = extractSymbols(allSymbolMatches, langDef.symbolPatterns, normalisedPath, langDef.name);
 
   // Import extraction
   const allImportMatches: QueryMatch[] = [];

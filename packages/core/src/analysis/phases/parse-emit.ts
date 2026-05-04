@@ -204,6 +204,7 @@ function emitSymbol(
       endLine: sym.endLine,
       isExported: sym.isExported,
       ...(sym.typeAnnotations ?? {}),
+      ...(sym.properties ?? {}),
     },
   };
   graph.addNode(node);
