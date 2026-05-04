@@ -12,9 +12,10 @@ import type { GraphNode, GraphRelationship } from '../../src/core/types.js';
 // Auto-mock child_process — all functions become vi.fn()
 vi.mock('node:child_process');
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 
 const mockExecSync = vi.mocked(execSync);
+const mockExecFileSync = vi.mocked(execFileSync);
 
 const TMP_BASE = join(__dirname, '__review_gist_tmp__');
 
@@ -180,12 +181,13 @@ describe('Wiki review mode and Gist publishing (#452)', () => {
     const repoPath = makeTempDir('gist-success');
     const graph = buildTestGraph();
 
-    // Mock: gh gist create succeeds, git commands fail
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (typeof cmd === 'string' && cmd.includes('gh gist create')) {
+    // Mock: gh gist create succeeds (now uses execFileSync), git commands fail
+    mockExecSync.mockImplementation(() => { throw new Error('not a git repo'); });
+    mockExecFileSync.mockImplementation((cmd: string, args?: readonly string[]) => {
+      if (cmd === 'gh' && args && args[0] === 'gist' && args[1] === 'create') {
         return 'https://gist.github.com/testuser/abc123def456\n';
       }
-      throw new Error('not a git repo');
+      throw new Error('unknown command');
     });
 
     const result = await generateWiki({
@@ -203,10 +205,9 @@ describe('Wiki review mode and Gist publishing (#452)', () => {
     const repoPath = makeTempDir('gist-failure');
     const graph = buildTestGraph();
 
-    // All execSync calls fail (gh not installed)
-    mockExecSync.mockImplementation(() => {
-      throw new Error('gh: command not found');
-    });
+    // All commands fail (gh not installed)
+    mockExecSync.mockImplementation(() => { throw new Error('not a git repo'); });
+    mockExecFileSync.mockImplementation(() => { throw new Error('gh: command not found'); });
 
     const result = await generateWiki({
       repoPath,

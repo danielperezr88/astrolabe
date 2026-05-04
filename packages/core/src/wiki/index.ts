@@ -8,7 +8,7 @@
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import type { KnowledgeGraph } from '../core/types.js';
 import { generateHtmlViewer } from './html-viewer.js';
 export { generateHtmlViewer } from './html-viewer.js';
@@ -206,15 +206,20 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
 
     // Review mode: write module tree and return early
     if (opts.review) {
+      // #472: Build symbol→file lookup once for review mode
+      const symbolToFile = new Map<string, string>();
+      for (const node of graph.iterNodes()) {
+        const symName = node.properties.name as string;
+        const srcFile = node.properties.sourceFile as string | undefined;
+        if (symName && srcFile) symbolToFile.set(symName, srcFile);
+      }
+
       const moduleTreeData: Record<string, { symbols: string[]; files: string[] }> = {};
       for (const [modName, symbols] of communities) {
         const filesForModule: string[] = [];
         for (const symbol of symbols) {
-          const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
-          if (symbolNode?.properties?.sourceFile) {
-            const sourceFile = symbolNode.properties.sourceFile as string;
-            if (!filesForModule.includes(sourceFile)) filesForModule.push(sourceFile);
-          }
+          const sf = symbolToFile.get(symbol);
+          if (sf && !filesForModule.includes(sf)) filesForModule.push(sf);
         }
         moduleTreeData[modName] = { symbols, files: filesForModule };
       }
@@ -223,6 +228,14 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
       console.log('[wiki] Review mode: module tree written to .astrolabe/wiki/module_tree.json. Edit and re-run with --resume.');
       return { pageCount: 0, moduleCount: communities.size, overviewPath: '', htmlPath: '' };
     }
+  }
+
+  // #472: Build symbol→file lookup once (O(N)) for file collection in generation loop
+  const symbolToFile = new Map<string, string>();
+  for (const node of graph.iterNodes()) {
+    const symName = node.properties.name as string;
+    const srcFile = node.properties.sourceFile as string | undefined;
+    if (symName && srcFile) symbolToFile.set(symName, srcFile);
   }
 
   // Determine which modules to regenerate (incremental mode)
@@ -269,11 +282,8 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
       : (() => {
           const files: string[] = [];
           for (const symbol of symbols) {
-            const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
-            if (symbolNode?.properties?.sourceFile) {
-              const sourceFile = symbolNode.properties.sourceFile as string;
-              if (!files.includes(sourceFile)) files.push(sourceFile);
-            }
+            const sf = symbolToFile.get(symbol);
+            if (sf && !files.includes(sf)) files.push(sf);
           }
           return files;
         })();
@@ -336,8 +346,8 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
         .filter((f) => f.endsWith('.md') || f.endsWith('.html'))
         .map((f) => join(wikiDir, f));
       if (wikiFiles.length > 0) {
-        const gistArgs = wikiFiles.map((f) => `"${f}"`).join(' ');
-        const output = execSync(`gh gist create ${gistArgs}`, {
+        // #474: Use execFileSync to avoid command injection via filenames
+        const output = execFileSync('gh', ['gist', 'create', ...wikiFiles], {
           encoding: 'utf-8',
           cwd: opts.repoPath,
         }).trim();

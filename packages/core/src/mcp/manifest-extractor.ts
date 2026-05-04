@@ -257,7 +257,8 @@ export function extractProtoContracts(content: string, filePath: string): Manife
       const endpoints: Array<{ method: string; path: string }> = [];
       const rpcRegex = /rpc\s+([a-zA-Z][a-zA-Z0-9_]*)\s*\(/g;
       let rpcMatch: RegExpExecArray | null;
-
+      // #468: Reset lastIndex to prevent missed RPC matches across service blocks
+      rpcRegex.lastIndex = 0;
       while ((rpcMatch = rpcRegex.exec(block)) !== null) {
         endpoints.push({ method: rpcMatch[1], path: `/${packageName ?? ''}/${serviceName}/${rpcMatch[1]}` });
       }

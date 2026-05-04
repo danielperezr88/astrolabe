@@ -157,6 +157,8 @@ export async function parseFilesParallel(
 
   // #315-317, #320: Event-driven dispatch — Promise per chunk, no busy-wait polling
   const chunkResults = new Map<number, WorkerParseResult[]>();
+  // #477: Track which batch was dispatched to which worker
+  const batchToWorker = new Map<number, number>();
   const workerBusy = new Array(workers.length).fill(false);
   let nextBatchId = 0;
   let nextChunkIdx = 0;
@@ -176,6 +178,7 @@ export async function parseFilesParallel(
     workerBusy[wi] = true;
 
     worker.postMessage({ type: 'parse', files: chunk, id: batchId });
+    batchToWorker.set(batchId, wi); // #477: track assignment
 
     // #316: Use once() to prevent listener stacking
     const onResult = (msg: { type: string; batchId: number; results: WorkerParseResult[]; errors: number }) => {
@@ -210,10 +213,11 @@ export async function parseFilesParallel(
       if (code !== 0 && workerBusy[wi]) {
         // Worker crashed mid-parse — collect its pending chunks for fallback
         console.warn(`[worker-pool] Worker ${wi} exited with code ${code}, falling back to sequential`);
-        // Find any chunks that were dispatched to this worker
-        for (let ci = wi; ci < chunks.length; ci += workers.length) {
-          if (!chunkResults.has(ci)) {
-            workerFailedChunks.push(chunks[ci]);
+        // #477: Use batchToWorker tracking instead of broken round-robin assumption
+        for (const [batchId, workerIdx] of batchToWorker) {
+          if (workerIdx === wi && !chunkResults.has(batchId)) {
+            const chunk = chunks[batchId];
+            if (chunk) workerFailedChunks.push(chunk);
           }
         }
       }

@@ -98,11 +98,25 @@ function error(res: ServerResponse, message: string, status = 400) {
   json(res, { error: message }, status);
 }
 
+// #471: Body size limit to prevent DoS (10 MB, same as MCP transport)
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
 function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     let body = '';
-    req.on('data', (chunk) => { body += chunk; });
+    let size = 0;
+    let overflow = false;
+    req.on('data', (chunk) => {
+      if (overflow) return;
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        overflow = true;
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
+      if (overflow) return resolve({});
       try { resolve(JSON.parse(body)); }
       catch { resolve({}); }
     });

@@ -44,7 +44,7 @@ export function resolveCalls(
   graph: KnowledgeGraph,
 ): CallResolutionOutput {
   // #364: Work from existing CALLS edges — enhance with classification and confidence
-  const edges: Array<{ sourceId: string; targetId: string; type: string }> = [];
+  const edges: Array<{ id: string; sourceId: string; targetId: string; type: string }> = [];
   for (const rel of graph.iterRelationships()) {
     if (rel.type === 'CALLS') edges.push(rel);
   }
@@ -90,7 +90,8 @@ export function resolveCalls(
     }
 
     // Update existing edge with enhanced confidence (#364: use actual source/target, not self-loop)
-    const rel = graph.getRelationship(edge.sourceId);
+    // #470: Use edge.id (relationship ID), not edge.sourceId (node ID)
+    const rel = graph.getRelationship(edge.id);
     if (rel) {
       rel.confidence = Math.max(rel.confidence, confidence);
       if (decision.primary !== 'free') rel.reason = `${decision.primary} dispatch: ${rel.reason || 'call'}`;

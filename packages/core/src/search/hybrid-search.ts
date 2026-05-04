@@ -140,15 +140,15 @@ function computeCommunityCohesion(
       const tgtComm = nodeToCommunity.get(rel.targetId);
 
       if (srcComm) {
-        const counts = edgeCounts.get(srcComm) ?? { internal: 0, total: 0 };
+        let counts = edgeCounts.get(srcComm);
+        if (!counts) { counts = { internal: 0, total: 0 }; edgeCounts.set(srcComm, counts); }
         counts.total++;
         if (srcComm === tgtComm) counts.internal++;
-        edgeCounts.set(srcComm, counts);
       }
       if (tgtComm && tgtComm !== srcComm) {
-        const counts = edgeCounts.get(tgtComm) ?? { internal: 0, total: 0 };
+        let counts = edgeCounts.get(tgtComm);
+        if (!counts) { counts = { internal: 0, total: 0 }; edgeCounts.set(tgtComm, counts); }
         counts.total++;
-        edgeCounts.set(tgtComm, counts);
       }
     }
   }
