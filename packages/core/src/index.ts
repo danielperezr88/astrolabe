@@ -52,6 +52,8 @@ export { generateWiki } from './wiki/index.js';
 export type { WikiOptions, WikiResult } from './wiki/index.js';
 export { startHttpServer } from './server/http-server.js';
 export type { ServeOptions } from './server/http-server.js';
+export { startEvalServer, shutdownEvalServer } from './server/eval-server.js';
+export type { EvalServerOptions } from './server/eval-server.js';
 export { loadMeta, saveMeta, computeFileDiff, buildMeta } from './analysis/meta.js';
 export type { MetaFile, FileDiff } from './analysis/meta.js';
 export { installHooks, generateHooksConfig } from './hooks/index.js';

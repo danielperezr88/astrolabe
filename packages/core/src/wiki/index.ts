@@ -10,6 +10,8 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { KnowledgeGraph } from '../core/types.js';
+import { generateHtmlViewer } from './html-viewer.js';
+export { generateHtmlViewer } from './html-viewer.js';
 
 export interface WikiMeta {
   lastCommit: string;
@@ -84,6 +86,8 @@ export interface WikiResult {
   pageCount: number;
   moduleCount: number;
   overviewPath: string;
+  /** Path to the self-contained HTML viewer (#435). */
+  htmlPath: string;
 }
 
 function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
@@ -270,5 +274,8 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
     saveWikiMeta(opts.repoPath, { lastCommit: currentCommit, modules: moduleFilesMap });
   }
 
-  return { pageCount, moduleCount: communities.size, overviewPath: join(wikiDir, 'README.md') };
+  // Generate self-contained HTML viewer (#435)
+  const htmlPath = generateHtmlViewer(wikiDir, opts.repoName);
+
+  return { pageCount, moduleCount: communities.size, overviewPath: join(wikiDir, 'README.md'), htmlPath };
 }

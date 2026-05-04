@@ -25,6 +25,7 @@ import {
   generateAgentFiles,
   startHttpServer,
   generateWiki,
+  startEvalServer,
 } from '@astrolabe/core';
 import type { ScanOutput } from '@astrolabe/core';
 
@@ -233,6 +234,23 @@ program
   .option('-h, --host <host>', 'Host to bind to', 'localhost')
   .action((opts: { port: string; host: string }) => {
     const server = startHttpServer({ port: parseInt(opts.port, 10), host: opts.host });
+    process.on('SIGINT', () => { server.close(); process.exit(0); });
+    process.on('SIGTERM', () => { server.close(); process.exit(0); });
+  });
+
+// ── eval-server (REST eval API) ──────────────────────────────────────────
+program
+  .command('eval-server')
+  .description('Start an eval REST server for benchmarking (#448)')
+  .option('-p, --port <number>', 'Port to listen on', '4748')
+  .option('-h, --host <host>', 'Host to bind to', 'localhost')
+  .option('--idle-timeout <seconds>', 'Idle shutdown timeout in seconds', '300')
+  .action((opts: { port: string; host: string; idleTimeout: string }) => {
+    const server = startEvalServer({
+      port: parseInt(opts.port, 10),
+      host: opts.host,
+      idleTimeout: parseInt(opts.idleTimeout, 10),
+    });
     process.on('SIGINT', () => { server.close(); process.exit(0); });
     process.on('SIGTERM', () => { server.close(); process.exit(0); });
   });
