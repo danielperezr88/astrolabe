@@ -14,7 +14,7 @@
  * 6. emit-edge: Write CALLS edge with confidence tier
  */
 
-import type { KnowledgeGraph, GraphNode } from '../core/types.js';
+import type { KnowledgeGraph } from '../core/types.js';
 import type { PhaseDefinition, PhaseContext } from '../core/pipeline.js';
 import type { CallSite, DispatchDecision } from './language-definition.js';
 import { languageForFile } from './languages/index.js';
@@ -38,46 +38,11 @@ function resolveConfidence(exactMatch: boolean, isVariadic: boolean): number {
 
 // ── Stage 5: Resolve target with file-scoped name→node index (#364, #366) ─
 
-let _nameIndex: Map<string, GraphNode[]> | null = null;
-
-function buildNameIndex(graph: KnowledgeGraph): Map<string, GraphNode[]> {
-  if (_nameIndex) return _nameIndex;
-  _nameIndex = new Map();
-  for (const node of graph.iterNodes()) {
-    if (['Function', 'Method', 'Class'].includes(node.label)) {
-      const name = (node.properties.name as string) ?? '';
-      if (!name) continue;
-      let bucket = _nameIndex.get(name);
-      if (!bucket) { bucket = []; _nameIndex.set(name, bucket); }
-      bucket.push(node);
-    }
-  }
-  return _nameIndex;
-}
-
-function resolveTarget(call: CallSite, graph: KnowledgeGraph): GraphNode | null {
-  const index = buildNameIndex(graph);
-  const candidates = index.get(call.name);
-  if (!candidates || candidates.length === 0) return null;
-
-  // #366: Narrow by file scope — prefer same-file or imported-file targets
-  let bestByFile: GraphNode | null = null;
-  for (const node of candidates) {
-    const nodeFp = (node.properties.filePath as string) ?? '';
-    if (nodeFp === call.filePath) return node; // exact same-file match
-    if (!bestByFile) bestByFile = node;
-  }
-  return bestByFile; // fallback to first candidate
-}
-
 // ── 6-Stage Pipeline ──────────────────────────────────────────────────────
 
 export function resolveCalls(
   graph: KnowledgeGraph,
 ): CallResolutionOutput {
-  // #424: Reset module-level cache to prevent stale data across pipeline runs
-  _nameIndex = null;
-
   // #364: Work from existing CALLS edges — enhance with classification and confidence
   const edges: Array<{ sourceId: string; targetId: string; type: string }> = [];
   for (const rel of graph.iterRelationships()) {

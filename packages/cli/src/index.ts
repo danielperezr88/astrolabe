@@ -145,6 +145,7 @@ program
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase,
           cobolPhase,
+          callResolutionPhase, scopeResolutionPhase,
         ], context);
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
