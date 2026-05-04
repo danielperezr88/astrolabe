@@ -3,6 +3,8 @@
  *
  * Reads actual source files to detect API route definitions across common
  * web frameworks. Creates Route nodes with HANDLES_ROUTE edges (#137).
+ * Also creates FETCHES edges from Function/Method nodes that make HTTP
+ * client calls to registered Route nodes (#428).
  */
 
 import { readFile } from 'node:fs/promises';
@@ -12,6 +14,44 @@ import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 export interface RoutesOutput {
   routeCount: number;
   frameworks: string[];
+  fetchesCount: number;
+}
+
+// ── HTTP client detection patterns ─────────────────────────────────────────
+
+/** Patterns that indicate an HTTP client call in function body text. */
+const HTTP_CLIENT_DETECT: RegExp[] = [
+  /\bfetch\s*\(/,
+  /\baxios\.(get|post|put|delete|patch|request)\s*\(/,
+  /\bgot\.(get|post|put|delete|patch)\s*\(/,
+  /\b(request|superagent)\s*\(/,
+  /\b(httpClient|HttpClient|http\.request)\s*\(/,
+];
+
+/** Extracts relative URL strings (e.g. '/api/users') from source text. */
+const URL_EXTRACT = /['"`](\/[^'"`\s]*)['"`]/g;
+
+// ── URL ↔ route matching ───────────────────────────────────────────────────
+
+/**
+ * Check whether a concrete URL (e.g. `/users/123`) matches a route path
+ * pattern (e.g. `/users/:id`).
+ *
+ * Matching rules:
+ * - Exact string equality is a match.
+ * - Parameterized segments (`:param`) match any single path segment.
+ * - The number of segments must be equal.
+ */
+export function urlMatchesRoute(url: string, routePath: string): boolean {
+  if (url === routePath) return true;
+  const urlSegs = url.split('/').filter(Boolean);
+  const routeSegs = routePath.split('/').filter(Boolean);
+  if (urlSegs.length !== routeSegs.length) return false;
+  for (let i = 0; i < routeSegs.length; i++) {
+    if (routeSegs[i]!.startsWith(':')) continue;
+    if (routeSegs[i] !== urlSegs[i]) return false;
+  }
+  return true;
 }
 
 const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegExpExecArray) => { method: string; path: string } }> = [
@@ -72,6 +112,84 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       } catch { /* skip unreadable */ }
     }
 
-    return { routeCount, frameworks: Array.from(frameworks) };
+    // ── FETCHES edge creation (#428) ──────────────────────────────────────
+
+    // Build a registry: route path → route node IDs
+    const routeRegistry = new Map<string, string[]>();
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Route') continue;
+      const path = node.properties.path as string | undefined;
+      if (!path) continue;
+      const ids = routeRegistry.get(path);
+      if (ids) ids.push(node.id);
+      else routeRegistry.set(path, [node.id]);
+    }
+
+    // If no routes were detected, skip FETCHES scanning
+    let fetchesCount = 0;
+    if (routeRegistry.size > 0) {
+      // Collect Function/Method nodes grouped by file for batched file reads
+      const functionsByFile = new Map<string, Array<{ id: string; name: string; startLine: number; endLine: number }>>();
+      for (const node of graph.iterNodes()) {
+        if (node.label !== 'Function' && node.label !== 'Method') continue;
+        const fp = node.properties.filePath as string | undefined;
+        if (!fp) continue;
+        const startLine = (node.properties.startLine as number) ?? 0;
+        const endLine = (node.properties.endLine as number) ?? Infinity;
+        const name = (node.properties.name as string) ?? '';
+        const fns = functionsByFile.get(fp);
+        if (fns) fns.push({ id: node.id, name, startLine, endLine });
+        else functionsByFile.set(fp, [{ id: node.id, name, startLine, endLine }]);
+      }
+
+      for (const [fp, fns] of functionsByFile) {
+        let content: string;
+        try {
+          content = await readFile(join(context.repoPath, fp), 'utf-8');
+        } catch { continue; }
+
+        const lines = content.split('\n');
+
+        for (const fn of fns) {
+          // Extract the function body from the file (1-indexed lines)
+          const start = Math.max(0, fn.startLine - 1);
+          const end = fn.endLine === Infinity ? lines.length : Math.min(lines.length, fn.endLine);
+          const body = lines.slice(start, end).join('\n');
+
+          // Check if this function contains any HTTP client call
+          if (!HTTP_CLIENT_DETECT.some((re) => re.test(body))) continue;
+
+          // Extract all URL strings from the body
+          const urls = new Set<string>();
+          let urlMatch: RegExpExecArray | null;
+          URL_EXTRACT.lastIndex = 0;
+          while ((urlMatch = URL_EXTRACT.exec(body)) !== null) {
+            urls.add(urlMatch[1]!);
+          }
+
+          // Match URLs to registered routes and create FETCHES edges
+          for (const url of urls) {
+            for (const [routePath, routeIds] of routeRegistry) {
+              if (!urlMatchesRoute(url, routePath)) continue;
+              for (const routeId of routeIds) {
+                const edgeId = `fetches:${fn.id}:${routeId}`;
+                if (graph.getRelationship(edgeId)) continue;
+                graph.addRelationship({
+                  id: edgeId,
+                  sourceId: fn.id,
+                  targetId: routeId,
+                  type: 'FETCHES',
+                  confidence: 0.7,
+                  reason: `HTTP client call to ${url} matches route ${routePath}`,
+                });
+                fetchesCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return { routeCount, frameworks: Array.from(frameworks), fetchesCount };
   },
 };
