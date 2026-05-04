@@ -24,6 +24,7 @@ import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
+import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1645,6 +1646,117 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown algorithm: ${algorithm}` }) }] };
+    },
+  },
+
+  'astrolabe.grep': {
+    name: 'astrolabe.grep',
+    description: `Regex search across file contents in the indexed repository. Returns matching lines with file path and line number.
+
+ReDoS protection: pattern max 200 chars. Results capped at 50 by default (max 200).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regex pattern to search for (max 200 chars)' },
+        repo: { type: 'string', description: 'Repository name' },
+        limit: { type: 'number', description: 'Max results (default 50, max 200)', default: 50 },
+      },
+      required: ['pattern'],
+    },
+    handler: async (params) => {
+      const pattern = requireString(params, 'pattern');
+      if (pattern.length > 200) throw new Error('Pattern too long (max 200 characters)');
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, 'gim');
+      } catch {
+        throw new Error('Invalid regex pattern');
+      }
+
+      const limit = Math.max(1, Math.min(200, requireNumber(params, 'limit', 50)));
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const repoRoot = ctx.entry.path;
+      const results: Array<{ filePath: string; line: number; text: string }> = [];
+
+      // Collect indexed file paths from graph
+      const indexedFiles = new Set<string>();
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'File' && node.properties.filePath) {
+          indexedFiles.add(node.properties.filePath as string);
+        }
+      }
+
+      // Search files on disk one at a time (constant memory)
+      for (const filePath of indexedFiles) {
+        if (results.length >= limit) break;
+        const fullPath = pathJoin(repoRoot, filePath);
+
+        // Path traversal guard
+        if (!fullPath.startsWith(repoRoot)) continue;
+        if (!existsSync(fullPath)) continue;
+
+        let content: string;
+        try {
+          content = readFileSync(fullPath, 'utf-8');
+        } catch {
+          continue; // File may have been deleted since indexing
+        }
+
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (results.length >= limit) break;
+          if (regex.test(lines[i])) {
+            results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
+          }
+          regex.lastIndex = 0;
+        }
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({ matches: results.length, results }, null, 2) }] };
+    },
+  },
+
+  'astrolabe.chat': {
+    name: 'astrolabe.chat',
+    description: `Conversational AI assistant grounded in the knowledge graph. Ask questions about the codebase in natural language.
+
+Uses RAG (Retrieval-Augmented Generation): retrieves relevant symbols from the graph, then generates a grounded answer via an OpenAI-compatible LLM.
+
+Requires ASTROLABE_API_KEY or OPENAI_API_KEY environment variable to be set for the MCP server process.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'Your question about the codebase' },
+        repo: { type: 'string', description: 'Repository name (omit if only one indexed)' },
+        history: { type: 'array', description: 'Previous conversation messages [{role: "user"|"assistant", content: "..."}]', items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant'] }, content: { type: 'string' } }, required: ['role', 'content'] } },
+      },
+      required: ['message'],
+    },
+    handler: async (params) => {
+      const message = requireString(params, 'message');
+      const repo = params.repo as string | undefined;
+      const history = (params.history as Array<{ role: string; content: string }>) ?? [];
+
+      // Build conversation messages
+      const messages: ChatMessage[] = history
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      messages.push({ role: 'user', content: message });
+
+      try {
+        const result = await ragChat(messages, { repo });
+        const sourceLines = result.sources.length > 0
+          ? '\n\nSources:\n' + result.sources.slice(0, 10).map((s, i) => `${i + 1}. ${s.name} (${s.type}) — ${s.filePath}`).join('\n')
+          : '';
+        return { content: [{ type: 'text', text: result.content + sourceLines }] };
+      } catch (err: any) {
+        if (err.message?.includes('No API key')) {
+          return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+        }
+        throw err;
+      }
     },
   },
 };

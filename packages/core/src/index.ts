@@ -61,3 +61,4 @@ export { generateAgentFiles } from './agents/index.js';
 export type { AgentFilesResult } from './agents/index.js';
 export { parseFilesParallel, DEFAULT_WORKERS } from './analysis/workers/pool.js';
 export type { WorkerParseResult, PoolStats } from './analysis/workers/pool.js';
+export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } from './agent/rag-chat.js';

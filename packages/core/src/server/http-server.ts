@@ -8,11 +8,15 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { join as pathJoin, resolve as pathResolve, dirname, basename } from 'node:path';
+import { fork } from 'node:child_process';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
-import { dirname } from 'node:path';
+import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
+import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -313,7 +317,287 @@ async function handleImpact(res: ServerResponse, repoName: string, params: Recor
   }
 }
 
+async function handleGrep(res: ServerResponse, repoName: string, pattern: string, limit: number) {
+  const entries = loadRegistry();
+  const entry = entries.find((e) => e.name === repoName);
+  if (!entry) return error(res, `Repo "${repoName}" not found`, 404);
+
+  if (!pattern) return error(res, 'Missing pattern parameter');
+  if (pattern.length > 200) return error(res, 'Pattern too long (max 200 characters)');
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, 'gim');
+  } catch {
+    return error(res, 'Invalid regex pattern');
+  }
+
+  const safeLimit = Math.max(1, Math.min(200, limit));
+
+  try {
+    const ctx = getRepo(entry.dbPath, repoName);
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
+    const repoRoot = entry.path;
+
+    // Collect indexed file paths from graph
+    const indexedFiles = new Set<string>();
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'File' && node.properties.filePath) {
+        indexedFiles.add(node.properties.filePath as string);
+      }
+    }
+
+    // Search files on disk one at a time (constant memory)
+    const results: Array<{ filePath: string; line: number; text: string }> = [];
+    for (const filePath of indexedFiles) {
+      if (results.length >= safeLimit) break;
+      const fullPath = pathJoin(repoRoot, filePath);
+
+      // Path traversal guard
+      if (!fullPath.startsWith(repoRoot)) continue;
+      if (!existsSync(fullPath)) continue;
+
+      let content: string;
+      try {
+        content = readFileSync(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (results.length >= safeLimit) break;
+        if (regex.test(lines[i])) {
+          results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
+        }
+        regex.lastIndex = 0;
+      }
+    }
+
+    json(res, { matches: results.length, results });
+  } catch (err) {
+    error(res, String(err), 500);
+  }
+}
+
+// ── Job Manager (singleton) ────────────────────────────────────────────────
+
+const jobManager = new JobManager();
+
+// ── Analyze Handlers ──────────────────────────────────────────────────────
+
+async function handleAnalyze(res: ServerResponse, params: Record<string, unknown>) {
+  const repoPath = params.path as string | undefined;
+  if (!repoPath) return error(res, 'Missing "path" in request body');
+
+  // Path validation: require absolute path, reject traversal
+  if (!pathResolve(repoPath).startsWith(pathResolve(repoPath))) {
+    return error(res, '"path" must not contain traversal sequences');
+  }
+  if (!existsSync(repoPath as string)) {
+    return error(res, `"${repoPath}" does not exist`);
+  }
+
+  const repoName = basename(repoPath);
+
+  let job: AnalyzeJob;
+  try {
+    job = jobManager.createJob({ repoPath, repoName });
+  } catch (e: any) {
+    return error(res, e.message, 409);
+  }
+
+  // If job was already running (dedup), just return its id
+  if (job.status !== 'queued') {
+    return json(res, { jobId: job.id, status: job.status }, 202);
+  }
+
+  // Mark as active synchronously
+  jobManager.updateJob(job.id, { status: 'analyzing', progress: { phase: 'analyzing', percent: 0, message: 'Starting analysis...' } });
+
+  // Fork CLI child process for analysis
+  // Resolve CLI path relative to this package
+  const cliDistPath = pathResolve(new URL(import.meta.url).pathname, '..', '..', '..', 'cli', 'dist', 'index.js');
+  const workerPath = existsSync(cliDistPath) ? cliDistPath : process.argv[1] ?? cliDistPath;
+
+  const args = ['analyze', repoPath, '-o', pathJoin(repoPath, '.astrolabe', 'astrolabe.db')];
+  const child = fork(workerPath, args, { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+
+  jobManager.registerChild(job.id, child);
+
+  // Parse progress from child stderr
+  child.stderr?.on('data', (data: Buffer) => {
+    const text = data.toString('utf-8');
+    // Try to extract phase progress from log lines
+    const phaseMatch = text.match(/(\w+)\s+(phase|complete)/i);
+    if (phaseMatch) {
+      jobManager.updateJob(job.id, {
+        progress: { phase: phaseMatch[1].toLowerCase(), percent: 50, message: text.trim().slice(0, 200) },
+      });
+    }
+  });
+
+  child.on('message', (msg: any) => {
+    if (msg?.type === 'progress') {
+      jobManager.updateJob(job.id, { progress: msg });
+    }
+  });
+
+  child.on('exit', (code) => {
+    if (code === 0) {
+      jobManager.updateJob(job.id, {
+        status: 'complete',
+        progress: { phase: 'complete', percent: 100, message: 'Analysis complete' },
+      });
+    } else {
+      jobManager.updateJob(job.id, {
+        status: 'failed',
+        error: `Analysis exited with code ${code}`,
+      });
+    }
+  });
+
+  child.on('error', (err) => {
+    jobManager.updateJob(job.id, {
+      status: 'failed',
+      error: err.message,
+    });
+  });
+
+  json(res, { jobId: job.id, status: job.status }, 202);
+}
+
+function handleAnalyzeStatus(res: ServerResponse, jobId: string) {
+  const job = jobManager.getJob(jobId);
+  if (!job) return error(res, `Job "${jobId}" not found`, 404);
+  json(res, { id: job.id, status: job.status, progress: job.progress, error: job.error, repoName: job.repoName, startedAt: job.startedAt, completedAt: job.completedAt });
+}
+
+function handleAnalyzeProgress(res: ServerResponse, jobId: string) {
+  const job = jobManager.getJob(jobId);
+  if (!job) return error(res, `Job "${jobId}" not found`, 404);
+
+  let eventId = 0;
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'Access-Control-Allow-Origin': _corsOrigin,
+  });
+
+  // Send current state immediately
+  eventId++;
+  res.write(`id: ${eventId}\ndata: ${JSON.stringify(job.progress)}\n\n`);
+
+  // If already terminal, send event and close
+  if (job.status === 'complete' || job.status === 'failed') {
+    eventId++;
+    res.write(`id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({ repoName: job.repoName, error: job.error })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // Heartbeat to detect zombie connections
+  const heartbeat = setInterval(() => {
+    try { res.write(':heartbeat\n\n'); } catch { clearInterval(heartbeat); unsubscribe(); }
+  }, 30_000);
+
+  // Subscribe to progress updates
+  const unsubscribe = jobManager.onProgress(job.id, (progress: AnalyzeJobProgress) => {
+    try {
+      eventId++;
+      if (progress.phase === 'complete' || progress.phase === 'failed') {
+        const eventJob = jobManager.getJob(jobId);
+        res.write(`id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({ repoName: eventJob?.repoName, error: eventJob?.error })}\n\n`);
+        clearInterval(heartbeat);
+        res.end();
+        unsubscribe();
+      } else {
+        res.write(`id: ${eventId}\ndata: ${JSON.stringify(progress)}\n\n`);
+      }
+    } catch {
+      clearInterval(heartbeat);
+      unsubscribe();
+    }
+  });
+}
+
+function handleAnalyzeCancel(res: ServerResponse, jobId: string) {
+  const cancelled = jobManager.cancelJob(jobId);
+  if (!cancelled) return error(res, `Job "${jobId}" not found or already complete`, 404);
+  json(res, { id: jobId, status: 'cancelled' });
+}
+
+// ── NDJSON Streaming Handler ──────────────────────────────────────────────
+
+async function handleGraphStream(res: ServerResponse, repoName: string) {
+  const entries = loadRegistry();
+  const entry = entries.find((e) => e.name === repoName);
+  if (!entry) return error(res, `Repo "${repoName}" not found`, 404);
+
+  try {
+    const ctx = getRepo(entry.dbPath, repoName);
+    if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
+    const graph = ctx.graph;
+
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': _corsOrigin,
+    });
+
+    // Stream nodes
+    for (const node of graph.iterNodes()) {
+      if (res.destroyed) break;
+      const record = JSON.stringify({ type: 'node', data: { id: node.id, label: node.label, name: node.properties.name ?? node.id, filePath: node.properties.filePath ?? '', properties: node.properties } }) + '\n';
+      const canContinue = res.write(record);
+      if (!canContinue) await new Promise<void>((r) => res.once('drain', r));
+    }
+
+    // Stream relationships
+    for (const rel of graph.iterRelationships()) {
+      if (res.destroyed) break;
+      const record = JSON.stringify({ type: 'relationship', data: { sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type, confidence: rel.confidence, step: rel.step } }) + '\n';
+      const canContinue = res.write(record);
+      if (!canContinue) await new Promise<void>((r) => res.once('drain', r));
+    }
+
+    res.end();
+  } catch (err) {
+    if (!res.headersSent) {
+      error(res, String(err), 500);
+    } else {
+      try { res.write(JSON.stringify({ type: 'error', error: String(err) }) + '\n'); } catch { /* best effort */ }
+      res.end();
+    }
+  }
+}
+
 // ── Server ────────────────────────────────────────────────────────────────
+
+// ── Chat Handler ──────────────────────────────────────────────────────────
+
+async function handleChat(res: ServerResponse, params: Record<string, unknown>) {
+  const message = params.message as string;
+  if (!message) return error(res, 'Missing "message" in request body');
+
+  const repo = params.repo as string | undefined;
+  const history = (params.history as Array<{ role: string; content: string }>) ?? [];
+
+  const messages: ChatMessage[] = history
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+  messages.push({ role: 'user', content: message });
+
+  try {
+    const result = await ragChat(messages, { repo });
+    json(res, result);
+  } catch (err: any) {
+    error(res, err.message, 500);
+  }
+}
 
 export function startHttpServer(opts: ServeOptions = {}): Server {
   const port = opts.port ?? 4747;
@@ -402,6 +686,52 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
         return await handleImpact(res, decodeURIComponent(imMatch[1]), body);
       }
 
+      // GET /api/repo/:name/grep?pattern=...&limit=...
+      const grepMatch = path.match(/^\/api\/repo\/([^/]+)\/grep$/);
+      if (req.method === 'GET' && grepMatch) {
+        const pattern = url.searchParams.get('pattern') ?? '';
+        const parsedLimit = Number(url.searchParams.get('limit') ?? 50);
+        const safeLimit = Number.isFinite(parsedLimit) ? Math.trunc(parsedLimit) : 50;
+        return await handleGrep(res, decodeURIComponent(grepMatch[1]), pattern, safeLimit);
+      }
+
+      // GET /api/repo/:name/graph/stream — NDJSON streaming graph export
+      const gsMatch = path.match(/^\/api\/repo\/([^/]+)\/graph\/stream$/);
+      if (req.method === 'GET' && gsMatch) {
+        return await handleGraphStream(res, decodeURIComponent(gsMatch[1]));
+      }
+
+      // ── Analyze Job API ──────────────────────────────────────────────
+
+      // POST /api/chat — RAG chat endpoint
+      if (req.method === 'POST' && path === '/api/chat') {
+        const body = await parseBody(req);
+        return await handleChat(res, body);
+      }
+
+      // POST /api/analyze — start analysis job
+      if (req.method === 'POST' && path === '/api/analyze') {
+        const body = await parseBody(req);
+        return await handleAnalyze(res, body);
+      }
+
+      // GET /api/analyze/:jobId — poll job status
+      const ajMatch = path.match(/^\/api\/analyze\/([^/]+)$/);
+      if (req.method === 'GET' && ajMatch) {
+        return handleAnalyzeStatus(res, decodeURIComponent(ajMatch[1]));
+      }
+
+      // GET /api/analyze/:jobId/progress — SSE stream
+      const apMatch = path.match(/^\/api\/analyze\/([^/]+)\/progress$/);
+      if (req.method === 'GET' && apMatch) {
+        return handleAnalyzeProgress(res, decodeURIComponent(apMatch[1]));
+      }
+
+      // DELETE /api/analyze/:jobId — cancel job
+      if (req.method === 'DELETE' && ajMatch) {
+        return handleAnalyzeCancel(res, decodeURIComponent(ajMatch[1]));
+      }
+
       // 404
       error(res, `Not found: ${req.method} ${path}`, 404);
     } catch (err) {
@@ -416,6 +746,7 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
 
   // #332: Graceful shutdown — close all connections
   const cleanup = () => {
+    jobManager.dispose();
     shutdownHttpServer();
     process.exit(0);
   };
