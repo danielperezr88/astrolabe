@@ -164,6 +164,8 @@ export interface ParsedSymbol {
   isExported: boolean;
   /** Type annotations extracted from the AST (#376). E.g. { returnType: 'User' }. */
   typeAnnotations?: Record<string, string>;
+  /** #432: Additional symbol metadata (parameterTypes, returnType, visibility, isStatic, isAsync, isAbstract). */
+  properties?: Record<string, unknown>;
 }
 
 /** A single import relationship extracted from a source file. */
