@@ -35,6 +35,8 @@ export interface RepoGroup {
   repos: Record<string, GroupRepo>;
   /** Cross-repo contracts (populated by group sync). */
   contracts?: Record<string, unknown>;
+  /** When group_sync last ran (epoch ms). Null if never synced. */
+  lastSyncAt?: number;
 }
 
 export interface GroupsConfig {
@@ -50,10 +52,17 @@ export interface GroupStatus {
     repoName: string;
     stale: boolean;
     lastCommit?: string;
-    indexedAt?: number;
+    indexedAt?: string;
     nodeCount?: number;
     edgeCount?: number;
+    status: string;
   }>;
+  /** True when any member repo was re-analyzed after the last group sync. */
+  contractsStale: boolean;
+  /** ISO timestamp of the last group_sync, or null if never synced. */
+  lastSyncAt: string | null;
+  /** Suggestion to re-sync when contracts are stale. */
+  recommendation: string | null;
 }
 
 // ── Path resolution ────────────────────────────────────────────────────────
@@ -157,16 +166,22 @@ export function getGroupStatus(name: string): GroupStatus {
 
   const registry = loadRegistry();
   const repos: GroupStatus['repos'] = [];
+  let contractsStale = false;
+  const lastSyncAt = group.lastSyncAt != null
+    ? new Date(group.lastSyncAt).toISOString()
+    : null;
 
   for (const [path, gr] of Object.entries(group.repos)) {
     const entry = registry.find((r) => r.name === gr.repoName);
     if (!entry) {
-      repos.push({ path, repoName: gr.repoName, stale: true });
+      repos.push({ path, repoName: gr.repoName, stale: true, status: 'missing' });
+      contractsStale = true; // missing repo means contracts can't be verified
       continue;
     }
 
     // Check staleness via meta.json
     let stale = false;
+    let indexedAt: string | undefined;
     try {
       const metaPath = join(dirname(entry.dbPath), 'meta.json');
       if (existsSync(metaPath)) {
@@ -174,19 +189,42 @@ export function getGroupStatus(name: string): GroupStatus {
         if (entry.lastCommit && meta.lastCommit !== entry.lastCommit) {
           stale = true;
         }
+        if (meta.indexedAt != null) {
+          indexedAt = new Date(meta.indexedAt).toISOString();
+        }
       }
     } catch { stale = true; }
+
+    // If no indexedAt from meta.json, fall back to registry entry
+    if (indexedAt == null && entry.indexedAt != null) {
+      indexedAt = new Date(entry.indexedAt).toISOString();
+    }
+
+    // Contract staleness: repo was re-analyzed after last sync
+    if (group.lastSyncAt != null && entry.indexedAt != null) {
+      if (entry.indexedAt > group.lastSyncAt) {
+        contractsStale = true;
+      }
+    } else if (group.lastSyncAt == null && group.contracts != null) {
+      // Has contracts but was never synced — stale
+      contractsStale = true;
+    }
 
     repos.push({
       path,
       repoName: gr.repoName,
       stale,
       lastCommit: entry.lastCommit,
-      indexedAt: entry.indexedAt,
+      indexedAt,
+      status: stale ? 'stale' : 'current',
     });
   }
 
-  return { name, repoCount: repos.length, repos };
+  const recommendation = contractsStale
+    ? 'Run group_sync to update contracts'
+    : null;
+
+  return { name, repoCount: repos.length, repos, contractsStale, lastSyncAt, recommendation };
 }
 
 /**

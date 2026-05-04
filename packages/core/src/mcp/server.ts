@@ -108,6 +108,54 @@ function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEn
   };
 }
 
+// ── Context boosting helpers ───────────────────────────────────────────────
+
+/** Extract lower-cased key terms from a context/goal string. */
+function extractKeyTerms(text: string): string[] {
+  const stopWords = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+    'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+    'could', 'should', 'may', 'might', 'shall', 'can', 'need', 'dare',
+    'it', 'its', 'this', 'that', 'these', 'those', 'i', 'me', 'my',
+    'we', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her',
+    'they', 'them', 'their', 'what', 'which', 'who', 'whom', 'where',
+    'when', 'how', 'not', 'no', 'nor', 'if', 'then', 'else', 'so',
+    'as', 'than', 'too', 'very', 'just', 'about', 'above', 'after',
+    'before', 'between', 'into', 'through', 'during', 'here', 'there',
+    'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+    'some', 'such', 'only', 'own', 'same', 'also', 'find', 'where',
+    'looking', 'trying', 'want', 'get', 'show', 'tell', 'know',
+  ]);
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter((t) => t.length > 1 && !stopWords.has(t));
+}
+
+/** Boost FTS results whose name/filePath match context/goal terms. */
+function boostResults<T extends { name: string; filePath: string; score: number }>(
+  results: T[],
+  taskContext?: string,
+  goal?: string,
+): void {
+  if (!taskContext && !goal) return;
+  const contextTerms = extractKeyTerms(`${taskContext ?? ''} ${goal ?? ''}`);
+  if (contextTerms.length === 0) return;
+
+  for (const result of results) {
+    let boost = 0;
+    const nameLower = result.name.toLowerCase();
+    const pathLower = result.filePath.toLowerCase();
+    for (const term of contextTerms) {
+      if (nameLower.includes(term)) boost += 0.1;
+      if (pathLower.includes(term)) boost += 0.05;
+    }
+    result.score *= (1 + Math.min(boost, 0.5)); // cap at 50% boost
+  }
+  results.sort((a, b) => b.score - a.score);
+}
+
 // ── Backend ────────────────────────────────────────────────────────────────
 
 class LocalBackend {
@@ -204,7 +252,7 @@ class LocalBackend {
   }
 
   /** #401: Query across group repos with optional service filtering. */
-  queryGroup(query: string, repoParam: string, service?: string, limit = 20) {
+  queryGroup(query: string, repoParam: string, service?: string, limit = 20, taskContext?: string, goal?: string) {
     const { contexts, groupName } = this.resolveGroupRepos(repoParam);
     const allResults: Array<{
       repoName: string;
@@ -214,7 +262,7 @@ class LocalBackend {
     }> = [];
 
     for (const { repo, memberPath } of contexts) {
-      const result = this.query(query, repo.entry.name, limit);
+      const result = this.query(query, repo.entry.name, limit, taskContext, goal);
 
       // #402: Filter by service path if provided
       if (service) {
@@ -270,10 +318,13 @@ class LocalBackend {
   }
 
 
-  query(query: string, repo?: string, limit = 20) {
+  query(query: string, repo?: string, limit = 20, taskContext?: string, goal?: string) {
     const ctx = this.getRepo(repo);
     const results = ctx.fts.search(query, limit);
     if (results.length === 0) return { definitions: [], processes: [], process_symbols: [] };
+
+    // Boost results based on task_context and goal keywords
+    boostResults(results, taskContext, goal);
 
     // Load graph for process grouping
     const graph = ctx.loadGraph();
@@ -784,6 +835,8 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
         limit: { type: 'number', description: 'Max results', default: 20 },
         repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode. Omit if only one repo indexed.' },
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
+        task_context: { type: 'string', description: 'Context about the current task (e.g., "debugging auth flow")' },
+        goal: { type: 'string', description: 'What the search aims to find (e.g., "find where tokens are validated")' },
       },
       required: ['query'],
     },
@@ -793,12 +846,14 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
       const query = requireString(params, 'query');
       const repo = params.repo as string | undefined;
       const service = params.service as string | undefined;
+      const taskContext = params.task_context as string | undefined;
+      const goal = params.goal as string | undefined;
       let result: unknown;
 
       if (repo?.startsWith('@')) {
-        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20));
+        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
       } else {
-        result = backend.query(query, repo, requireNumber(params, 'limit', 20));
+        result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
       }
 
       timer.mark('search');
@@ -1480,12 +1535,19 @@ function getResources() {
     { uri: 'astrolabe://setup', name: 'Astrolabe Setup Content', description: 'Returns AGENTS.md content for all indexed repos. Useful for setup/onboarding.', mimeType: 'text/markdown' },
     { uri: 'astrolabe://repo/{name}/context', name: 'Repo Context', description: 'Codebase overview, stats, staleness check', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/clusters', name: 'Clusters', description: 'All functional clusters with cohesion scores', mimeType: 'text/plain' },
-    { uri: 'astrolabe://repo/{name}/cluster/{clusterName}', name: 'Cluster Detail', description: 'Cluster members and dependency details', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/processes', name: 'Processes', description: 'All execution flows', mimeType: 'text/plain' },
-    { uri: 'astrolabe://repo/{name}/process/{processName}', name: 'Process Trace', description: 'Full process trace with steps', mimeType: 'text/plain' },
     { uri: 'astrolabe://repo/{name}/schema', name: 'Graph Schema', description: 'Node labels and relationship types', mimeType: 'text/plain' },
-    { uri: 'astrolabe://group/{name}/contracts', name: 'Group Contract Registry', description: 'Cross-repo contract registry for a repository group. Optional query: type, repo, unmatchedOnly (true|false).', mimeType: 'text/yaml' },
-    { uri: 'astrolabe://group/{name}/status', name: 'Group Index Status', description: 'Per-repo index and contract-registry staleness for a repository group', mimeType: 'text/yaml' },
+  ];
+}
+
+// ── Resource Templates (per-entity deep-dive) ────────────────────────────────
+
+function getResourceTemplates() {
+  return [
+    { uriTemplate: 'astrolabe://repo/{name}/cluster/{clusterId}', name: 'Cluster Details', description: 'Cluster members, cohesion score, entry points, and key symbols', mimeType: 'text/plain' },
+    { uriTemplate: 'astrolabe://repo/{name}/process/{processId}', name: 'Process Trace', description: 'Step-by-step execution trace with symbols and edges', mimeType: 'text/plain' },
+    { uriTemplate: 'astrolabe://group/{name}/contracts', name: 'Group Contracts', description: 'Cross-repo contract registry with providers, consumers, and cross-links', mimeType: 'text/yaml' },
+    { uriTemplate: 'astrolabe://group/{name}/status', name: 'Group Status', description: 'Per-repo index staleness and contract-registry status', mimeType: 'text/yaml' },
   ];
 }
 
@@ -1520,30 +1582,67 @@ function readResource(uri: string): string | null {
     } catch { return null; }
   }
 
-  // astrolabe://repo/{name}/cluster/{clusterName}
+  // astrolabe://repo/{name}/cluster/{clusterId}
   const ccMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/cluster\/(.+)$/);
   if (ccMatch) {
     try {
       const ctx = backend.getRepo(ccMatch[1]);
       const graph = ctx.loadGraph();
-      const clusterName = ccMatch[2];
+      const clusterId = ccMatch[2];
       const members: string[] = [];
+      const memberIds = new Set<string>();
       let cohesion = 0;
+      let clusterLabel = clusterId;
       for (const node of graph.iterNodes()) {
         if (node.label !== 'Community') continue;
-        if ((node.properties.name === clusterName || node.id.includes(clusterName)) && node.properties.name) {
+        if (node.id === clusterId || node.properties.name === clusterId || node.id.includes(clusterId)) {
+          if (!node.properties.name) continue;
+          clusterLabel = (node.properties.name as string) ?? clusterId;
           cohesion = (node.properties.cohesion as number) ?? 0;
           for (const rel of graph.iterRelationships()) {
             if (rel.type === 'MEMBER_OF' && rel.targetId === node.id) {
               const sym = graph.getNode(rel.sourceId);
-              if (sym) members.push(`- ${sym.label.padEnd(12)} ${sym.properties.name ?? '?'} (${sym.properties.filePath ?? '?'})`);
+              if (sym) {
+                members.push(`- ${sym.label.padEnd(12)} ${sym.properties.name ?? '?'} (${sym.properties.filePath ?? '?'})`);
+                memberIds.add(sym.id);
+              }
             }
           }
           break;
         }
       }
-      if (members.length === 0) return `Cluster "${clusterName}" not found.`;
-      return `Cluster: ${clusterName}\nCohesion: ${cohesion}\nMembers:\n${members.join('\n')}`;
+      if (members.length === 0) return `Cluster "${clusterId}" not found.`;
+
+      // Entry points: cluster members that are process entry points
+      const entryPoints: string[] = [];
+      for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) {
+        if (memberIds.has(rel.sourceId)) {
+          const sym = graph.getNode(rel.sourceId);
+          if (sym) entryPoints.push(`- ${sym.properties.name ?? sym.id} (${sym.label} — ${sym.properties.filePath ?? '?'})`);
+        }
+      }
+
+      // Key symbols: members with most intra-cluster connections
+      const connCount = new Map<string, number>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (memberIds.has(rel.sourceId) && memberIds.has(rel.targetId)) {
+          connCount.set(rel.sourceId, (connCount.get(rel.sourceId) ?? 0) + 1);
+          connCount.set(rel.targetId, (connCount.get(rel.targetId) ?? 0) + 1);
+        }
+      }
+      const keySymbols = Array.from(connCount.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([id, count]) => {
+          const sym = graph.getNode(id);
+          return `- ${sym?.properties.name ?? id} (${count} connections)`;
+        });
+
+      const parts = [`Cluster: ${clusterLabel}`, `Cohesion: ${cohesion}`, '', 'Members:', ...members];
+      if (entryPoints.length > 0) parts.push('', 'Entry Points:', ...entryPoints);
+      if (keySymbols.length > 0) parts.push('', 'Key Symbols:', ...keySymbols);
+      return parts.join('\n');
     } catch { return null; }
   }
 
@@ -1561,21 +1660,60 @@ function readResource(uri: string): string | null {
     } catch { return null; }
   }
 
-  // astrolabe://repo/{name}/process/{processName}
+  // astrolabe://repo/{name}/process/{processId}
   const ptMatch = uri.match(/^astrolabe:\/\/repo\/([^/]+)\/process\/(.+)$/);
   if (ptMatch) {
     try {
       const ctx = backend.getRepo(ptMatch[1]);
       const graph = ctx.loadGraph();
-      const steps: string[] = [];
+      const processId = ptMatch[2];
+      let processNode: GraphNode | undefined;
+      const steps: Array<{ step: number; name: string; label: string; filePath: string; id: string }> = [];
+
       for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
         const proc = graph.getNode(rel.sourceId);
-        if (proc && (proc.properties.name === ptMatch[2] || proc.id === ptMatch[2])) {
+        if (proc && (proc.id === processId || proc.properties.name === processId)) {
+          if (!processNode) processNode = proc;
           const sym = graph.getNode(rel.targetId);
-          steps.push(`Step ${rel.step ?? '?'}: ${sym?.properties.name ?? rel.targetId} (${sym?.label ?? '?'} — ${sym?.properties.filePath ?? '?'})`);
+          if (sym) {
+            steps.push({
+              step: rel.step ?? 0,
+              name: (sym.properties.name as string) ?? sym.id,
+              label: sym.label,
+              filePath: (sym.properties.filePath as string) ?? '?',
+              id: sym.id,
+            });
+          }
         }
       }
-      return steps.length === 0 ? 'Process not found.' : steps.sort((a, b) => parseInt(a.match(/Step (\d+)/)?.[1] ?? '0') - parseInt(b.match(/Step (\d+)/)?.[1] ?? '0')).join('\n');
+
+      if (steps.length === 0) return 'Process not found.';
+      steps.sort((a, b) => a.step - b.step);
+
+      // Find edges between step symbols
+      const stepIds = new Set(steps.map(s => s.id));
+      const edges: string[] = [];
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF') continue;
+        if (stepIds.has(rel.sourceId) && stepIds.has(rel.targetId)) {
+          const srcName = graph.getNode(rel.sourceId)?.properties.name ?? rel.sourceId;
+          const tgtName = graph.getNode(rel.targetId)?.properties.name ?? rel.targetId;
+          edges.push(`- ${srcName} → ${rel.type} → ${tgtName}`);
+        }
+      }
+
+      const processType = (processNode?.properties.processType as string) ?? 'intra_community';
+      const stepCount = (processNode?.properties.stepCount as number) ?? steps.length;
+      const parts = [
+        `Process: ${processNode?.properties.name ?? processId}`,
+        `Type: ${processType}`,
+        `Steps: ${stepCount}`,
+        '',
+        'Trace:',
+        ...steps.map(s => `Step ${s.step}: ${s.name} (${s.label} — ${s.filePath})`),
+      ];
+      if (edges.length > 0) parts.push('', 'Edges:', ...edges);
+      return parts.join('\n');
     } catch { return null; }
   }
 
@@ -1935,7 +2073,14 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
       return {
         jsonrpc: '2.0',
         id: req.id,
-        result: { resources: getResources() },
+        result: { resources: [...getResources(), ...getResourceTemplates()] },
+      };
+
+    case 'resources/templates/list':
+      return {
+        jsonrpc: '2.0',
+        id: req.id,
+        result: { resourceTemplates: getResourceTemplates() },
       };
 
     case 'resources/read': {

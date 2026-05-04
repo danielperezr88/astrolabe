@@ -703,6 +703,7 @@ export function syncGroupContracts(groupName: string): ContractSyncResult[] {
   const updatedGroup: RepoGroup = {
     ...group,
     contracts: contracts as unknown as Record<string, unknown>,
+    lastSyncAt: Date.now(),
   };
   config.groups[groupName] = updatedGroup;
   saveGroups(config);
@@ -803,6 +804,7 @@ export async function syncGroupContractsWithFuzzy(
     const updatedGroup: RepoGroup = {
       ...group,
       contracts: existing as unknown as Record<string, unknown>,
+      lastSyncAt: Date.now(),
     };
     config.groups[groupName] = updatedGroup;
     saveGroups(config);
