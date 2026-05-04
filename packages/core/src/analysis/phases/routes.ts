@@ -15,6 +15,8 @@ export interface RoutesOutput {
   routeCount: number;
   frameworks: string[];
   fetchesCount: number;
+  responseShapeCount: number;
+  middlewareCount: number;
 }
 
 // ── HTTP client detection patterns ─────────────────────────────────────────
@@ -65,6 +67,265 @@ const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegE
   { name: 'nextjs', regex: /export\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|DELETE|PATCH)\b/g, extract: (m) => ({ method: m[1], path: '[inferred]' }) },
 ];
 
+// ── Response shape extraction (#426) ────────────────────────────────────────
+
+/**
+ * Extract top-level key names from JSON response shapes in route handler code.
+ *
+ * Detects patterns like `res.json({...})`, `NextResponse.json({...})`,
+ * `jsonify({...})`, `return {...}`, etc. and extracts the top-level field names.
+ * Also detects error responses via `.status(4xx/5xx)` chaining.
+ */
+export function extractResponseKeys(code: string): { responseKeys: string[]; errorKeys: string[] } {
+  const responseKeys: string[] = [];
+  const errorKeys: string[] = [];
+
+  // ── Pattern 1: .json({...}) — catches res.json, NextResponse.json, chained .status(N).json ──
+  const jsonPattern = /\.json\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = jsonPattern.exec(code)) !== null) {
+    const afterParen = code.slice(match.index + match[0].length);
+    const keys = extractObjectLiteralKeys(afterParen);
+    // Look backwards for error status: .status(4xx) or .status(5xx)
+    const before = code.slice(Math.max(0, match.index - 80), match.index);
+    const isError = /\.status\s*\(\s*(?:4\d\d|5\d\d)\s*\)/.test(before);
+    for (const k of keys) {
+      if (isError) { if (!errorKeys.includes(k)) errorKeys.push(k); }
+      else { if (!responseKeys.includes(k)) responseKeys.push(k); }
+    }
+  }
+
+  // ── Pattern 2: res.send({...}) ──
+  const sendPattern = /\.send\s*\(/g;
+  while ((match = sendPattern.exec(code)) !== null) {
+    const afterParen = code.slice(match.index + match[0].length);
+    const keys = extractObjectLiteralKeys(afterParen);
+    const before = code.slice(Math.max(0, match.index - 80), match.index);
+    const isError = /\.status\s*\(\s*(?:4\d\d|5\d\d)\s*\)/.test(before);
+    for (const k of keys) {
+      if (isError) { if (!errorKeys.includes(k)) errorKeys.push(k); }
+      else { if (!responseKeys.includes(k)) responseKeys.push(k); }
+    }
+  }
+
+  // ── Pattern 3: jsonify({...}) — Flask ──
+  const jsonifyPattern = /\bjsonify\s*\(/g;
+  while ((match = jsonifyPattern.exec(code)) !== null) {
+    const afterParen = code.slice(match.index + match[0].length);
+    const keys = extractObjectLiteralKeys(afterParen);
+    for (const k of keys) {
+      if (!responseKeys.includes(k)) responseKeys.push(k);
+    }
+  }
+
+  // ── Pattern 4: return { ... } — bare object return ──
+  const returnPattern = /\breturn\s+\{/g;
+  while ((match = returnPattern.exec(code)) !== null) {
+    // Include the { that the regex consumed
+    const afterBrace = code.slice(match.index + match[0].length);
+    const keys = parseObjectLiteralContent(afterBrace);
+    for (const k of keys) {
+      if (!responseKeys.includes(k)) responseKeys.push(k);
+    }
+  }
+
+  return { responseKeys, errorKeys };
+}
+
+/**
+ * Find the first `{...}` in text and extract its top-level keys.
+ * Handles nested braces, brackets, parens, and string literals.
+ */
+function extractObjectLiteralKeys(text: string): string[] {
+  // Find the first opening brace
+  const braceIdx = text.indexOf('{');
+  if (braceIdx < 0) return [];
+  return parseObjectLiteralContent(text.slice(braceIdx + 1));
+}
+
+/**
+ * Parse top-level keys from object literal content (text after the opening `{`).
+ * Stops at the matching closing `}`.
+ */
+function parseObjectLiteralContent(text: string): string[] {
+  const keys: string[] = [];
+  let depth = 1;
+  let i = 0;
+  let keyStart = -1;
+  let inString: string | null = null;
+
+  while (i < text.length && depth > 0) {
+    const ch = text[i];
+
+    // Handle string literals
+    if (inString) {
+      if (ch === '\\') { i += 2; continue; }
+      if (ch === inString) inString = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; i++; continue; }
+
+    // Track depth
+    if (ch === '{') { depth++; i++; continue; }
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) break;
+      i++;
+      continue;
+    }
+    if (ch === '(' || ch === '[') {
+      const close = ch === '(' ? ')' : ']';
+      let d = 1;
+      i++;
+      while (i < text.length && d > 0) {
+        if (text[i] === ch) d++;
+        if (text[i] === close) d--;
+        i++;
+      }
+      continue;
+    }
+
+    // At depth 1, look for key: value pairs
+    if (depth === 1 && ch === ':') {
+      if (keyStart >= 0) {
+        const key = text.slice(keyStart, i).trim();
+        if (/^[\w$]+$/.test(key)) keys.push(key);
+        keyStart = -1;
+      }
+      // Skip the value until comma or closing brace at depth 1
+      i++;
+      let vd = 0;
+      let vs: string | null = null;
+      while (i < text.length) {
+        const vc = text[i];
+        if (vs) {
+          if (vc === '\\') { i += 2; continue; }
+          if (vc === vs) vs = null;
+          i++; continue;
+        }
+        if (vc === '"' || vc === "'" || vc === '`') { vs = vc; i++; continue; }
+        if (vc === '{' || vc === '(' || vc === '[') vd++;
+        if (vc === '}' || vc === ')' || vc === ']') {
+          if (vc === '}' && vd === 0) break;
+          vd--;
+        }
+        if (vc === ',' && vd === 0) break;
+        i++;
+      }
+      continue;
+    }
+
+    // Mark potential key start
+    if (depth === 1 && keyStart < 0 && /[\w$]/.test(ch)) {
+      keyStart = i;
+    }
+    i++;
+  }
+  return keys;
+}
+
+// ── Middleware extraction (#427) ─────────────────────────────────────────────
+
+/** Common identifiers that are NOT middleware (request/response params). */
+const PARAM_IDENTS = new Set(['req', 'res', 'next', 'request', 'response', 'ctx', 'context']);
+/** Built-in identifiers that should not be treated as middleware wrappers. */
+const BUILTIN_IDENTS = new Set(['require', 'import', 'Promise', 'setTimeout', 'setInterval', 'async', 'String', 'Number', 'Boolean', 'Array', 'Object', 'Map', 'Set', 'JSON', 'Math', 'Date']);
+
+/**
+ * Extract middleware names from route definitions and handler wrappers.
+ *
+ * 1. Express: `app.get(path, mw1, mw2, handler)` — identifier args are middleware
+ * 2. Higher-order: `withAuth(handler)`, `withRateLimit(handler)`
+ */
+export function extractMiddlewareNames(code: string): string[] {
+  const middleware: string[] = [];
+
+  // Express: app.get/post/put/delete/patch('path', mw1, mw2, ..., handler)
+  // The regex matches up to and including the closing quote of the path string.
+  // After that we need the remaining args until the matching closing paren.
+  const expressRoutePattern = /\b(?:app|router)\.(?:get|post|put|delete|patch)\s*\(\s*['"][^'"]+['"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = expressRoutePattern.exec(code)) !== null) {
+    const afterPath = code.slice(match.index + match[0].length);
+    // We're already inside one level of parens (the opening `(` was in the regex).
+    // Scan forward to find the matching closing `)`.
+    const argsText = extractRemainingArgs(afterPath);
+    const args = splitTopLevelArgs(argsText);
+    for (const arg of args) {
+      const trimmed = arg.trim();
+      if (/^[$\w]+$/.test(trimmed) && !PARAM_IDENTS.has(trimmed)) {
+        if (!middleware.includes(trimmed)) middleware.push(trimmed);
+      }
+    }
+  }
+
+  // Higher-order function wrappers: withAuth(handler), withRateLimit(handler)
+  const wrapperPattern = /(\w+)\s*\(\s*(?:async\s*)?(?:function\s+\w+|(?:\([^)]*\)|[$\w]+)\s*(?:=>|\{)|[$\w]+Handler|[$\w]+Controller)/g;
+  while ((match = wrapperPattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !BUILTIN_IDENTS.has(name) && !PARAM_IDENTS.has(name)) {
+      if (!middleware.includes(name)) middleware.push(name);
+    }
+  }
+
+  return middleware;
+}
+
+/**
+ * Given text that starts right after the path string in `app.get('path'...`,
+ * extract all content until the matching closing `)`.
+ * Since the opening `(` was already consumed, we track depth from 0 and
+ * return text up to the first unmatched `)`.
+ */
+function extractRemainingArgs(text: string): string {
+  let depth = 0;
+  let inStr: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      if (ch === ')' && depth === 0) return text.slice(0, i);
+      depth--;
+    }
+  }
+  return text;
+}
+
+/** Split comma-separated args respecting nested parens/brackets/braces. */
+function splitTopLevelArgs(text: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let inStr: string | null = null;
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      current += ch;
+      if (ch === '\\') { if (i + 1 < text.length) current += text[++i]; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; current += ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; current += ch; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; current += ch; continue; }
+    if (ch === ',' && depth === 0) {
+      args.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) args.push(current);
+  return args;
+}
+
 export const routesPhase: PhaseDefinition<RoutesOutput> = {
   name: 'routes',
   dependencies: ['parse-emit'],
@@ -88,6 +349,14 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
 
       try {
         const content = await readFile(join(context.repoPath, fp), 'utf-8');
+
+        // #426: Extract response shapes from file content
+        const { responseKeys, errorKeys } = extractResponseKeys(content);
+        // #427: Extract middleware names from route definitions
+        const middleware = extractMiddlewareNames(content);
+        // #427: Check for Next.js middleware.ts/js file
+        const hasMiddleware = /\bmiddleware\.(ts|js)\b/.test(fp);
+
         for (const fw of FRAMEWORK_PATTERNS) {
           let match;
           while ((match = fw.regex.exec(content)) !== null) {
@@ -98,7 +367,11 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
 
             graph.addNode({
               id: routeId, label: 'Route',
-              properties: { name: `${method} ${path}`, filePath: fp, method, path, framework: fw.name },
+              properties: {
+                name: `${method} ${path}`, filePath: fp, method, path, framework: fw.name,
+                responseKeys, errorKeys, middleware,
+                hasMiddleware: hasMiddleware || undefined,
+              },
             });
             graph.addRelationship({
               id: `route:file:${routeId}:${node.id}`, sourceId: node.id, targetId: routeId,
@@ -190,6 +463,18 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       }
     }
 
-    return { routeCount, frameworks: Array.from(frameworks), fetchesCount };
+    // ── Aggregate response shape and middleware counts (#426, #427) ──────────
+    let responseShapeCount = 0;
+    let middlewareCount = 0;
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Route') continue;
+      const rk = node.properties.responseKeys as string[] | undefined;
+      const ek = node.properties.errorKeys as string[] | undefined;
+      const mw = node.properties.middleware as string[] | undefined;
+      if ((rk && rk.length > 0) || (ek && ek.length > 0)) responseShapeCount++;
+      if (mw && mw.length > 0) middlewareCount++;
+    }
+
+    return { routeCount, frameworks: Array.from(frameworks), fetchesCount, responseShapeCount, middlewareCount };
   },
 };

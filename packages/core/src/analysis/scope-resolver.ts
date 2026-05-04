@@ -201,10 +201,313 @@ const pythonResolver: ScopeResolver = {
   },
 };
 
+// ── TypeScript resolver (#283) ──────────────────────────────────────────────
+
+const typescriptResolver: ScopeResolver = {
+  name: 'typescript',
+  ...defaultResolver as any,
+
+  populateOwners(index: ScopeResolutionIndex, graph: KnowledgeGraph): void {
+    const nodesByFile = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      const fp = node.properties.filePath as string;
+      if (fp) {
+        let arr = nodesByFile.get(fp);
+        if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+        arr.push(node);
+      }
+    }
+
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Class') continue;
+      const name = (node.properties.name as string) ?? '';
+      const fp = (node.properties.filePath as string) ?? '';
+      const parentClass = (node.properties.parentClass as string) ?? '';
+      const interfaces = (node.properties.interfaces as string[]) ?? [];
+
+      if (!index.classScopes.has(node.id)) {
+        index.classScopes.set(node.id, {
+          className: name,
+          filePath: fp,
+          methods: [],
+          superClasses: [...(parentClass ? [parentClass] : []), ...interfaces],
+        });
+      }
+
+      const fileNodes = nodesByFile.get(fp) ?? [];
+      for (const method of fileNodes) {
+        if (method.label === 'Method'
+            && method.properties.parentClass === name) {
+          index.classScopes.get(node.id)!.methods.push({
+            name: (method.properties.name as string) ?? '',
+            nodeId: method.id,
+          });
+        }
+      }
+    }
+  },
+
+  buildMro(classScope: ClassScope, index: ScopeResolutionIndex): string[] {
+    // TypeScript: single inheritance (extends) + implements — linear chain
+    const mro = [classScope.className];
+    for (const superName of classScope.superClasses) {
+      if (!mro.includes(superName)) mro.push(superName);
+      // Walk up hierarchy via classScopes
+      for (const [, scope] of index.classScopes) {
+        if (scope.className === superName) {
+          for (const parent of scope.superClasses) {
+            if (!mro.includes(parent)) mro.push(parent);
+          }
+        }
+      }
+    }
+    return mro;
+  },
+
+  resolveImportTarget(importSpec: string, _fromFile: string, index: ScopeResolutionIndex): { filePath?: string; symbols: string[] } {
+    const symbols: string[] = [];
+
+    // Relative imports: ./module or ../module → resolve to file path
+    let resolved = importSpec;
+    if (resolved.startsWith('./') || resolved.startsWith('../')) {
+      resolved = resolved.replace(/^\.\//, '').replace(/^\.\.\//, '');
+      // Strip extension if present
+      resolved = resolved.replace(/\.(ts|tsx|js|jsx)$/, '');
+    }
+    // Path aliases: @/ prefix → strip and resolve
+    else if (resolved.startsWith('@/')) {
+      resolved = resolved.replace(/^@\//, '');
+    }
+    // Bare specifier → strip extension
+    else {
+      resolved = resolved.replace(/\.(ts|tsx|js|jsx)$/, '');
+    }
+
+    for (const binding of index.typeBindings.values()) {
+      if (binding.filePath.includes(resolved)) {
+        symbols.push(binding.symbolName);
+      }
+    }
+
+    // Fallback: match by symbol name for bare specifiers
+    if (symbols.length === 0) {
+      for (const binding of index.typeBindings.values()) {
+        if (binding.symbolName === importSpec) {
+          symbols.push(binding.symbolName);
+        }
+      }
+    }
+
+    return { symbols };
+  },
+
+  arityCompatibility(a: number, b: number): boolean {
+    // TypeScript allows optional params — tolerate small arity differences
+    return Math.abs(a - b) <= 2;
+  },
+};
+
+// ── Java resolver (#283) ────────────────────────────────────────────────────
+
+const javaResolver: ScopeResolver = {
+  name: 'java',
+  ...defaultResolver as any,
+
+  populateOwners(index: ScopeResolutionIndex, graph: KnowledgeGraph): void {
+    const nodesByFile = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      const fp = node.properties.filePath as string;
+      if (fp) {
+        let arr = nodesByFile.get(fp);
+        if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+        arr.push(node);
+      }
+    }
+
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Class') continue;
+      const name = (node.properties.name as string) ?? '';
+      const fp = (node.properties.filePath as string) ?? '';
+      const parentClass = (node.properties.parentClass as string) ?? '';
+
+      if (!index.classScopes.has(node.id)) {
+        index.classScopes.set(node.id, {
+          className: name,
+          filePath: fp,
+          methods: [],
+          superClasses: parentClass ? [parentClass] : [],
+        });
+      }
+
+      const fileNodes = nodesByFile.get(fp) ?? [];
+      for (const method of fileNodes) {
+        if (method.label === 'Method'
+            && method.properties.parentClass === name) {
+          index.classScopes.get(node.id)!.methods.push({
+            name: (method.properties.name as string) ?? '',
+            nodeId: method.id,
+          });
+        }
+      }
+    }
+  },
+
+  buildMro(classScope: ClassScope, index: ScopeResolutionIndex): string[] {
+    // Java: single inheritance — walk up via classScopes
+    const mro = [classScope.className];
+    let current = classScope;
+    while (current.superClasses.length > 0) {
+      const parentName = current.superClasses[0];
+      if (!parentName || mro.includes(parentName)) break;
+      mro.push(parentName);
+      // Find parent class scope
+      let found = false;
+      for (const [, scope] of index.classScopes) {
+        if (scope.className === parentName) {
+          current = scope;
+          found = true;
+          break;
+        }
+      }
+      if (!found) break;
+    }
+    return mro;
+  },
+
+  resolveImportTarget(importSpec: string, _fromFile: string, index: ScopeResolutionIndex): { filePath?: string; symbols: string[] } {
+    const symbols: string[] = [];
+
+    // Java uses package paths: com.example.Service → find file containing that path
+    const pathForm = importSpec.replace(/\./g, '/');
+
+    for (const binding of index.typeBindings.values()) {
+      if (binding.filePath.includes(pathForm)) {
+        symbols.push(binding.symbolName);
+      }
+    }
+
+    // Fallback: match by symbol name (last segment of package path)
+    if (symbols.length === 0) {
+      const lastSegment = importSpec.split('.').pop() ?? importSpec;
+      for (const binding of index.typeBindings.values()) {
+        if (binding.symbolName === lastSegment) {
+          symbols.push(binding.symbolName);
+        }
+      }
+    }
+
+    return { symbols };
+  },
+
+  // Java has strict arity — uses defaultResolver exact match
+};
+
+// ── C# resolver (#283) ──────────────────────────────────────────────────────
+
+const csharpResolver: ScopeResolver = {
+  name: 'csharp',
+  ...defaultResolver as any,
+
+  populateOwners(index: ScopeResolutionIndex, graph: KnowledgeGraph): void {
+    const nodesByFile = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      const fp = node.properties.filePath as string;
+      if (fp) {
+        let arr = nodesByFile.get(fp);
+        if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+        arr.push(node);
+      }
+    }
+
+    for (const node of graph.iterNodes()) {
+      if (node.label !== 'Class') continue;
+      const name = (node.properties.name as string) ?? '';
+      const fp = (node.properties.filePath as string) ?? '';
+      const parentClass = (node.properties.parentClass as string) ?? '';
+
+      if (!index.classScopes.has(node.id)) {
+        index.classScopes.set(node.id, {
+          className: name,
+          filePath: fp,
+          methods: [],
+          superClasses: parentClass ? [parentClass] : [],
+        });
+      }
+
+      const fileNodes = nodesByFile.get(fp) ?? [];
+      for (const method of fileNodes) {
+        if (method.label === 'Method'
+            && method.properties.parentClass === name) {
+          index.classScopes.get(node.id)!.methods.push({
+            name: (method.properties.name as string) ?? '',
+            nodeId: method.id,
+          });
+        }
+      }
+    }
+  },
+
+  buildMro(classScope: ClassScope, index: ScopeResolutionIndex): string[] {
+    // C#: single inheritance — walk up hierarchy via classScopes
+    const mro = [classScope.className];
+    let current = classScope;
+    while (current.superClasses.length > 0) {
+      const parentName = current.superClasses[0];
+      if (!parentName || mro.includes(parentName)) break;
+      mro.push(parentName);
+      let found = false;
+      for (const [, scope] of index.classScopes) {
+        if (scope.className === parentName) {
+          current = scope;
+          found = true;
+          break;
+        }
+      }
+      if (!found) break;
+    }
+    return mro;
+  },
+
+  resolveImportTarget(importSpec: string, _fromFile: string, index: ScopeResolutionIndex): { filePath?: string; symbols: string[] } {
+    const symbols: string[] = [];
+
+    // C# uses namespace paths: MyApp.Services.UserService → find file
+    const pathForm = importSpec.replace(/\./g, '/');
+
+    for (const binding of index.typeBindings.values()) {
+      if (binding.filePath.includes(pathForm)) {
+        symbols.push(binding.symbolName);
+      }
+    }
+
+    // Fallback: match by symbol name (last segment)
+    if (symbols.length === 0) {
+      const lastSegment = importSpec.split('.').pop() ?? importSpec;
+      for (const binding of index.typeBindings.values()) {
+        if (binding.symbolName === lastSegment) {
+          symbols.push(binding.symbolName);
+        }
+      }
+    }
+
+    return { symbols };
+  },
+
+  arityCompatibility(a: number, b: number): boolean {
+    // C# supports optional params (default values) — heuristic: allow ±1 arity difference
+    return Math.abs(a - b) <= 1;
+  },
+};
+
 // ── Registered resolvers ───────────────────────────────────────────────────
 
 export const SCOPE_RESOLVERS = new Map<SupportedLanguage, ScopeResolver>([
   ['python', pythonResolver],
+  ['typescript', typescriptResolver],
+  ['javascript', typescriptResolver],
+  ['tsx', typescriptResolver],
+  ['java', javaResolver],
+  ['csharp', csharpResolver],
 ]);
 
 // ── Index builder ──────────────────────────────────────────────────────────
