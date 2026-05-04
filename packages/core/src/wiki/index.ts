@@ -6,7 +6,7 @@
  * for basic offline mode.
  */
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import type { KnowledgeGraph } from '../core/types.js';
@@ -30,6 +30,12 @@ export interface WikiOptions {
   apiKey?: string;
   /** Force full regeneration (clears existing wiki). */
   force?: boolean;
+  /** Stop after module tree creation (review mode). */
+  review?: boolean;
+  /** Resume from edited module tree. */
+  resume?: boolean;
+  /** Publish wiki to GitHub Gist after generation. */
+  gist?: boolean;
 }
 
 const WIKI_META_FILE = 'meta.json';
@@ -88,6 +94,8 @@ export interface WikiResult {
   overviewPath: string;
   /** Path to the self-contained HTML viewer (#435). */
   htmlPath: string;
+  /** URL of the published GitHub Gist (set when gist option is used). */
+  gistUrl?: string;
 }
 
 function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
@@ -156,26 +164,64 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
 
   if (!existsSync(wikiDir)) mkdirSync(wikiDir, { recursive: true });
 
-  // Collect communities and their symbols
+  // Build communities from module tree (resume) or graph
   const communities = new Map<string, string[]>();
-  const memberOf = new Map<string, string>();
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'MEMBER_OF') {
-      const target = graph.getNode(rel.targetId);
-      if (target) memberOf.set(rel.sourceId, (target.properties.name as string) ?? target.id);
-    }
-  }
+  let prebuiltModuleFiles: Record<string, string[]> | null = null;
 
-  for (const node of graph.iterNodes()) {
-    if (node.label === 'Community') {
-      const name = (node.properties.name as string) ?? node.id;
-      if (!communities.has(name)) communities.set(name, []);
-    } else if (['Function', 'Class', 'Method', 'Interface'].includes(node.label)) {
-      const cName = memberOf.get(node.id);
-      if (cName) {
-        if (!communities.has(cName)) communities.set(cName, []);
-        communities.get(cName)!.push((node.properties.name as string) ?? node.id);
+  if (opts.resume) {
+    const treePath = join(wikiDir, 'module_tree.json');
+    if (!existsSync(treePath)) {
+      throw new Error('[wiki] Cannot resume: module_tree.json not found. Run with --review first.');
+    }
+    const tree = JSON.parse(readFileSync(treePath, 'utf-8')) as {
+      modules: Record<string, { symbols: string[]; files: string[] }>;
+    };
+    const loadedFiles: Record<string, string[]> = {};
+    for (const [modName, data] of Object.entries(tree.modules)) {
+      communities.set(modName, data.symbols);
+      loadedFiles[modName] = data.files;
+    }
+    prebuiltModuleFiles = loadedFiles;
+  } else {
+    const memberOf = new Map<string, string>();
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'MEMBER_OF') {
+        const target = graph.getNode(rel.targetId);
+        if (target) memberOf.set(rel.sourceId, (target.properties.name as string) ?? target.id);
       }
+    }
+
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'Community') {
+        const name = (node.properties.name as string) ?? node.id;
+        if (!communities.has(name)) communities.set(name, []);
+      } else if (['Function', 'Class', 'Method', 'Interface'].includes(node.label)) {
+        const cName = memberOf.get(node.id);
+        if (cName) {
+          if (!communities.has(cName)) communities.set(cName, []);
+          communities.get(cName)!.push((node.properties.name as string) ?? node.id);
+        }
+      }
+    }
+
+    // Review mode: write module tree and return early
+    if (opts.review) {
+      const moduleTreeData: Record<string, { symbols: string[]; files: string[] }> = {};
+      for (const [modName, symbols] of communities) {
+        const filesForModule: string[] = [];
+        for (const symbol of symbols) {
+          const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
+          if (symbolNode?.properties?.sourceFile) {
+            const sourceFile = symbolNode.properties.sourceFile as string;
+            if (!filesForModule.includes(sourceFile)) filesForModule.push(sourceFile);
+          }
+        }
+        moduleTreeData[modName] = { symbols, files: filesForModule };
+      }
+      const treePath = join(wikiDir, 'module_tree.json');
+      writeFileSync(treePath, JSON.stringify({ modules: moduleTreeData }, null, 2), 'utf-8');
+      console.log('[wiki] Review mode: module tree written to .astrolabe/wiki/module_tree.json. Edit and re-run with --resume.');
+      return { pageCount: 0, moduleCount: communities.size, overviewPath: '', htmlPath: '' };
     }
   }
 
@@ -218,14 +264,19 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
     if (modulesToRegenerate !== null && !modulesToRegenerate.includes(name)) continue;
 
     // Collect source files for this module's symbols
-    const filesForModule: string[] = [];
-    for (const symbol of symbols) {
-      const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
-      if (symbolNode?.properties?.sourceFile) {
-        const sourceFile = symbolNode.properties.sourceFile as string;
-        if (!filesForModule.includes(sourceFile)) filesForModule.push(sourceFile);
-      }
-    }
+    const filesForModule: string[] = prebuiltModuleFiles && prebuiltModuleFiles[name]
+      ? prebuiltModuleFiles[name]
+      : (() => {
+          const files: string[] = [];
+          for (const symbol of symbols) {
+            const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
+            if (symbolNode?.properties?.sourceFile) {
+              const sourceFile = symbolNode.properties.sourceFile as string;
+              if (!files.includes(sourceFile)) files.push(sourceFile);
+            }
+          }
+          return files;
+        })();
     moduleFilesMap[name] = filesForModule;
 
     const description = await generateModuleDescription(name, symbols, opts);
@@ -277,5 +328,30 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
   // Generate self-contained HTML viewer (#435)
   const htmlPath = generateHtmlViewer(wikiDir, opts.repoName);
 
-  return { pageCount, moduleCount: communities.size, overviewPath: join(wikiDir, 'README.md'), htmlPath };
+  // Gist publishing
+  let gistUrl: string | undefined;
+  if (opts.gist) {
+    try {
+      const wikiFiles = readdirSync(wikiDir)
+        .filter((f) => f.endsWith('.md') || f.endsWith('.html'))
+        .map((f) => join(wikiDir, f));
+      if (wikiFiles.length > 0) {
+        const gistArgs = wikiFiles.map((f) => `"${f}"`).join(' ');
+        const output = execSync(`gh gist create ${gistArgs}`, {
+          encoding: 'utf-8',
+          cwd: opts.repoPath,
+        }).trim();
+        const urlMatch = output.match(/https:\/\/gist\.github\.com\/\S+/);
+        if (urlMatch) {
+          gistUrl = urlMatch[0];
+          console.log(`[wiki] Published to GitHub Gist: ${gistUrl}`);
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[wiki] Gist publishing failed: ${msg}`);
+    }
+  }
+
+  return { pageCount, moduleCount: communities.size, overviewPath: join(wikiDir, 'README.md'), htmlPath, gistUrl };
 }

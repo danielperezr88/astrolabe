@@ -646,7 +646,10 @@ program.command('wiki <repoPath>')
   .option('--model <model>', 'LLM model name', 'gpt-4o-mini')
   .option('--base-url <url>', 'LLM API base URL')
   .option('--force', 'Force full regeneration of wiki')
-  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; force?: boolean }) => {
+  .option('--review', 'Stop after module tree creation for review (#452)')
+  .option('--resume', 'Resume from edited module tree (#452)')
+  .option('--gist', 'Publish wiki to GitHub Gist after generation (#452)')
+  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; force?: boolean; review?: boolean; resume?: boolean; gist?: boolean }) => {
     const repoName = repoPath.split('/').pop() || repoPath;
     const dbPath = join(repoPath, '.astrolabe', 'astrolabe.db');
 
@@ -663,10 +666,14 @@ program.command('wiki <repoPath>')
     const result = await generateWiki({
       repoPath, repoName, graph,
       model: opts.model, baseUrl: opts.baseUrl, force: opts.force,
+      review: opts.review, resume: opts.resume, gist: opts.gist,
     });
 
     console.log(`Wiki generated: ${result.pageCount} pages, ${result.moduleCount} modules`);
     console.log(`Overview: ${result.overviewPath}`);
+    if (result.gistUrl) {
+      console.log(`Gist: ${result.gistUrl}`);
+    }
   });
 
 program.parse();
