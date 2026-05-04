@@ -7,6 +7,7 @@ import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
@@ -15,7 +16,7 @@ import {
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
-  loadRegistry, saveRegistry,
+  loadRegistry, saveRegistry, removeRepo,
   generateSkill,
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
@@ -258,6 +259,55 @@ program
   .action(() => {
     if (existsSync('.astrolabe')) { rmSync('.astrolabe', { recursive: true, force: true }); console.log('Removed .astrolabe directory.'); }
     else { console.log('No .astrolabe directory found.'); }
+  });
+
+// ── remove ────────────────────────────────────────────────────────────────────
+program
+  .command('remove <target>')
+  .description('Unregister a repo from the global registry by name or path')
+  .option('--purge', 'Also remove the .astrolabe directory from the repo')
+  .option('--force', 'Skip confirmation prompt')
+  .action(async (target: string, opts: { purge?: boolean; force?: boolean }) => {
+    // Find matching entry without modifying the registry
+    const repos = loadRegistry();
+    const normalized = target.replace(/[/\\]+$/, '');
+    const absTarget = resolve(normalized);
+    const match = repos.find(
+      (e) => e.name === normalized || e.path === normalized || e.path === absTarget,
+    );
+    if (!match) {
+      console.log(`No registered repo matching "${target}" found.`);
+      return;
+    }
+
+    console.log(`Found: ${match.name} (${match.path})`);
+
+    // Confirmation prompt (skip with --force)
+    if (!opts.force) {
+      const answer = await new Promise<string>((res) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question('Remove from registry? [y/N] ', (ans) => { rl.close(); res(ans.trim().toLowerCase()); });
+      });
+      if (answer !== 'y' && answer !== 'yes') {
+        console.log('Cancelled.');
+        return;
+      }
+    }
+
+    const removed = removeRepo(target);
+    if (removed) {
+      console.log(`Removed "${removed.name}" from registry.`);
+    }
+
+    if (opts.purge && removed) {
+      const astrolabeDir = join(removed.path, '.astrolabe');
+      if (existsSync(astrolabeDir)) {
+        rmSync(astrolabeDir, { recursive: true, force: true });
+        console.log(`Purged .astrolabe directory at ${astrolabeDir}.`);
+      } else {
+        console.log(`No .astrolabe directory found at ${removed.path}.`);
+      }
+    }
   });
 
 // ── context ────────────────────────────────────────────────────────────────────

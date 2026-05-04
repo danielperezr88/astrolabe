@@ -5,7 +5,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '../logging/logger.js';
 
@@ -46,4 +46,27 @@ export function saveRegistry(entries: RegistryEntry[]): void {
   const tmp = REGISTRY_FILE + '.tmp-' + Date.now();
   writeFileSync(tmp, JSON.stringify(entries, null, 2));
   renameSync(tmp, REGISTRY_FILE);
+}
+
+/**
+ * Remove a repo from the registry by name, alias, or path.
+ * Returns the removed entry, or null if no match was found.
+ */
+export function removeRepo(target: string): RegistryEntry | null {
+  const entries = loadRegistry();
+  const resolvedTarget = target.replace(/[/\\]+$/, ''); // strip trailing slashes
+  let matchIndex = entries.findIndex(
+    (e) => e.name === resolvedTarget || e.path === resolvedTarget,
+  );
+
+  // Try resolving as an absolute path if no direct match
+  if (matchIndex < 0) {
+    const absTarget = resolve(resolvedTarget);
+    matchIndex = entries.findIndex((e) => e.path === absTarget);
+  }
+
+  if (matchIndex < 0) return null;
+  const [removed] = entries.splice(matchIndex, 1);
+  saveRegistry(entries);
+  return removed;
 }

@@ -1,5 +1,5 @@
 export { startMcpServer } from './server.js';
-export { loadRegistry, saveRegistry } from './registry.js';
+export { loadRegistry, saveRegistry, removeRepo } from './registry.js';
 export type { RegistryEntry } from './registry.js';
 export {
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup,
@@ -8,3 +8,10 @@ export {
   autoDetectGroups,
 } from './groups.js';
 export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus, ServiceBoundary } from './groups.js';
+export {
+  extractOpenApiContracts,
+  extractDockerComposeContracts,
+  extractProtoContracts,
+  extractManifestContracts,
+} from './manifest-extractor.js';
+export type { ManifestContract } from './manifest-extractor.js';
