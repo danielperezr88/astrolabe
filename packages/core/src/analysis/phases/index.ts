@@ -26,4 +26,4 @@ export type { OrmOutput } from './orm.js';
 export type { CrossFileOutput } from './cross-file.js';
 export type { MroOutput } from './mro.js';
 export type { CommunityOutput } from './community.js';
-export type { ProcessTracingOutput } from './process-tracing.js';
+export type { ProcessTracingOutput, ProcessType } from './process-tracing.js';

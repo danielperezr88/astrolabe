@@ -15,10 +15,14 @@ import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+export type ProcessType = 'intra_community' | 'cross_community';
+
 export interface ProcessTracingOutput {
   processCount: number;
   totalSteps: number;
   maxPathLength: number;
+  crossCommunityCount: number;
+  intraCommunityCount: number;
 }
 
 interface BfsNode {
@@ -181,6 +185,80 @@ function bfsTrace(
   return result;
 }
 
+// ── Post-processing: community classification ────────────────────────────────
+
+/**
+ * Classify each Process node as `intra_community` or `cross_community`
+ * based on whether its involved nodes span multiple Leiden communities.
+ *
+ * Involved nodes are collected from:
+ * 1. ENTRY_POINT_OF edges (entry function → Process)
+ * 2. STEP_IN_PROCESS edges (Process → each step symbol)
+ * 3. ACCESSES edges originating from any involved node (data dependencies)
+ *
+ * Community membership is resolved via MEMBER_OF edges (sourceId=symbol,
+ * targetId=community) created by the community detection phase.
+ */
+function classifyProcessCommunities(
+  graph: PhaseContext['graph'],
+): { crossCommunityCount: number; intraCommunityCount: number } {
+  // Build node→community map from MEMBER_OF edges
+  const nodeCommunity = new Map<string, string>();
+  for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+    nodeCommunity.set(rel.sourceId, rel.targetId);
+  }
+
+  // Pre-collect ACCESSES edges for O(1) lookup by source
+  const accessesFrom = new Map<string, string[]>();
+  for (const rel of graph.iterRelationshipsByType('ACCESSES')) {
+    let targets = accessesFrom.get(rel.sourceId);
+    if (!targets) { targets = []; accessesFrom.set(rel.sourceId, targets); }
+    targets.push(rel.targetId);
+  }
+
+  let crossCommunityCount = 0;
+  let intraCommunityCount = 0;
+
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Process') continue;
+    const processId = node.id;
+
+    // 1. Collect entry point and step node IDs
+    const involvedNodeIds = new Set<string>();
+
+    for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) {
+      if (rel.targetId === processId) involvedNodeIds.add(rel.sourceId);
+    }
+    for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+      if (rel.sourceId === processId) involvedNodeIds.add(rel.targetId);
+    }
+
+    // 2. Expand with ACCESSES targets from involved nodes
+    for (const nodeId of involvedNodeIds) {
+      const accessed = accessesFrom.get(nodeId);
+      if (accessed) {
+        for (const targetId of accessed) involvedNodeIds.add(targetId);
+      }
+    }
+
+    // 3. Resolve community membership
+    const communities = new Set<string>();
+    for (const nodeId of involvedNodeIds) {
+      const comm = nodeCommunity.get(nodeId);
+      if (comm) communities.add(comm);
+    }
+
+    // 4. Classify: 0 or 1 community → intra_community, >1 → cross_community
+    const processType: ProcessType = communities.size > 1 ? 'cross_community' : 'intra_community';
+    node.properties.processType = processType;
+
+    if (processType === 'cross_community') crossCommunityCount++;
+    else intraCommunityCount++;
+  }
+
+  return { crossCommunityCount, intraCommunityCount };
+}
+
 // ── Phase definition ────────────────────────────────────────────────────────
 
 export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
@@ -206,13 +284,6 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
     const callers = buildCallers(callGraph);
     const entryPoints = findEntryPoints(graph, callers, callGraph);
 
-    // Pre-build node-to-community map for O(1) lookup (#153)
-    // MEMBER_OF: sourceId=symbol, targetId=community → map symbol→community (#192)
-    const nodeCommunity = new Map<string, string>();
-    for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
-      nodeCommunity.set(rel.sourceId, rel.targetId);
-    }
-
     let processCount = 0;
     let totalSteps = 0;
     let maxPathLength = 0;
@@ -226,14 +297,6 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
       processCount++;
       const processId = `process:${entryId}`;
 
-      // Detect cross-community using pre-built map (#153)
-      const communities = new Set<string>();
-      for (const step of trace) {
-        const comm = nodeCommunity.get(step.id);
-        if (comm) communities.add(comm);
-      }
-      const processType = communities.size > 1 ? 'cross_community' as const : 'intra_community' as const;
-
       graph.addNode({
         id: processId,
         label: 'Process',
@@ -242,7 +305,7 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
           entryPointId: entryId,
           terminalId: trace[trace.length - 1]?.id,
           stepCount: trace.length,
-          processType,
+          processType: 'intra_community' as ProcessType, // default; post-processing may update
         },
       });
 
@@ -274,10 +337,15 @@ export const processTracingPhase: PhaseDefinition<ProcessTracingOutput> = {
       }
     }
 
+    // Post-processing: classify processes as intra/cross community
+    const { crossCommunityCount, intraCommunityCount } = classifyProcessCommunities(graph);
+
     return {
       processCount,
       totalSteps,
       maxPathLength,
+      crossCommunityCount,
+      intraCommunityCount,
     };
   },
 };

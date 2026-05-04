@@ -11,6 +11,12 @@
 
 import type { KnowledgeGraph } from '@astrolabe/shared';
 import { PhaseTimer } from './phase-timer.js';
+import { AstCache, type AstCacheEntry } from '../analysis/ast-cache.js';
+import { treeCache } from '../analysis/parser.js';
+
+// Re-export AstCache and AstCacheEntry for consumers that import from pipeline
+export type { AstCacheEntry };
+export { AstCache };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -51,11 +57,22 @@ export interface PhaseDefinition<TOutput = unknown> {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
+ * Key used to store the AST tree cache in `context.state`.
+ * Phases can retrieve the cache via `context.state.get(AST_TREE_CACHE_KEY)`.
+ */
+export const AST_TREE_CACHE_KEY = 'astTreeCache';
+
+/**
  * Run a set of pipeline phases in dependency order.
  *
  * Phases are executed in topological order based on their `dependencies`.
  * Cycles in the dependency graph will cause an error.
  * Each phase's output is stored in `context.state` keyed by `output:<name>`.
+ *
+ * An AST tree cache is created before running phases and stored in
+ * `context.state` under {@link AST_TREE_CACHE_KEY}. Downstream phases
+ * can retrieve cached Tree-sitter trees to avoid re-parsing. The cache
+ * is cleared (disposing all WASM trees) after phases complete.
  *
  * @returns Ordered array of phase results in execution order.
  */
@@ -69,19 +86,32 @@ export async function runPipeline(
   const pipelineTimer = isDebug ? new PhaseTimer('pipeline') : null;
   if (pipelineTimer) pipelineTimer.start();
 
-  for (const phase of sorted) {
-    const start = Date.now();
-    context.onProgress(phase.name, 0, `Starting ${phase.name}...`);
+  // Create AST tree cache and store in context for phase access.
+  // The treeCache singleton (from parser.ts) is used so that parseFile()
+  // automatically populates it. Clear any stale entries first.
+  treeCache.clear();
+  context.state.set(AST_TREE_CACHE_KEY, treeCache);
 
-    const output = await phase.execute(context);
+  try {
+    for (const phase of sorted) {
+      const start = Date.now();
+      context.onProgress(phase.name, 0, `Starting ${phase.name}...`);
 
-    // Store output for downstream phases
-    context.state.set(`output:${phase.name}`, output);
+      const output = await phase.execute(context);
 
-    const elapsed = Date.now() - start;
-    if (pipelineTimer) pipelineTimer.mark(phase.name);
-    context.onProgress(phase.name, 100, `${phase.name} complete (${elapsed}ms)`);
-    results.push(output);
+      // Store output for downstream phases
+      context.state.set(`output:${phase.name}`, output);
+
+      const elapsed = Date.now() - start;
+      if (pipelineTimer) pipelineTimer.mark(phase.name);
+      context.onProgress(phase.name, 100, `${phase.name} complete (${elapsed}ms)`);
+      results.push(output);
+    }
+  } finally {
+    // Always clear the AST tree cache to free WASM memory,
+    // even if a phase throws an error.
+    treeCache.clear();
+    context.state.delete(AST_TREE_CACHE_KEY);
   }
 
   if (pipelineTimer) pipelineTimer.stop();

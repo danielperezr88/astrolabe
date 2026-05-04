@@ -355,8 +355,8 @@ class LocalBackend {
       }
     }
 
-    // Process index: build once for all symbols
-    const processMap = new Map<string, Array<{ name: string; step: number; total: number }>>();
+    // Process index: build once for all symbols (include processType for cross-community visibility)
+    const processMap = new Map<string, Array<{ name: string; step: number; total: number; processType: string }>>();
     for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
       const proc = graph.getNode(rel.sourceId);
       if (!proc) continue;
@@ -366,6 +366,7 @@ class LocalBackend {
         name: (proc.properties.name as string) ?? proc.id,
         step: rel.step ?? 0,
         total: (proc.properties.stepCount as number) ?? 0,
+        processType: (proc.properties.processType as string) ?? 'intra_community',
       });
     }
 
@@ -465,11 +466,34 @@ class LocalBackend {
     }
 
     // Group by depth with risk levels
+    // Cross-community processes get risk boost — they represent cross-cutting concerns
+    // with wider blast radius (#153).
+    const crossCommunityNodes = new Set<string>();
+    for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+      const proc = graph.getNode(rel.sourceId);
+      if (proc?.properties.processType === 'cross_community') {
+        crossCommunityNodes.add(rel.targetId);
+      }
+    }
+    // Also include entry points of cross-community processes
+    for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) {
+      const proc = graph.getNode(rel.targetId);
+      if (proc?.properties.processType === 'cross_community') {
+        crossCommunityNodes.add(rel.sourceId);
+      }
+    }
+
     const depthGroups: Record<string, { risk: string; items: typeof affected }> = {};
     for (const item of affected) {
       const key = `depth_${item.depth}`;
       if (!depthGroups[key]) {
         depthGroups[key] = { risk: item.depth === 1 ? 'WILL BREAK' : item.depth === 2 ? 'LIKELY AFFECTED' : 'MAYBE AFFECTED', items: [] };
+      }
+      // Cross-community risk boost: elevate risk for nodes in cross-community processes
+      const targetNode = graph.getNode(item.name) ?? [...graph.iterNodes()].find((n) => n.properties.name === item.name);
+      if (targetNode && crossCommunityNodes.has(targetNode.id)) {
+        if (item.depth === 2) depthGroups[key].risk = 'WILL BREAK';
+        else if (item.depth >= 3) depthGroups[key].risk = 'LIKELY AFFECTED';
       }
       depthGroups[key].items.push(item);
     }
@@ -510,7 +534,6 @@ class LocalBackend {
     const graph = ctx.loadGraph();
 
     const changedSymbols: string[] = [];
-    const affectedProcesses: string[] = [];
 
     // #314: Use Set for O(N+M) file matching instead of Array.includes O(N*M)
     const changedNodeIds = new Set<string>();
@@ -524,14 +547,26 @@ class LocalBackend {
     }
 
     // Find affected processes by matching STEP_IN_PROCESS targets by node ID
+    // Include processType to flag cross-community processes (#153)
+    const affectedProcesses: Array<{ name: string; processType: string }> = [];
+    const seenProcessNames = new Set<string>();
     for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
       if (changedNodeIds.has(rel.targetId)) {
         const proc = graph.getNode(rel.sourceId);
-        if (proc && !affectedProcesses.includes(proc.properties.name ?? proc.id)) {
-          affectedProcesses.push(proc.properties.name ?? proc.id);
+        if (proc) {
+          const procName = proc.properties.name ?? proc.id;
+          if (!seenProcessNames.has(procName)) {
+            seenProcessNames.add(procName);
+            affectedProcesses.push({
+              name: procName,
+              processType: (proc.properties.processType as string) ?? 'intra_community',
+            });
+          }
         }
       }
     }
+
+    const crossCommunityCount = affectedProcesses.filter((p) => p.processType === 'cross_community').length;
 
     return {
       changed_files: diffFiles,
@@ -539,7 +574,8 @@ class LocalBackend {
       affected_count: affectedProcesses.length,
       risk_level: affectedProcesses.length > 3 ? 'high' : affectedProcesses.length > 0 ? 'medium' : 'low',
       changed_symbols: changedSymbols,
-      affected_processes: affectedProcesses,
+      affected_processes: affectedProcesses.map((p) => p.name),
+      cross_community_affected: crossCommunityCount,
     };
   }
 

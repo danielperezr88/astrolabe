@@ -21,6 +21,10 @@ function memberRel(sourceId: string, targetId: string) {
   return { id: `m:${sourceId}:${targetId}`, sourceId, targetId, type: 'MEMBER_OF' as const, confidence: 0.7, reason: 'test' };
 }
 
+function accessesRel(sourceId: string, targetId: string) {
+  return { id: `acc:${sourceId}:${targetId}`, sourceId, targetId, type: 'ACCESSES' as const, confidence: 0.8, reason: 'test' };
+}
+
 function comm(id: string, name: string): GraphNode {
   return { id, label: 'Community', properties: { name, symbolCount: 1 } };
 }
@@ -167,5 +171,148 @@ describe('Process Tracing Phase', () => {
     expect(procNodes.length).toBe(1);
     expect(procNodes[0]?.properties.processType).toBe('cross_community');
     expect(procNodes[0]?.properties.name).toContain('handler');
+  });
+
+  // ── Classification-specific tests (#153) ────────────────────────────────────
+
+  it('defaults to intra_community when no MEMBER_OF edges exist', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:start', 'start'));
+    graph.addNode(fn('fn:work', 'doWork', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:start', 'fn:work'));
+    // No Community nodes, no MEMBER_OF edges
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    expect(procNodes[0]?.properties.processType).toBe('intra_community');
+  });
+
+  it('classifies as intra_community when all nodes belong to the same community', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:entry', 'handle', 'src/api/routes.ts'));
+    graph.addNode(fn('fn:validate', 'validate', 'src/api/validate.ts', false));
+    graph.addNode(fn('fn:respond', 'respond', 'src/api/respond.ts', false));
+    graph.addRelationship(callsRel('fn:entry', 'fn:validate'));
+    graph.addRelationship(callsRel('fn:validate', 'fn:respond'));
+
+    // All three functions in the same community
+    graph.addNode(comm('community:1', 'api'));
+    graph.addRelationship(memberRel('fn:entry', 'community:1'));
+    graph.addRelationship(memberRel('fn:validate', 'community:1'));
+    graph.addRelationship(memberRel('fn:respond', 'community:1'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    expect(procNodes[0]?.properties.processType).toBe('intra_community');
+  });
+
+  it('classifies as cross_community when ACCESSES edge spans another community', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:handler', 'handler', 'src/routes/api.ts'));
+    graph.addNode(fn('fn:logic', 'businessLogic', 'src/logic/core.ts', false));
+    graph.addRelationship(callsRel('fn:handler', 'fn:logic'));
+
+    // handler and logic in same community by MEMBER_OF
+    graph.addNode(comm('community:1', 'api'));
+    graph.addRelationship(memberRel('fn:handler', 'community:1'));
+    graph.addRelationship(memberRel('fn:logic', 'community:1'));
+
+    // But fn:logic ACCESSES a node in a different community
+    graph.addNode(fn('fn:db', 'dbQuery', 'src/db/query.ts', false));
+    graph.addNode(comm('community:2', 'data'));
+    graph.addRelationship(memberRel('fn:db', 'community:2'));
+    graph.addRelationship(accessesRel('fn:logic', 'fn:db'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    expect(procNodes[0]?.properties.processType).toBe('cross_community');
+  });
+
+  it('reports crossCommunityCount and intraCommunityCount in output', async () => {
+    const graph = createKnowledgeGraph();
+    // Intra-community process
+    graph.addNode(fn('fn:local', 'runLocal', 'src/local/runner.ts'));
+    graph.addNode(fn('fn:helper', 'localHelper', 'src/local/helper.ts', false));
+    graph.addRelationship(callsRel('fn:local', 'fn:helper'));
+    graph.addNode(comm('community:1', 'local'));
+    graph.addRelationship(memberRel('fn:local', 'community:1'));
+    graph.addRelationship(memberRel('fn:helper', 'community:1'));
+
+    // Cross-community process
+    graph.addNode(fn('fn:remote', 'runRemote', 'src/remote/api.ts'));
+    graph.addNode(fn('fn:svc', 'remoteService', 'src/remote/service.ts', false));
+    graph.addRelationship(callsRel('fn:remote', 'fn:svc'));
+    graph.addNode(comm('community:2', 'remote'));
+    graph.addRelationship(memberRel('fn:remote', 'community:2'));
+    graph.addRelationship(memberRel('fn:svc', 'community:2'));
+    // Make it cross-community: fn:svc ACCESSES something in community:1
+    graph.addRelationship(accessesRel('fn:svc', 'fn:local'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+    const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
+
+    expect(out.processCount).toBe(2);
+    expect(out.intraCommunityCount).toBe(1);
+    expect(out.crossCommunityCount).toBe(1);
+  });
+
+  it('classifies as cross_community when trace spans three or more communities', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:entry', 'main', 'src/main.ts'));
+    graph.addNode(fn('fn:svc', 'service', 'src/svc/index.ts', false));
+    graph.addNode(fn('fn:db', 'database', 'src/db/index.ts', false));
+    graph.addRelationship(callsRel('fn:entry', 'fn:svc'));
+    graph.addRelationship(callsRel('fn:svc', 'fn:db'));
+
+    graph.addNode(comm('community:1', 'app'));
+    graph.addNode(comm('community:2', 'service'));
+    graph.addNode(comm('community:3', 'data'));
+    graph.addRelationship(memberRel('fn:entry', 'community:1'));
+    graph.addRelationship(memberRel('fn:svc', 'community:2'));
+    graph.addRelationship(memberRel('fn:db', 'community:3'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    expect(procNodes[0]?.properties.processType).toBe('cross_community');
+  });
+
+  it('treats nodes without community membership as intra_community (no community evidence)', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(fn('fn:entry', 'handler', 'src/routes/api.ts'));
+    graph.addNode(fn('fn:step1', 'step1', 'src/logic/a.ts', false));
+    graph.addNode(fn('fn:step2', 'step2', 'src/logic/b.ts', false));
+    graph.addRelationship(callsRel('fn:entry', 'fn:step1'));
+    graph.addRelationship(callsRel('fn:step1', 'fn:step2'));
+
+    // Only entry point has a community; step1 and step2 have none
+    graph.addNode(comm('community:1', 'routes'));
+    graph.addRelationship(memberRel('fn:entry', 'community:1'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const procNodes = Array.from(graph.iterNodes()).filter((n) => n.label === 'Process');
+    expect(procNodes.length).toBe(1);
+    // Only one community seen → intra_community
+    expect(procNodes[0]?.properties.processType).toBe('intra_community');
   });
 });

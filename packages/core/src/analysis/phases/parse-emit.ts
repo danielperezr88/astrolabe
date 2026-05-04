@@ -13,7 +13,8 @@
 
 import { relative } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
-import { getPhaseOutput } from '../../core/pipeline.js';
+import { getPhaseOutput, AST_TREE_CACHE_KEY } from '../../core/pipeline.js';
+import type { AstCache } from '../ast-cache.js';
 import type { ScanOutput, FileEntry } from '../phases/scan.js';
 import type { ParsedSymbol, ParsedImport, ParsedRelationship } from '../language-definition.js';
 import { parseFile, defaultWasmDir } from '../parser.js';
@@ -71,6 +72,12 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
     const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
     // #272: Support --skip-workers flag for sequential fallback
     const skipWorkers = context.state.get('skipWorkers') === true;
+
+    // AST tree cache — populated by parseFile() so downstream phases can
+    // reuse parsed Tree-sitter trees without re-parsing from disk.
+    // The pipeline creates the cache before running phases and clears it
+    // (disposing WASM memory) after all phases complete.
+    const treeCache = context.state.get(AST_TREE_CACHE_KEY) as AstCache | undefined;
 
     let symbolCount = 0;
     let importCount = 0;
@@ -172,6 +179,13 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
 
       // Yield event-loop for very large repos
       await new Promise((r) => setImmediate(r));
+    }
+
+    // Log cache stats if available
+    if (treeCache) {
+      context.onProgress('parse-emit', 100,
+        `Parsed ${fileCount} files, ${treeCache.size} trees cached`,
+      );
     }
 
     return { symbolCount, importCount, fileCount, errorCount, symbolCounts };

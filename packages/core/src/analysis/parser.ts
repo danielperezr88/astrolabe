@@ -27,6 +27,35 @@ import type {
 import { symbolId } from './language-definition.js';
 import { languageForExtension, languageForFile } from './languages/index.js';
 import { AstCache } from './ast-cache.js';
+
+// ── Parse-result cache (separate from AST tree cache) ───────────────────────
+
+/**
+ * Simple content-addressable cache keyed by file path + last-modified time.
+ * Stores parsed results so that re-parsing unchanged files is a no-op.
+ * This is distinct from the AST tree cache (AstCache) which caches raw trees.
+ */
+class ParseResultCache {
+  private readonly _store = new Map<string, { mtimeMs: number; result: FileParseResult }>();
+
+  get(filePath: string, mtimeMs: number): FileParseResult | undefined {
+    const entry = this._store.get(filePath);
+    if (!entry) return undefined;
+    if (entry.mtimeMs !== mtimeMs) {
+      this._store.delete(filePath);
+      return undefined;
+    }
+    return entry.result;
+  }
+
+  set(filePath: string, mtimeMs: number, result: FileParseResult): void {
+    this._store.set(filePath, { mtimeMs, result });
+  }
+
+  clear(): void {
+    this._store.clear();
+  }
+}
 import type { NodeLabel } from '@astrolabe/shared';
 import { preprocessVueSfc } from './languages/vue.js';
 
@@ -68,8 +97,16 @@ function getParser(language: WtsLanguage, wasmFile: string): WtsParser {
 
 /**
  * Parse-result cache keyed by file path.
+ * Stores FileParseResult objects (not tree objects) with mtimeMs-based invalidation.
  */
-const astCache = new AstCache();
+const parseResultCache = new ParseResultCache();
+
+/**
+ * AST tree cache — stores raw Tree-sitter Tree objects for reuse by
+ * downstream pipeline phases. Managed by the pipeline (created before
+ * phases, cleared after).
+ */
+const treeCache = new AstCache();
 
 // ── Initialisation ─────────────────────────────────────────────────────────
 
@@ -121,7 +158,8 @@ export function resetParser(): void {
   languageCache.clear();
   queryCache.clear();
   parserCache.clear();
-  astCache.clear();
+  parseResultCache.clear();
+  treeCache.clear();
   _initialized = false;
 }
 
@@ -858,7 +896,7 @@ export async function parseFile(
   // Check cache first
   try {
     const st = statSync(normalisedPath);
-    const cached = astCache.get(normalisedPath, st.mtimeMs);
+    const cached = parseResultCache.get(normalisedPath, st.mtimeMs);
     if (cached) return cached;
   } catch {
     // If stat fails, proceed without cache
@@ -932,8 +970,11 @@ export async function parseFile(
   // ── Extract symbols, imports, and relationships (#169) ──────────────────
   const { symbols, imports, relationships } = extractFromTree(language, root, langDef, normalisedPath);
 
-  // Clean up tree — parser is cached and reused (#168)
-  tree.delete();
+  // Cache the tree for reuse by downstream pipeline phases.
+  // The pipeline clears the tree cache after all phases complete,
+  // disposing WASM memory. Do NOT call tree.delete() here — the
+  // AstCache manages the tree lifecycle via LRU eviction.
+  treeCache.set(normalisedPath, tree);
 
   // Build result
   const result: FileParseResult = {
@@ -947,7 +988,7 @@ export async function parseFile(
   // Cache
   try {
     const st = statSync(normalisedPath);
-    astCache.set(normalisedPath, st.mtimeMs, result);
+    parseResultCache.set(normalisedPath, st.mtimeMs, result);
   } catch {
     // Don't cache if stat fails
   }
@@ -1040,4 +1081,5 @@ export async function parseString(
 // ── Re-exports for convenience ─────────────────────────────────────────────
 
 export { languageForExtension, languageForFile, getAllExtensions } from './languages/index.js';
-export { AstCache } from './ast-cache.js';
+export { AstCache, astCache } from './ast-cache.js';
+export { treeCache };

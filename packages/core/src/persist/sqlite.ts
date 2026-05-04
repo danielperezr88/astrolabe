@@ -11,6 +11,71 @@ import Database from 'better-sqlite3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
 
+// ── DB Lock Retry Helpers ──────────────────────────────────────────────────
+
+/**
+ * Detect whether an error is an SQLITE_BUSY / "database is locked" error
+ * thrown by better-sqlite3 when concurrent writers collide.
+ */
+export function isDbBusyError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    const code = (error as { code?: unknown }).code;
+    return code === 'SQLITE_BUSY' || code === 5 || msg.includes('database is locked') || msg.includes('busy');
+  }
+  return false;
+}
+
+/**
+ * Retry wrapper for **synchronous** database write operations.
+ *
+ * Retries up to `maxAttempts` times on SQLITE_BUSY errors with
+ * exponential back-off (baseDelay × attempt number).
+ *
+ * Only logs retry attempts when `ASTROLABE_DEBUG` is set.
+ */
+export function withRetrySync<T>(fn: () => T, maxAttempts = 3, baseDelay = 100): T {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return fn();
+    } catch (err) {
+      lastError = err;
+      if (!isDbBusyError(err) || attempt === maxAttempts) throw err;
+      const delay = baseDelay * attempt;
+      if (process.env.ASTROLABE_DEBUG) {
+        console.error(`Astrolabe [db:retry] attempt ${attempt}/${maxAttempts}, retrying in ${delay}ms`);
+      }
+      // Synchronous sleep via Atomics.wait on a shared buffer
+      const buf = new Int32Array(new SharedArrayBuffer(4));
+      Atomics.wait(buf, 0, 0, delay);
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Async variant of the retry wrapper — uses real `setTimeout` so it
+ * yields the event loop between attempts. Preferred in async contexts.
+ */
+export async function withRetry<T>(fn: () => T | Promise<T>, maxAttempts = 3, baseDelay = 100): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isDbBusyError(err) || attempt === maxAttempts) throw err;
+      const delay = baseDelay * attempt;
+      if (process.env.ASTROLABE_DEBUG) {
+        console.error(`Astrolabe [db:retry] attempt ${attempt}/${maxAttempts}, retrying in ${delay}ms`);
+      }
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface SqliteStore {
@@ -137,7 +202,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
         }
       });
 
-      saveTx();
+      withRetrySync(() => saveTx());
     },
 
     loadGraph(): KnowledgeGraph {
@@ -183,7 +248,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
     },
 
     saveFileHash(filePath: string, hash: string): void {
-      upsertHash.run(filePath, hash, Date.now());
+      withRetrySync(() => upsertHash.run(filePath, hash, Date.now()));
     },
 
     getFileHash(filePath: string): string | undefined {
