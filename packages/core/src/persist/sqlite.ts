@@ -162,6 +162,11 @@ export function createSqliteStore(dbPath: string): SqliteStore {
         confidence: number; reason: string; step: number | null; evidence: string | null;
       }[];
       for (const row of relRows) {
+        // #423: Graceful fallback for corrupted evidence JSON
+        let evidence: readonly any[] | undefined;
+        if (row.evidence) {
+          try { evidence = JSON.parse(row.evidence); } catch { /* skip corrupted evidence */ }
+        }
         graph.addRelationship({
           id: row.id,
           sourceId: row.source_id,
@@ -170,7 +175,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
           confidence: row.confidence,
           reason: row.reason,
           ...(row.step != null ? { step: row.step } : {}),
-          ...(row.evidence ? { evidence: JSON.parse(row.evidence) } : {}),
+          ...(evidence ? { evidence } : {}),
         });
       }
 

@@ -137,6 +137,17 @@ const pythonResolver: ScopeResolver = {
   ...defaultResolver as any,
 
   populateOwners(index: ScopeResolutionIndex, graph: KnowledgeGraph): void {
+    // #420: Build per-file node index ONCE — O(N) instead of O(N²)
+    const nodesByFile = new Map<string, GraphNode[]>();
+    for (const node of graph.iterNodes()) {
+      const fp = node.properties.filePath as string;
+      if (fp) {
+        let arr = nodesByFile.get(fp);
+        if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+        arr.push(node);
+      }
+    }
+
     for (const node of graph.iterNodes()) {
       if (node.label !== 'Class') continue;
       const name = (node.properties.name as string) ?? '';
@@ -154,10 +165,11 @@ const pythonResolver: ScopeResolver = {
 
       // Find methods that belong to this class
       // #365: Scope methods by file path — prevent cross-file class name collisions
-      for (const method of graph.iterNodes()) {
+      // #420: Use per-file index instead of O(N) scan
+      const fileNodes = nodesByFile.get(fp) ?? [];
+      for (const method of fileNodes) {
         if (method.label === 'Method'
-            && method.properties.parentClass === name
-            && method.properties.filePath === fp) {
+            && method.properties.parentClass === name) {
           index.classScopes.get(node.id)!.methods.push({
             name: (method.properties.name as string) ?? '',
             nodeId: method.id,
@@ -181,7 +193,7 @@ const pythonResolver: ScopeResolver = {
     const dotted = importSpec.replace(/\./g, '/');
     const symbols: string[] = [];
     for (const binding of index.typeBindings.values()) {
-      if (binding.filePath.includes(dotted) || binding.filePath.includes(importSpec.replace(/\./g, '/'))) {
+      if (binding.filePath.includes(dotted)) { // #418: removed redundant condition — both sides were identical
         symbols.push(binding.symbolName);
       }
     }
@@ -204,6 +216,17 @@ function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
     typeBindings: new Map(),
   };
 
+  // #420: Build per-file node index ONCE — O(N) instead of O(N²)
+  const nodesByFile = new Map<string, GraphNode[]>();
+  for (const node of graph.iterNodes()) {
+    const fp = node.properties.filePath as string;
+    if (fp) {
+      let arr = nodesByFile.get(fp);
+      if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+      arr.push(node);
+    }
+  }
+
   // Build module scopes (one per file)
   for (const node of graph.iterNodes()) {
     if (node.label !== 'File') continue;
@@ -219,10 +242,9 @@ function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
     }
 
     const scope = index.moduleScopes.get(fp)!;
-    for (const symNode of graph.iterNodes()) {
-      if (symNode.properties.filePath === fp) {
-        scope.symbols.set((symNode.properties.name as string) ?? symNode.id, symNode);
-      }
+    const fileNodes = nodesByFile.get(fp) ?? []; // #420: O(1) lookup instead of O(N) scan
+    for (const symNode of fileNodes) {
+      scope.symbols.set((symNode.properties.name as string) ?? symNode.id, symNode);
     }
   }
 
@@ -295,20 +317,19 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
         for (const imp of scope.imports) {
           const resolved = resolver.resolveImportTarget(imp.target, scope.filePath, index);
           if (resolved.symbols.length > 0) {
-            // Find source node for the import
-            for (const [, node] of scope.symbols) {
-              if ((node.properties.name as string) === imp.alias) {
-                for (const sym of resolved.symbols) {
-                  const binding = index.typeBindings.get(`${resolved.filePath ?? scope.filePath}:${sym}`);
-                  if (binding) {
-                    resolvedEdges.push({
-                      sourceId: node.id,
-                      targetId: binding.nodeId,
-                      type: 'USES',
-                      confidence: 0.9,
-                      reason: `Import '${imp.target}' → ${sym}`,
-                    });
-                  }
+            // #421: Use direct Map lookup instead of O(N) iteration
+            const node = scope.symbols.get(imp.alias);
+            if (node) {
+              for (const sym of resolved.symbols) {
+                const binding = index.typeBindings.get(`${scope.filePath}:${sym}`); // #419: use scope.filePath (resolved.filePath is always undefined)
+                if (binding) {
+                  resolvedEdges.push({
+                    sourceId: node.id,
+                    targetId: binding.nodeId,
+                    type: 'USES',
+                    confidence: 0.9,
+                    reason: `Import '${imp.target}' → ${sym}`,
+                  });
                 }
               }
             }

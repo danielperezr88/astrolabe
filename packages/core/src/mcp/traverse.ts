@@ -87,8 +87,12 @@ function traverseEdges(
   const nextIds = new Set<string>();
   const edges: TraversalEdge[] = [];
 
-  for (const rel of graph.iterRelationships()) {
-    if (step.type && rel.type !== step.type) continue;
+  // #422: Use type index when step.type is specified — O(R_type) instead of O(R_all)
+  const relIter = step.type
+    ? graph.iterRelationshipsByType(step.type as any)
+    : graph.iterRelationships();
+
+  for (const rel of relIter) {
     if (step.minConfidence !== undefined && rel.confidence < step.minConfidence) continue;
 
     const isMatch =

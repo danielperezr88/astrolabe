@@ -75,6 +75,9 @@ function resolveTarget(call: CallSite, graph: KnowledgeGraph): GraphNode | null 
 export function resolveCalls(
   graph: KnowledgeGraph,
 ): CallResolutionOutput {
+  // #424: Reset module-level cache to prevent stale data across pipeline runs
+  _nameIndex = null;
+
   // #364: Work from existing CALLS edges — enhance with classification and confidence
   const edges: Array<{ sourceId: string; targetId: string; type: string }> = [];
   for (const rel of graph.iterRelationships()) {
