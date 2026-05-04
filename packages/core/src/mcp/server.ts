@@ -9,7 +9,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
@@ -22,6 +23,7 @@ import { McpTransport } from './transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
+import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1525,6 +1527,110 @@ Returns direct impacts (within same repo) plus cross-repo impacts discovered thr
       return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
     },
   },
+
+  'astrolabe.graph_algorithms': {
+    name: 'astrolabe.graph_algorithms',
+    description: `Run graph algorithms on the knowledge graph for architecture analysis.
+
+Algorithms:
+- pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
+- betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
+- shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+
+The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCESS synthetic edges).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path'], description: 'Algorithm to run' },
+        source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
+        target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
+        repo: { type: 'string', description: 'Repository name' },
+      },
+      required: ['algorithm'],
+    },
+    handler: async (params) => {
+      const algorithm = requireString(params, 'algorithm');
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges
+      const adjList = new Map<string, string[]>();
+      const allNodes = new Set<string>();
+
+      // Ensure all nodes are in the adjacency list
+      for (const node of graph.iterNodes()) {
+        allNodes.add(node.id);
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+
+        // Ensure target node has an entry too
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      if (algorithm === 'pagerank') {
+        const results = pageRank(adjList);
+        // Resolve node names for readability
+        const named = results.slice(0, 50).map((r) => {
+          const node = graph.getNode(r.nodeId);
+          return {
+            id: r.nodeId,
+            name: node?.properties.name ?? r.nodeId,
+            score: Math.round(r.score * 10000) / 10000,
+          };
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'pagerank', nodeCount: results.length, topNodes: named }, null, 2) }] };
+      }
+
+      if (algorithm === 'betweenness') {
+        const results = betweennessCentrality(adjList);
+        const named = results.slice(0, 50).map((r) => {
+          const node = graph.getNode(r.nodeId);
+          return {
+            id: r.nodeId,
+            name: node?.properties.name ?? r.nodeId,
+            score: Math.round(r.score * 10000) / 10000,
+          };
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'betweenness', nodeCount: results.length, topNodes: named }, null, 2) }] };
+      }
+
+      if (algorithm === 'shortest_path') {
+        const sourceParam = requireString(params, 'source');
+        const targetParam = requireString(params, 'target');
+
+        // Resolve source/target names to IDs
+        let sourceId = sourceParam;
+        let targetId = targetParam;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === sourceParam || node.id === sourceParam) sourceId = node.id;
+          if (node.properties.name === targetParam || node.id === targetParam) targetId = node.id;
+        }
+
+        const path = shortestPath(adjList, sourceId, targetId);
+
+        if (!path) {
+          return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: null, message: 'No path found between the specified nodes.' }) }] };
+        }
+
+        const namedPath = path.map((id) => {
+          const node = graph.getNode(id);
+          return node?.properties.name ?? id;
+        });
+
+        return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown algorithm: ${algorithm}` }) }] };
+    },
+  },
 };
 
 // ── Resources ──────────────────────────────────────────────────────────────
@@ -1754,7 +1860,7 @@ function readResource(uri: string): string | null {
 }
 
 /**
- * #404: Generate AGENTS.md-like content for all indexed repos.
+ * #404: Read AGENTS.md files from all indexed repos and combine them.
  * Useful for setup/onboarding when an AI agent first connects.
  */
 function generateSetupResource(): string {
@@ -1767,39 +1873,15 @@ function generateSetupResource(): string {
   const sections: string[] = [];
 
   for (const repo of repos) {
-    let nodeCount = 0;
-    let relCount = 0;
-    try {
-      const ctx = backend.getRepo(repo.name);
-      const graph = ctx.loadGraph();
-      nodeCount = graph.nodeCount;
-      relCount = graph.relationshipCount;
-    } catch { /* repo not loaded */ }
+    const agentsPath = pathJoin(repo.path, 'AGENTS.md');
+    if (existsSync(agentsPath)) {
+      const content = readFileSync(agentsPath, 'utf-8');
+      sections.push(`# ${repo.name}\n\n${content}`);
+    }
+  }
 
-    sections.push([
-      `# Astrolabe — ${repo.name}`,
-      '',
-      `This project is indexed by Astrolabe as **${repo.name}** (${nodeCount} symbols, ${relCount} relationships).`,
-      '',
-      '## Tools',
-      '',
-      '| Tool | What it gives you |',
-      '|------|-------------------|',
-      '| `astrolabe.query` | Hybrid search over the knowledge graph |',
-      '| `astrolabe.context` | 360-degree symbol view (callers, callees, processes) |',
-      '| `astrolabe.impact` | Blast radius analysis with depth grouping |',
-      '| `astrolabe.detect_changes` | Git-diff impact mapping |',
-      '| `astrolabe.rename` | Graph-assisted multi-file rename preview |',
-      '| `astrolabe.cypher` | Graph traversal queries |',
-      '| `astrolabe.list_repos` | Discover indexed repos |',
-      '',
-      '## Resources',
-      '',
-      `- \`astrolabe://repo/${repo.name}/context\` — Stats, staleness check`,
-      `- \`astrolabe://repo/${repo.name}/clusters\` — All functional areas`,
-      `- \`astrolabe://repo/${repo.name}/processes\` — All execution flows`,
-      `- \`astrolabe://repo/${repo.name}/schema\` — Graph schema for traversal`,
-    ].join('\n'));
+  if (sections.length === 0) {
+    return '# Astrolabe\n\nNo AGENTS.md files found in indexed repositories.';
   }
 
   return sections.join('\n\n---\n\n');

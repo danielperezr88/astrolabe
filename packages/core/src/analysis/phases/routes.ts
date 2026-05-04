@@ -33,6 +33,24 @@ const HTTP_CLIENT_DETECT: RegExp[] = [
 /** Extracts relative URL strings (e.g. '/api/users') from source text. */
 const URL_EXTRACT = /['"`](\/[^'"`\s]*)['"`]/g;
 
+// ── Template file detection ────────────────────────────────────────────────
+
+/** File extensions for server-rendered templates. */
+const TEMPLATE_EXTENSIONS = /\.(html|ejs|blade\.php|hbs|pug|jsx|tsx)$/i;
+
+/** Patterns for extracting form actions from template files for FETCHES edges. */
+const TEMPLATE_FORM_PATTERNS: Array<{ regex: RegExp; extract: (m: RegExpExecArray) => { method: string; path: string } }> = [
+  // HTML/EJS/Handlebars form actions
+  { regex: /<form[^>]*action\s*=\s*['"]([^'"]+)['"][^>]*(?:method\s*=\s*['"](\w+)['"])?>/gi,
+    extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
+  // Pug form actions
+  { regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)[''])?/gm,
+    extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
+  // Blade Form::open helper
+  { regex: /\{\{\s*Form::open\s*\(\s*\[\s*['"]url['"]\s*=>\s*['"]([^'"]+)['"]/g,
+    extract: (m) => ({ method: 'POST', path: m[1] }) },
+];
+
 // ── URL ↔ route matching ───────────────────────────────────────────────────
 
 /**
@@ -77,6 +95,12 @@ const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegE
   { name: 'django-rest', regex: /@api_view\s*\(\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[1].replace(/['"]/g, '').trim(), path: '[inferred]' }) },
   // Django REST Framework - @action decorator
   { name: 'django-rest', regex: /@action\s*\([^)]*methods\s*=\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[1].replace(/['"]/g, '').trim(), path: '[inferred]' }) },
+  // Template: HTML form actions (HTML, EJS, Handlebars, JSX, TSX)
+  { name: 'html-template', regex: /<form[^>]*action\s*=\s*['"]([^'"]+)['"][^>]*(?:method\s*=\s*['"](\w+)['"])?>/gi, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
+  // Template: Pug form actions (indentation-based syntax)
+  { name: 'pug-template', regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)[''])?/gm, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
+  // Template: Blade Form::open helper
+  { name: 'blade-template', regex: /\{\{\s*Form::open\s*\(\s*\[\s*['"]url['"]\s*=>\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'POST', path: m[1] }) },
 ];
 
 // ── NestJS controller prefix detection ─────────────────────────────────────
@@ -362,7 +386,7 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       if (changedPaths && !changedPaths.has(fp)) continue;
 
       // Scan related directories and common entry point files (#198)
-      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp)) continue;
+      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp) && !TEMPLATE_EXTENSIONS.test(fp)) continue;
 
       try {
         const content = await readFile(join(context.repoPath, fp), 'utf-8');
@@ -485,6 +509,60 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
                 });
                 fetchesCount++;
               }
+            }
+          }
+        }
+      }
+
+      // ── Template FETCHES edge creation ──────────────────────────────────
+
+      // Scan template files for form actions and API references that match routes
+      for (const node of graph.iterNodes()) {
+        if (node.label !== 'File') continue;
+        const fp = node.properties.filePath as string | undefined;
+        if (!fp || !TEMPLATE_EXTENSIONS.test(fp)) continue;
+
+        let content: string;
+        try {
+          content = await readFile(join(context.repoPath, fp), 'utf-8');
+        } catch { continue; }
+
+        const urls = new Set<string>();
+
+        // Extract form action URLs from template patterns
+        for (const pattern of TEMPLATE_FORM_PATTERNS) {
+          pattern.regex.lastIndex = 0;
+          let match: RegExpExecArray | null;
+          while ((match = pattern.regex.exec(content)) !== null) {
+            urls.add(pattern.extract(match).path);
+          }
+        }
+
+        // Also extract URLs from fetch/axios calls in template script tags
+        if (HTTP_CLIENT_DETECT.some((re) => re.test(content))) {
+          URL_EXTRACT.lastIndex = 0;
+          let urlMatch: RegExpExecArray | null;
+          while ((urlMatch = URL_EXTRACT.exec(content)) !== null) {
+            urls.add(urlMatch[1]!);
+          }
+        }
+
+        // Match template URLs to registered routes and create FETCHES edges
+        for (const url of urls) {
+          for (const [routePath, routeIds] of routeRegistry) {
+            if (!urlMatchesRoute(url, routePath)) continue;
+            for (const routeId of routeIds) {
+              const edgeId = `fetches:${node.id}:${routeId}`;
+              if (graph.getRelationship(edgeId)) continue;
+              graph.addRelationship({
+                id: edgeId,
+                sourceId: node.id,
+                targetId: routeId,
+                type: 'FETCHES',
+                confidence: 0.6,
+                reason: `Template form action to ${url} matches route ${routePath}`,
+              });
+              fetchesCount++;
             }
           }
         }
