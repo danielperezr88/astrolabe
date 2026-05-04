@@ -21,6 +21,7 @@ import { syncGroupContracts, getGroupContracts } from './contracts.js';
 import { McpTransport } from './transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
+import { PhaseTimer } from '../core/phase-timer.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -751,6 +752,8 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
       required: ['query'],
     },
     handler: async (params) => {
+      const timer = new PhaseTimer('query');
+      timer.start();
       const query = requireString(params, 'query');
       const repo = params.repo as string | undefined;
       const service = params.service as string | undefined;
@@ -762,7 +765,10 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
         result = backend.query(query, repo, requireNumber(params, 'limit', 20));
       }
 
+      timer.mark('search');
       const nextHint = '\n\nNext: use context({name: "foundSymbol"}) to get 360-degree view of any result.';
+      timer.mark('format');
+      timer.stop();
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
   },
@@ -782,6 +788,8 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos, or "@<group
       required: ['name'],
     },
     handler: async (params) => {
+      const timer = new PhaseTimer('context');
+      timer.start();
       const name = requireString(params, 'name');
       const repo = params.repo as string | undefined;
       const service = params.service as string | undefined;
@@ -793,7 +801,10 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos, or "@<group
         result = backend.context(name, repo);
       }
 
+      timer.mark('lookup');
       const nextHint = '\n\nNext: use impact({target: "symbolName", direction: "upstream"}) for blast radius analysis.';
+      timer.mark('format');
+      timer.stop();
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
   },
@@ -821,6 +832,8 @@ service: monorepo path prefix filter (only active in group mode).`,
       required: ['target', 'direction'],
     },
     handler: async (params) => {
+      const timer = new PhaseTimer('impact');
+      timer.start();
       const target = requireString(params, 'target');
       const repo = params.repo as string | undefined;
       const crossDepth = requireNumber(params, 'crossDepth', 0);
@@ -910,7 +923,10 @@ service: monorepo path prefix filter (only active in group mode).`,
         );
       }
 
+      timer.mark('traverse');
       const nextHint = '\n\nNext: use detect_changes() before committing to verify your changes match expected impact.';
+      timer.mark('format');
+      timer.stop();
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) + nextHint }] };
     },
   },
@@ -926,7 +942,11 @@ service: monorepo path prefix filter (only active in group mode).`,
       },
     },
     handler: async (params) => {
+      const timer = new PhaseTimer('detect_changes');
+      timer.start();
       const result = backend.detectChanges((params.scope as 'unstaged' | 'staged' | 'all') ?? 'unstaged', params.repo as string);
+      timer.mark('diff');
+      timer.stop();
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   },

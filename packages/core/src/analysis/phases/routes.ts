@@ -65,7 +65,24 @@ const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegE
   { name: 'django', regex: /\bpath\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'ANY', path: m[1] }) },
   // #197: Support non-async, arrow functions, and const exports
   { name: 'nextjs', regex: /export\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|DELETE|PATCH)\b/g, extract: (m) => ({ method: m[1], path: '[inferred]' }) },
+  // Spring Boot - specific HTTP method mappings
+  { name: 'spring', regex: /@(Get|Post|Put|Delete|Patch)Mapping\s*\(\s*(?:value\s*=\s*)?['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }) },
+  // Spring Boot - @RequestMapping (with optional method specification)
+  { name: 'spring', regex: /@RequestMapping\s*\(\s*(?:(?:value|path)\s*=\s*)?['"]([^'"]+)['"][\s,]*(?:method\s*=\s*RequestMethod\.(GET|POST|PUT|DELETE|PATCH))?/g, extract: (m) => ({ method: m[2] ?? 'ANY', path: m[1] }) },
+  // NestJS - method decorators with path (controller prefix combined in post-processing below)
+  { name: 'nestjs', regex: /@(Get|Post|Put|Delete|Patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }) },
+  // NestJS - method decorators without path argument (e.g. @Get(), @Post())
+  { name: 'nestjs', regex: /@(Get|Post|Put|Delete|Patch)\s*\(\s*\)/g, extract: (m) => ({ method: m[1].toUpperCase(), path: '' }) },
+  // Django REST Framework - @api_view decorator
+  { name: 'django-rest', regex: /@api_view\s*\(\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[1].replace(/['"]/g, '').trim(), path: '[inferred]' }) },
+  // Django REST Framework - @action decorator
+  { name: 'django-rest', regex: /@action\s*\([^)]*methods\s*=\s*\[([^\]]+)\]/g, extract: (m) => ({ method: m[1].replace(/['"]/g, '').trim(), path: '[inferred]' }) },
 ];
+
+// ── NestJS controller prefix detection ─────────────────────────────────────
+
+/** Detects @Controller("prefix") decorator to combine with NestJS method paths. */
+const NESTJS_CONTROLLER_PREFIX = /@Controller\s*\(\s*['"]([^'"]+)['"]\)/;
 
 // ── Response shape extraction (#426) ────────────────────────────────────────
 
@@ -356,11 +373,22 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
         const middleware = extractMiddlewareNames(content);
         // #427: Check for Next.js middleware.ts/js file
         const hasMiddleware = /\bmiddleware\.(ts|js)\b/.test(fp);
+        // NestJS: detect @Controller("prefix") for path combination
+        const nestjsPrefixMatch = NESTJS_CONTROLLER_PREFIX.exec(content);
+        const nestjsPrefix = nestjsPrefixMatch ? nestjsPrefixMatch[1] : '';
 
         for (const fw of FRAMEWORK_PATTERNS) {
           let match;
           while ((match = fw.regex.exec(content)) !== null) {
-            const { method, path } = fw.extract(match);
+            let { method, path } = fw.extract(match);
+            // NestJS: combine @Controller prefix with method decorator path
+            if (fw.name === 'nestjs' && nestjsPrefix) {
+              const p = nestjsPrefix.startsWith('/') ? nestjsPrefix : '/' + nestjsPrefix;
+              path = path === '/' || path === '' ? p
+                : path.startsWith('/') ? p + path
+                : p + '/' + path;
+              path = path.replace(/\/+/g, '/');
+            }
             // #297: Include framework name to prevent ID collision across detectors
         const routeId = `route:${fp}:${fw.name}:${method}:${path}`;
             if (graph.getNode(routeId)) continue;

@@ -395,4 +395,342 @@ def get_items():
       rmSync(repo, { recursive: true, force: true });
     });
   });
+
+  // ── Decorator/annotation-based route detection ────────────────────────────
+
+  describe('decorator route detection', () => {
+    it('detects Spring Boot @GetMapping and @PostMapping', async () => {
+      const repo = makeRepo({
+        'controller/UserController.java': `
+@RestController
+public class UserController {
+  @GetMapping("/api/users")
+  public List<User> getUsers() { return userService.findAll(); }
+
+  @PostMapping("/api/users")
+  public User createUser(@RequestBody User user) { return userService.save(user); }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/UserController.java',
+        label: 'File',
+        properties: { name: 'UserController.java', filePath: 'controller/UserController.java' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(2);
+      expect(output.frameworks).toContain('spring');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const springRoutes = routeNodes.filter(n => n.properties.framework === 'spring');
+      expect(springRoutes.length).toBeGreaterThanOrEqual(2);
+
+      const methods = springRoutes.map(n => n.properties.method as string);
+      expect(methods).toContain('GET');
+      expect(methods).toContain('POST');
+
+      const paths = springRoutes.map(n => n.properties.path as string);
+      expect(paths).toContain('/api/users');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Spring Boot @RequestMapping without method as ANY', async () => {
+      const repo = makeRepo({
+        'controller/HealthController.java': `
+@RestController
+public class HealthController {
+  @RequestMapping("/api/health")
+  public String health() { return "OK"; }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/HealthController.java',
+        label: 'File',
+        properties: { name: 'HealthController.java', filePath: 'controller/HealthController.java' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(1);
+      expect(output.frameworks).toContain('spring');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const anyRoute = routeNodes.find(
+        n => n.properties.framework === 'spring' && n.properties.method === 'ANY',
+      );
+      expect(anyRoute).toBeDefined();
+      expect(anyRoute?.properties.path).toBe('/api/health');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Spring Boot @RequestMapping with method specification', async () => {
+      const repo = makeRepo({
+        'controller/OrderController.java': `
+@RestController
+public class OrderController {
+  @RequestMapping(value = "/api/orders", method = RequestMethod.GET)
+  public List<Order> getOrders() { return orderService.findAll(); }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/OrderController.java',
+        label: 'File',
+        properties: { name: 'OrderController.java', filePath: 'controller/OrderController.java' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(1);
+      expect(output.frameworks).toContain('spring');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const getRoute = routeNodes.find(
+        n => n.properties.framework === 'spring' && n.properties.method === 'GET',
+      );
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.properties.path).toBe('/api/orders');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Spring Boot @PutMapping, @DeleteMapping, @PatchMapping', async () => {
+      const repo = makeRepo({
+        'controller/ItemController.java': `
+@RestController
+public class ItemController {
+  @PutMapping("/api/items/{id}")
+  public Item updateItem(@PathVariable Long id, @RequestBody Item item) { return item; }
+
+  @DeleteMapping("/api/items/{id}")
+  public void deleteItem(@PathVariable Long id) {}
+
+  @PatchMapping("/api/items/{id}")
+  public Item patchItem(@PathVariable Long id, @RequestBody Map<String, Object> updates) { return item; }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/ItemController.java',
+        label: 'File',
+        properties: { name: 'ItemController.java', filePath: 'controller/ItemController.java' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(3);
+      expect(output.frameworks).toContain('spring');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const springRoutes = routeNodes.filter(n => n.properties.framework === 'spring');
+      const methods = springRoutes.map(n => n.properties.method as string);
+      expect(methods).toContain('PUT');
+      expect(methods).toContain('DELETE');
+      expect(methods).toContain('PATCH');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects NestJS @Controller prefix combined with method decorators', async () => {
+      const repo = makeRepo({
+        'controller/user.controller.ts': `
+@Controller('users')
+export class UserController {
+  @Get(':id')
+  findOne(@Param('id') id: string) { return this.userService.findOne(id); }
+
+  @Post()
+  create(@Body() createUserDto: CreateUserDto) { return this.userService.create(createUserDto); }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/user.controller.ts',
+        label: 'File',
+        properties: { name: 'user.controller.ts', filePath: 'controller/user.controller.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(2);
+      expect(output.frameworks).toContain('nestjs');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const nestjsRoutes = routeNodes.filter(n => n.properties.framework === 'nestjs');
+
+      // Check that controller prefix is combined with method path
+      const getRoute = nestjsRoutes.find(n => n.properties.method === 'GET');
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.properties.path).toBe('/users/:id');
+
+      const postRoute = nestjsRoutes.find(n => n.properties.method === 'POST');
+      expect(postRoute).toBeDefined();
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects NestJS routes without @Controller prefix', async () => {
+      const repo = makeRepo({
+        'controller/app.controller.ts': `
+export class AppController {
+  @Get('health')
+  getHealth() { return { status: 'ok' }; }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/app.controller.ts',
+        label: 'File',
+        properties: { name: 'app.controller.ts', filePath: 'controller/app.controller.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(1);
+      expect(output.frameworks).toContain('nestjs');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const nestjsRoutes = routeNodes.filter(n => n.properties.framework === 'nestjs');
+      const getRoute = nestjsRoutes.find(n => n.properties.method === 'GET');
+      expect(getRoute).toBeDefined();
+      expect(getRoute?.properties.path).toBe('health');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects NestJS @Put, @Delete, @Patch decorators', async () => {
+      const repo = makeRepo({
+        'controller/item.controller.ts': `
+@Controller('items')
+export class ItemController {
+  @Put(':id')
+  update(@Param('id') id: string) { return {}; }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {}
+
+  @Patch(':id')
+  patch(@Param('id') id: string) { return {}; }
+}
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:controller/item.controller.ts',
+        label: 'File',
+        properties: { name: 'item.controller.ts', filePath: 'controller/item.controller.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(3);
+      expect(output.frameworks).toContain('nestjs');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const nestjsRoutes = routeNodes.filter(n => n.properties.framework === 'nestjs');
+      const methods = nestjsRoutes.map(n => n.properties.method as string);
+      expect(methods).toContain('PUT');
+      expect(methods).toContain('DELETE');
+      expect(methods).toContain('PATCH');
+
+      // All should have /items prefix combined
+      const paths = nestjsRoutes.map(n => n.properties.path as string);
+      for (const p of paths) {
+        expect(p).toMatch(/^\//);
+      }
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Django REST @api_view decorator', async () => {
+      const repo = makeRepo({
+        'api/views.py': `
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+
+@api_view(['GET', 'POST'])
+def user_list(request):
+    if request.method == 'GET':
+        return Response([])
+    elif request.method == 'POST':
+        return Response({})
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:api/views.py',
+        label: 'File',
+        properties: { name: 'views.py', filePath: 'api/views.py' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(1);
+      expect(output.frameworks).toContain('django-rest');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const djangoRoutes = routeNodes.filter(n => n.properties.framework === 'django-rest');
+      expect(djangoRoutes.length).toBeGreaterThanOrEqual(1);
+
+      const apiViewRoute = djangoRoutes.find(n => n.properties.path === '[inferred]');
+      expect(apiViewRoute).toBeDefined();
+      // Method should contain the extracted HTTP methods string
+      expect(apiViewRoute?.properties.method).toBeTruthy();
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Django REST @action decorator', async () => {
+      const repo = makeRepo({
+        'api/viewsets.py': `
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+class UserViewSet(viewsets.ModelViewSet):
+    @action(detail=True, methods=['get'])
+    def profile(self, request, pk=None):
+        return Response({})
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:api/viewsets.py',
+        label: 'File',
+        properties: { name: 'viewsets.py', filePath: 'api/viewsets.py' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(1);
+      expect(output.frameworks).toContain('django-rest');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const actionRoutes = routeNodes.filter(
+        n => n.properties.framework === 'django-rest' && n.properties.path === '[inferred]',
+      );
+      expect(actionRoutes.length).toBeGreaterThanOrEqual(1);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+  });
 });

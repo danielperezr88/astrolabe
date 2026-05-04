@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { loadRegistry } from './registry.js';
 import { createFtsSearch } from '../search/fts.js';
+import { autoDetectGroups as detectGroups, type ServiceBoundary } from '../analysis/service-boundary-detector.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -230,3 +231,11 @@ export function groupQuery(
 
   return output;
 }
+
+// ── Service boundary auto-detection ────────────────────────────────────────
+
+/**
+ * Auto-detect service boundaries in a repository.
+ * Re-exported from service-boundary-detector for convenient access via groups API.
+ */
+export { detectGroups as autoDetectGroups, type ServiceBoundary };

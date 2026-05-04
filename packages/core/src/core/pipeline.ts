@@ -10,6 +10,7 @@
  */
 
 import type { KnowledgeGraph } from '@astrolabe/shared';
+import { PhaseTimer } from './phase-timer.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,9 @@ export async function runPipeline(
 ): Promise<unknown[]> {
   const sorted = topologicalSort(phases);
   const results: unknown[] = [];
+  const isDebug = !!process.env.ASTROLABE_DEBUG;
+  const pipelineTimer = isDebug ? new PhaseTimer('pipeline') : null;
+  if (pipelineTimer) pipelineTimer.start();
 
   for (const phase of sorted) {
     const start = Date.now();
@@ -75,10 +79,12 @@ export async function runPipeline(
     context.state.set(`output:${phase.name}`, output);
 
     const elapsed = Date.now() - start;
+    if (pipelineTimer) pipelineTimer.mark(phase.name);
     context.onProgress(phase.name, 100, `${phase.name} complete (${elapsed}ms)`);
     results.push(output);
   }
 
+  if (pipelineTimer) pipelineTimer.stop();
   return results;
 }
 

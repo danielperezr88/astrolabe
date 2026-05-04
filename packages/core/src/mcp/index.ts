@@ -5,5 +5,6 @@ export {
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup,
   listGroups, getGroup, getGroupStatus, groupQuery,
   loadGroups, saveGroups,
+  autoDetectGroups,
 } from './groups.js';
-export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus } from './groups.js';
+export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus, ServiceBoundary } from './groups.js';
