@@ -88,7 +88,7 @@ export class McpTransport {
           const result = this.tryParseNewline(data, offset);
           if (result === null) break; // need more data
           offset = result.nextOffset;
-          this.emit(result.message);
+          if (result.message) this.emit(result.message); // #414: skip empty (sentinel)
         }
       }
 
@@ -160,8 +160,8 @@ export class McpTransport {
     const nextOffset = offset + nlIdx + 1;
 
     if (line.length === 0) {
-      // Skip empty lines
-      return this.tryParseNewline(data, nextOffset) ?? { message: '', nextOffset };
+      // Skip empty lines — return sentinel for outer loop to handle iteratively (#414)
+      return { message: '', nextOffset };
     }
 
     return { message: line, nextOffset };

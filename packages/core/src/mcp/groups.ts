@@ -208,17 +208,20 @@ export function groupQuery(
 
     try {
       const fts = createFtsSearch(entry.dbPath);
-      const results = fts.search(query, limit);
-      fts.close();
-      output.push({
-        repoName: gr.repoName,
-        results: results.map((r) => ({
-          label: r.label,
-          name: r.name,
-          filePath: r.filePath,
-          rank: (r as any).rank ?? 0,
-        })),
-      });
+      try {
+        const results = fts.search(query, limit);
+        output.push({
+          repoName: gr.repoName,
+          results: results.map((r) => ({
+            label: r.label,
+            name: r.name,
+            filePath: r.filePath,
+            rank: (r as any).rank ?? 0,
+          })),
+        });
+      } finally {
+        fts.close(); // #412: always close FTS, even if search() throws
+      }
     } catch (err) {
       // #324: Log error but continue with other repos in the group
       console.warn(`[groups] Failed to query ${gr.repoName}: ${(err as Error).message}`);

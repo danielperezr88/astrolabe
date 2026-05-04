@@ -583,7 +583,7 @@ export async function parseFile(
 
   // #395: Vue SFC preprocessing — extract <script> block content
   if (ext === '.vue') {
-    const sfc = preprocessVueSfc(normalisedPath);
+    const sfc = preprocessVueSfc(normalisedPath, content);
     if (!sfc) {
       return {
         filePath: normalisedPath,

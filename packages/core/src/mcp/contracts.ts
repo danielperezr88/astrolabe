@@ -33,7 +33,7 @@ export interface ConsumerContract {
 }
 
 export interface ContractCrossLink {
-  provider: { repoName: string; path: string; method: string };
+  provider: { repoName: string; path: string; method: string; handlerName?: string };
   consumer: { repoName: string; functionName: string; filePath: string };
   contractType: 'http' | 'grpc' | 'topic';
   confidence: number; // 0-1, based on path similarity
@@ -160,7 +160,7 @@ function matchContracts(
       const confidence = pathSimilarity(consumer.urlPattern, provider.path);
       if (confidence > 0.3) {
         links.push({
-          provider: { repoName: provider.repoName, path: provider.path, method: provider.method },
+          provider: { repoName: provider.repoName, path: provider.path, method: provider.method, handlerName: provider.handlerName },
           consumer: { repoName: consumer.repoName, functionName: consumer.functionName, filePath: consumer.filePath },
           contractType: 'http',
           confidence: Math.round(confidence * 100) / 100,
@@ -320,7 +320,6 @@ const TOPIC_PRODUCER_PATTERNS: Array<{
   { broker: 'sqs', pattern: /sqs\.sendMessage\s*\(\s*\{[^}]*QueueUrl[^}]*\}\s*\)/i },
   { broker: 'pubsub', pattern: /topic\.publish\s*\(\s*['"`]([^'"`]+)['"`]/i },
   { broker: 'pubsub', pattern: /\.publishMessage\s*\(\s*\{[^}]*topic\s*:\s*['"`]([^'"`]+)['"`]/i },
-  { broker: 'generic', pattern: /\.(?:publish|send|emit|produce)\s*\(\s*['"`]([^'"`]+)['"`]\s*,/i },
 ];
 
 const TOPIC_CONSUMER_PATTERNS: Array<{
@@ -336,7 +335,6 @@ const TOPIC_CONSUMER_PATTERNS: Array<{
   { broker: 'sqs', pattern: /sqs\.receiveMessage\s*\(\s*\{[^}]*QueueUrl[^}]*\}\s*\)/i },
   { broker: 'pubsub', pattern: /(?:subscription|topic)\.on\s*\(\s*['"`]([^'"`]+)['"`]/i },
   { broker: 'pubsub', pattern: /\.onMessage\s*\(\s*['"`]([^'"`]+)['"`]/i },
-  { broker: 'generic', pattern: /\.(?:consume|subscribe|on|listen|receive)\s*\(\s*['"`]([^'"`]+)['"`]\s*,/i },
 ];
 
 function extractTopicContracts(graph: KnowledgeGraph): TopicContract[] {
@@ -383,10 +381,11 @@ const STDLIB_MODULES = new Set([
 function isInternalPackage(importPath: string): boolean {
   // Skip stdlib / runtime modules
   if (STDLIB_MODULES.has(importPath)) return false;
-  // Skip node_modules (scoped or not)
+  // Skip node: protocol
   if (importPath.startsWith('node:')) return false;
-  // Keep workspace packages (scoped like @myorg/..., or bare internal like shared-utils)
-  // These typically come from the same monorepo/workspace
+  // #407: Third-party npm packages (unscoped, not relative) are NOT internal
+  if (!importPath.startsWith('.') && !importPath.startsWith('@')) return false;
+  // Keep workspace packages: scoped (@myorg/...) or relative (./shared, ../utils)
   return true;
 }
 

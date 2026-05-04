@@ -51,14 +51,17 @@ export function cosineSimilarityVec(a: Float32Array, b: Float32Array): number {
 
 /**
  * Search stored embeddings by vector similarity to the query.
+ * Async — supports both sync and async (ML) embedding providers (#415).
  */
-export function searchVector(
+export async function searchVector(
   queryText: string,
   store: EmbeddingStore,
   provider: EmbeddingProvider,
   limit = 20,
-): Array<{ nodeId: string; score: number }> {
-  const queryVec = provider.encode(queryText);
+): Promise<Array<{ nodeId: string; score: number }>> {
+  const queryVec = provider.encodeAsync
+    ? await provider.encodeAsync(queryText)
+    : provider.encode(queryText);
   const all = store.getAll();
   if (all.length === 0) return [];
 
@@ -87,16 +90,16 @@ export function searchVector(
  *
  * @returns Combined results sorted by RRF score descending.
  */
-export function hybridSearch(
+export async function hybridSearch(
   query: string,
   fts: FtsSearch,
   store: EmbeddingStore,
   provider: EmbeddingProvider,
   limit = 20,
-): HybridResult[] {
+): Promise<HybridResult[]> {
   // Run both searches in parallel
   const ftsResults = fts.search(query, 50); // fetch more for RRF
-  const vecResults = searchVector(query, store, provider, 50);
+  const vecResults = await searchVector(query, store, provider, 50);
 
   // Build RRF score map
   const rrfScores = new Map<string, { ftsRank: number; vectorScore: number; combinedScore: number; name?: string; label?: string; filePath?: string }>();

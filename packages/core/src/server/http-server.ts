@@ -245,7 +245,7 @@ async function handleQuery(res: ServerResponse, repoName: string, params: Record
   try {
     const ctx = getRepo(entry.dbPath, repoName);
     const results = ctx.fts.search(query, limit);
-    json(res, { results: results.map((r) => ({ label: r.label, name: r.name, filePath: r.filePath, rank: (r as any).rank })) });
+    json(res, { results: results.map((r) => ({ label: r.label, name: r.name, filePath: r.filePath, rank: r.score })) });
   } catch (err) {
     error(res, String(err), 500);
   }

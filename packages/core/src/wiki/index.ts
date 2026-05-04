@@ -121,6 +121,7 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
 
   let pageCount = 0;
   const usedNames = new Set<string>(); // #357: collision-safe naming
+  const safeNameMap = new Map<string, string>(); // #416: track safeName per community
 
   // Generate per-module pages
   for (const [name, symbols] of communities) {
@@ -132,6 +133,7 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
       safeName += '_' + Math.abs(hash).toString(16).slice(0, 6);
     }
     usedNames.add(safeName);
+    safeNameMap.set(name, safeName); // #416: remember for overview
     const description = await generateModuleDescription(name, symbols, opts);
 
     const content = [
@@ -157,7 +159,7 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
   ];
 
   for (const [name, symbols] of communities) {
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeName = safeNameMap.get(name) ?? name.replace(/[^a-zA-Z0-9_-]/g, '_'); // #416: use same safeName as per-module page
     overviewLines.push(`- [${name}](${safeName}.md) — ${symbols.length} symbols`);
   }
 

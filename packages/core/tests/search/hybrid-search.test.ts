@@ -167,7 +167,7 @@ describe('Hybrid Search (#261)', () => {
       rmSync(testDir, { recursive: true, force: true });
     });
 
-    it('returns combined results from FTS and vector search', () => {
+    it('returns combined results from FTS and vector search', async () => {
       const store = createSqliteStore(dbPath);
       const graph = createKnowledgeGraph();
       graph.addNode({ id: 'fn:login', label: 'Function', properties: { name: 'loginHandler', filePath: 'src/auth.ts' } });
@@ -185,7 +185,7 @@ describe('Hybrid Search (#261)', () => {
       ]);
       const provider = createTfIdfEmbeddingProvider(index);
 
-      const results = hybridSearch('login', fts, embStore, provider, 10);
+      const results = await hybridSearch('login', fts, embStore, provider, 10);
       expect(results.length).toBeGreaterThan(0);
 
       fts.close();
@@ -193,7 +193,7 @@ describe('Hybrid Search (#261)', () => {
       db.close();
     });
 
-    it('handles empty FTS results gracefully', () => {
+    it('handles empty FTS results gracefully', async () => {
       const store = createSqliteStore(dbPath);
       const graph = createKnowledgeGraph();
       store.saveGraph(graph);
@@ -205,7 +205,7 @@ describe('Hybrid Search (#261)', () => {
       const index = buildTfIdfIndex([{ nodeId: 'fn:x', text: 'nonexistent term' }]);
       const provider = createTfIdfEmbeddingProvider(index);
 
-      const results = hybridSearch('zzzzzzzzz', fts, embStore, provider, 5);
+      const results = await hybridSearch('zzzzzzzzz', fts, embStore, provider, 5);
       // Should not crash, may return empty
       expect(Array.isArray(results)).toBe(true);
 

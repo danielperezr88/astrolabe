@@ -18,12 +18,16 @@ import { readFileSync } from 'node:fs';
  *
  * @returns Script content and setup flag, or null if no script block found.
  */
-export function preprocessVueSfc(filePath: string): { content: string; isSetup: boolean } | null {
+export function preprocessVueSfc(filePath: string, content?: string): { content: string; isSetup: boolean } | null {
   let source: string;
-  try {
-    source = readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
+  if (content !== undefined) {
+    source = content;
+  } else {
+    try {
+      source = readFileSync(filePath, 'utf-8');
+    } catch {
+      return null;
+    }
   }
   return extractScriptContent(source);
 }

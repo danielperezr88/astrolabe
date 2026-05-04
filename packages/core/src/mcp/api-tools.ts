@@ -192,46 +192,67 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
   }
   if (targetIds.length === 0) return [];
 
-  const results: ApiImpactResult[] = [];
+  // #411: Pre-build indices ONCE — O(R) instead of O(T×N×R×C)
+  const targetIdSet = new Set(targetIds);
 
+  // handler → routes it handles
+  const handlerToRoutes = new Map<string, Array<{ method: string; path: string }>>();
+  for (const hr of graph.iterRelationshipsByType('HANDLES_ROUTE')) {
+    if (!targetIdSet.has(hr.sourceId)) continue;
+    const routeNode = graph.getNode(hr.targetId);
+    if (!routeNode || routeNode.label !== 'Route') continue;
+    let arr = handlerToRoutes.get(hr.sourceId);
+    if (!arr) { arr = []; handlerToRoutes.set(hr.sourceId, arr); }
+    arr.push({
+      method: (routeNode.properties.method as string) ?? '?',
+      path: (routeNode.properties.path as string) ?? '?',
+    });
+  }
+
+  // handler → tools it handles
+  const handlerToTools = new Map<string, Array<{ type: string; name: string }>>();
+  for (const hr of graph.iterRelationshipsByType('HANDLES_TOOL')) {
+    if (!targetIdSet.has(hr.sourceId)) continue;
+    const toolNode = graph.getNode(hr.targetId);
+    if (!toolNode || toolNode.label !== 'Tool') continue;
+    let arr = handlerToTools.get(hr.sourceId);
+    if (!arr) { arr = []; handlerToTools.set(hr.sourceId, arr); }
+    arr.push({
+      type: (toolNode.properties.toolType as string) ?? '?',
+      name: (toolNode.properties.name as string) ?? toolNode.id,
+    });
+  }
+
+  // callee → callers (CALLS relationships)
+  const calleeToCallers = new Map<string, string[]>();
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type !== 'CALLS') continue;
+    const caller = graph.getNode(rel.sourceId);
+    if (!caller) continue;
+    let arr = calleeToCallers.get(rel.targetId);
+    if (!arr) { arr = []; calleeToCallers.set(rel.targetId, arr); }
+    arr.push((caller.properties.name as string) ?? caller.id);
+  }
+
+  // Build results using pre-built indices — O(T) lookups
+  const results: ApiImpactResult[] = [];
   for (const targetId of targetIds) {
-    // Find related routes
     const routes: ApiImpactResult['routes'] = [];
-    for (const node of graph.iterNodes()) {
-      if (node.label !== 'Route') continue;
-      const handlesRel = graph.iterRelationshipsByType('HANDLES_ROUTE');
-      for (const hr of handlesRel) {
-        if (hr.targetId === node.id && hr.sourceId === targetId) {
-          const consumers: string[] = [];
-          for (const rel of graph.iterRelationships()) {
-            if (rel.type === 'CALLS' && rel.targetId === targetId) {
-              const caller = graph.getNode(rel.sourceId);
-              if (caller) consumers.push((caller.properties.name as string) ?? caller.id);
-            }
-          }
-          routes.push({
-            method: (node.properties.method as string) ?? '?',
-            path: (node.properties.path as string) ?? '?',
-            consumers,
-            risk: consumers.length > 0 ? 'BREAKING: has consumers' : 'safe to change',
-          });
-        }
-      }
+    const matchedRoutes = handlerToRoutes.get(targetId) ?? [];
+    const consumers = calleeToCallers.get(targetId) ?? [];
+    for (const r of matchedRoutes) {
+      routes.push({
+        method: r.method,
+        path: r.path,
+        consumers,
+        risk: consumers.length > 0 ? 'BREAKING: has consumers' : 'safe to change',
+      });
     }
 
-    // Find related tools
     const tools: ApiImpactResult['tools'] = [];
-    for (const node of graph.iterNodes()) {
-      if (node.label !== 'Tool') continue;
-      const handlesRel = graph.iterRelationshipsByType('HANDLES_TOOL');
-      for (const hr of handlesRel) {
-        if (hr.targetId === node.id && hr.sourceId === targetId) {
-          tools.push({
-            type: (node.properties.toolType as string) ?? '?',
-            name: (node.properties.name as string) ?? node.id,
-          });
-        }
-      }
+    const matchedTools = handlerToTools.get(targetId) ?? [];
+    for (const t of matchedTools) {
+      tools.push(t);
     }
 
     results.push({
@@ -262,30 +283,32 @@ export function shapeCheck(graph: KnowledgeGraph, routePath: string): Array<{ fi
 
   // Check consumers of this route
   const handlesRel = graph.iterRelationshipsByType('HANDLES_ROUTE');
-  let handlerId = '';
+  const handlerIds: string[] = []; // #413: collect all handlers, not just the last one
   for (const hr of handlesRel) {
     if (hr.targetId === routeNode!.id) {
-      handlerId = hr.sourceId;
+      handlerIds.push(hr.sourceId);
     }
   }
 
-  if (!handlerId) return mismatches;
+  if (handlerIds.length === 0) return mismatches;
 
-  // Find callers of the handler
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS' && rel.targetId === handlerId) {
-      const caller = graph.getNode(rel.sourceId);
-      if (!caller) continue;
+  // Find callers of all handlers
+  for (const handlerId of handlerIds) {
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'CALLS' && rel.targetId === handlerId) {
+        const caller = graph.getNode(rel.sourceId);
+        if (!caller) continue;
 
-      // Check for USES edges from caller to types/imports that indicate field access
-      for (const rel2 of graph.iterRelationships()) {
-        if (rel2.type === 'USES' && rel2.sourceId === caller.id) {
-          const usedNode = graph.getNode(rel2.targetId);
-          if (usedNode && usedNode.label === 'Variable') {
-            mismatches.push({
-              field: (usedNode.properties.name as string) ?? usedNode.id,
-              severity: 'warning',
-            });
+        // Check for USES edges from caller to types/imports that indicate field access
+        for (const rel2 of graph.iterRelationships()) {
+          if (rel2.type === 'USES' && rel2.sourceId === caller.id) {
+            const usedNode = graph.getNode(rel2.targetId);
+            if (usedNode && usedNode.label === 'Variable') {
+              mismatches.push({
+                field: (usedNode.properties.name as string) ?? usedNode.id,
+                severity: 'warning',
+              });
+            }
           }
         }
       }

@@ -859,8 +859,9 @@ service: monorepo path prefix filter (only active in group mode).`,
               }
 
               for (const link of contracts.crossLinks) {
-                // Check if any affected symbol is a provider consumed by another repo
-                const linkConsumed = affectedSymbols.has(link.provider.path) || affectedSymbols.has(link.consumer.functionName);
+                // #409: Check if any affected symbol matches the provider's handler function name
+                const linkConsumed = (link.provider.handlerName && affectedSymbols.has(link.provider.handlerName))
+                  || affectedSymbols.has(link.consumer.functionName);
                 if (!linkConsumed) continue;
 
                 const targetRepo = link.consumer.repoName;
