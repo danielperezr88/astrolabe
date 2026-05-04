@@ -145,7 +145,7 @@ describe('Community Skills (#267)', () => {
     });
 
     expect(result.skillsCount).toBeGreaterThan(0);
-    const skillsDir = join(skillsPath, '.astrolabe', 'skills');
+    const skillsDir = join(skillsPath, '.astrolabe', 'skills', 'generated');
     expect(existsSync(skillsDir)).toBe(true);
 
     // Should have at least one .md file

@@ -107,6 +107,16 @@ export function betweennessCentrality(
   const cb = new Map<string, number>();
   for (const node of nodes) cb.set(node, 0);
 
+  // #465: Pre-build reverse adjacency list once (avoids O(N²) scan per BFS node)
+  const reverseAdj = new Map<string, string[]>();
+  for (const node of nodes) reverseAdj.set(node, []);
+  for (const [u, targets] of adjList) {
+    for (const v of targets) {
+      const rev = reverseAdj.get(v);
+      if (rev && !rev.includes(u)) rev.push(u);
+    }
+  }
+
   for (const source of nodes) {
     // BFS from source
     const stack: string[] = [];
@@ -142,19 +152,17 @@ export function betweennessCentrality(
         }
       }
 
-      // Also consider reverse edges (undirected view)
-      // Nodes that point TO v should be treated as neighbors too
-      for (const [potentialNeighbor, targets] of adjList) {
-        if (targets.includes(v) && !neighbors.includes(potentialNeighbor)) {
-          const w = potentialNeighbor;
-          if (distance.get(w) === -1) {
-            distance.set(w, distance.get(v)! + 1);
-            queue.push(w);
-          }
-          if (distance.get(w) === distance.get(v)! + 1) {
-            shortestPaths.set(w, shortestPaths.get(w)! + shortestPaths.get(v)!);
-            predecessors.get(w)!.push(v);
-          }
+      // #465: Use pre-built reverse adjacency (O(1) per neighbor instead of O(N²))
+      const reverseNeighbors = reverseAdj.get(v) ?? [];
+      for (const w of reverseNeighbors) {
+        if (neighbors.includes(w)) continue; // already handled as forward edge
+        if (distance.get(w) === -1) {
+          distance.set(w, distance.get(v)! + 1);
+          queue.push(w);
+        }
+        if (distance.get(w) === distance.get(v)! + 1) {
+          shortestPaths.set(w, shortestPaths.get(w)! + shortestPaths.get(v)!);
+          predecessors.get(w)!.push(v);
         }
       }
     }

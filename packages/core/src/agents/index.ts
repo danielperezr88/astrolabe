@@ -229,13 +229,14 @@ function installSkillFilesToEditors(repoPath: string): void {
 // ── Community Skills (#267) ─────────────────────────────────────────────────
 
 function generateCommunitySkills(repoPath: string, opts: GenerateOptions): number {
+  // #466: Only clean auto-generated files, preserve user customizations
   const skillsDir = join(repoPath, '.astrolabe', 'skills');
+  const generatedDir = join(skillsDir, 'generated');
 
-  // #339: Clean stale skills from previous runs
-  if (existsSync(skillsDir)) {
-    rmSync(skillsDir, { recursive: true, force: true });
+  if (existsSync(generatedDir)) {
+    rmSync(generatedDir, { recursive: true, force: true });
   }
-  mkdirSync(skillsDir, { recursive: true });
+  mkdirSync(generatedDir, { recursive: true });
 
   const graph = opts.graph!;
   const communities = new Map<string, string[]>();
@@ -282,7 +283,7 @@ function generateCommunitySkills(repoPath: string, opts: GenerateOptions): numbe
       `- \`astrolabe.impact {"scope": "unstaged"}\` — pre-change impact`,
     ].join('\n');
 
-    const skillPath = join(skillsDir, `${safeName}.md`);
+    const skillPath = join(generatedDir, `${safeName}.md`);
     writeFileSync(skillPath, content, 'utf-8');
     count++;
   }

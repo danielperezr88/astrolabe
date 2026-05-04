@@ -402,6 +402,8 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
         const nestjsPrefix = nestjsPrefixMatch ? nestjsPrefixMatch[1] : '';
 
         for (const fw of FRAMEWORK_PATTERNS) {
+          // #467: Reset lastIndex to prevent missed matches when regex has /g flag
+          fw.regex.lastIndex = 0;
           let match;
           while ((match = fw.regex.exec(content)) !== null) {
             let { method, path } = fw.extract(match);
