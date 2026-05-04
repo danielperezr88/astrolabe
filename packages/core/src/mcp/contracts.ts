@@ -37,6 +37,10 @@ export interface ContractCrossLink {
   consumer: { repoName: string; functionName: string; filePath: string };
   contractType: 'http' | 'grpc' | 'topic';
   confidence: number; // 0-1, based on path similarity
+  /** How this match was found: 'exact' for textual/structural, 'fuzzy' for embedding similarity. */
+  matchType: 'exact' | 'fuzzy';
+  /** Human-readable explanation of why this match was made. */
+  reason: string;
 }
 
 /** #398: Shared library detected across 2+ repos in a group. */
@@ -164,6 +168,8 @@ function matchContracts(
           consumer: { repoName: consumer.repoName, functionName: consumer.functionName, filePath: consumer.filePath },
           contractType: 'http',
           confidence: Math.round(confidence * 100) / 100,
+          matchType: 'exact',
+          reason: `Path similarity: ${consumer.urlPattern} ↔ ${provider.path}`,
         });
       }
     }
@@ -471,6 +477,8 @@ function matchGrpcContracts(
           consumer: { repoName: consumer.repoName, functionName: consumer.functionName, filePath: consumer.filePath },
           contractType: 'grpc',
           confidence: 0.7,
+          matchType: 'exact',
+          reason: `gRPC service name match: ${svcName} ↔ ${provider.serviceName}`,
         });
       }
     }
@@ -498,12 +506,100 @@ function matchTopicContracts(
           consumer: { repoName: consumer.repoName, functionName: consumer.functionName, filePath: consumer.filePath },
           contractType: 'topic',
           confidence: 0.8,
+          matchType: 'exact',
+          reason: `Topic name match: ${producer.topicName}`,
         });
       }
     }
   }
 
   return links;
+}
+
+// ── #4xx: Fuzzy Contract Matching (Embedding Fallback) ──────────────────────
+
+/** Item to match via embedding similarity when exact matching fails. */
+export interface FuzzyMatchItem {
+  id: string;
+  description: string;
+}
+
+/** Provider for generating embeddings (injected to avoid hard dependency). */
+export interface EmbeddingProvider {
+  encodeAsync(text: string): Promise<number[]>;
+}
+
+/**
+ * Compute cosine similarity between two dense embedding vectors.
+ *
+ * Both arrays must have the same length.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+/**
+ * Find fuzzy matches between unmatched providers and consumers using embedding similarity.
+ *
+ * When exact contract matching (path Jaccard, gRPC name match, topic name match) fails
+ * to link a provider and consumer, this function falls back to embedding-based similarity.
+ * Pairs above `threshold` (default 0.7) are returned as fuzzy matches with lower confidence.
+ *
+ * @param providers  Unmatched provider items (id + description)
+ * @param consumers  Unmatched consumer items (id + description)
+ * @param embeddingProvider  Interface that produces embedding vectors from text
+ * @param threshold  Minimum cosine similarity to consider a match (default 0.7)
+ * @returns ContractCrossLink[] with matchType='fuzzy'
+ */
+export async function fuzzyMatchContracts(
+  providers: FuzzyMatchItem[],
+  consumers: FuzzyMatchItem[],
+  embeddingProvider: EmbeddingProvider,
+  threshold = 0.7,
+): Promise<ContractCrossLink[]> {
+  if (providers.length === 0 || consumers.length === 0) return [];
+
+  // Generate embeddings for all items
+  const embeddings = new Map<string, number[]>();
+  for (const item of [...providers, ...consumers]) {
+    embeddings.set(item.id, await embeddingProvider.encodeAsync(item.description));
+  }
+
+  // Compare each provider with each consumer
+  const matches: ContractCrossLink[] = [];
+  for (const provider of providers) {
+    for (const consumer of consumers) {
+      const provEmb = embeddings.get(provider.id);
+      const consEmb = embeddings.get(consumer.id);
+      if (!provEmb || !consEmb) continue;
+
+      const sim = cosineSimilarity(provEmb, consEmb);
+      if (sim >= threshold) {
+        matches.push({
+          provider: { repoName: '', path: provider.id, method: 'http' },
+          consumer: { repoName: '', functionName: consumer.id, filePath: '' },
+          contractType: 'http',
+          confidence: Math.round(sim * 0.7 * 100) / 100, // lower than exact
+          matchType: 'fuzzy',
+          reason: `Embedding similarity: ${sim.toFixed(3)}`,
+        });
+      }
+    }
+  }
+
+  // Sort by confidence descending
+  matches.sort((a, b) => b.confidence - a.confidence);
+  return matches;
 }
 
 // ── Sync ────────────────────────────────────────────────────────────────────
@@ -621,4 +717,96 @@ export function getGroupContracts(groupName: string): GroupContracts | null {
 
   const contracts = (group as RepoGroup & { contracts?: GroupContracts }).contracts;
   return contracts ?? null;
+}
+
+/**
+ * Async variant of syncGroupContracts that adds fuzzy embedding-based matching
+ * as a fallback after the standard exact matching pass.
+ *
+ * After exact matching (HTTP path similarity, gRPC name match, topic name match),
+ * any unmatched providers and consumers are compared via embedding cosine similarity.
+ * Pairs above `threshold` (default 0.7) are appended as fuzzy matches.
+ *
+ * @param groupName   Name of the group to sync
+ * @param embeddingProvider  Provider that generates embedding vectors from text
+ * @param threshold   Minimum cosine similarity for fuzzy matches (default 0.7)
+ * @returns Sync results per repo
+ */
+export async function syncGroupContractsWithFuzzy(
+  groupName: string,
+  embeddingProvider: EmbeddingProvider,
+  threshold = 0.7,
+): Promise<ContractSyncResult[]> {
+  // Step 1: Run standard exact matching
+  const results = syncGroupContracts(groupName);
+
+  // Step 2: Load the contracts that were just persisted
+  const config = loadGroups();
+  const group = config.groups[groupName];
+  if (!group) return results;
+
+  const existing = (group as RepoGroup & { contracts?: GroupContracts }).contracts;
+  if (!existing) return results;
+
+  // Step 3: Identify unmatched providers and consumers
+  const matchedProviderKeys = new Set(
+    existing.crossLinks.map((l) => `${l.provider.repoName}:${l.provider.path}`),
+  );
+  const matchedConsumerKeys = new Set(
+    existing.crossLinks.map((l) => `${l.consumer.repoName}:${l.consumer.functionName}`),
+  );
+
+  const unmatchedProviders: FuzzyMatchItem[] = existing.providers
+    .filter((p) => !matchedProviderKeys.has(`${p.repoName}:${p.path}`))
+    .map((p) => ({
+      id: `${p.repoName}:${p.method}:${p.path}`,
+      description: `${p.method} ${p.path} ${p.handlerName} ${p.framework}`,
+    }));
+
+  const unmatchedConsumers: FuzzyMatchItem[] = existing.consumers
+    .filter((c) => !matchedConsumerKeys.has(`${c.repoName}:${c.functionName}`))
+    .map((c) => ({
+      id: `${c.repoName}:${c.functionName}`,
+      description: `${c.clientType} ${c.urlPattern} ${c.functionName}`,
+    }));
+
+  // Step 4: Run fuzzy matching on unmatched items
+  if (unmatchedProviders.length > 0 && unmatchedConsumers.length > 0) {
+    const fuzzyLinks = await fuzzyMatchContracts(
+      unmatchedProviders,
+      unmatchedConsumers,
+      embeddingProvider,
+      threshold,
+    );
+
+    // Populate repoName from the composite IDs (format: "repoName:rest")
+    for (const link of fuzzyLinks) {
+      const provParts = link.provider.path.split(':');
+      const consParts = link.consumer.functionName.split(':');
+      link.provider.repoName = provParts[0] ?? '';
+      link.consumer.repoName = consParts[0] ?? '';
+      link.consumer.functionName = consParts.slice(1).join(':');
+    }
+
+    // Append fuzzy links to existing cross-links
+    existing.crossLinks = [...existing.crossLinks, ...fuzzyLinks];
+
+    // Update cross-link counts per repo
+    for (const result of results) {
+      if (result.error) continue;
+      result.crossLinks = existing.crossLinks.filter(
+        (l) => l.provider.repoName === result.repoName || l.consumer.repoName === result.repoName,
+      ).length;
+    }
+
+    // Re-persist updated contracts
+    const updatedGroup: RepoGroup = {
+      ...group,
+      contracts: existing as unknown as Record<string, unknown>,
+    };
+    config.groups[groupName] = updatedGroup;
+    saveGroups(config);
+  }
+
+  return results;
 }

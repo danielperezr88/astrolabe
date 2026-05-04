@@ -399,6 +399,10 @@ export class EmbeddingStore {
   private insertStmt: Database.Statement;
   private getStmt: Database.Statement;
   private getAllStmt: Database.Statement;
+  private getAllHashesStmt: Database.Statement;
+  private getHashStmt: Database.Statement;
+  private getDimsStmt: Database.Statement;
+  private clearAllStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     db.exec(SCHEMA);
@@ -407,6 +411,10 @@ export class EmbeddingStore {
     );
     this.getStmt = db.prepare('SELECT * FROM embeddings WHERE node_id = ?');
     this.getAllStmt = db.prepare('SELECT * FROM embeddings');
+    this.getAllHashesStmt = db.prepare('SELECT node_id, hash FROM embeddings');
+    this.getHashStmt = db.prepare('SELECT hash FROM embeddings WHERE node_id = ?');
+    this.getDimsStmt = db.prepare('SELECT DISTINCT dims FROM embeddings');
+    this.clearAllStmt = db.prepare('DELETE FROM embeddings');
   }
 
   /**
@@ -502,6 +510,63 @@ export class EmbeddingStore {
       : provider.encode(text);
     this.upsert(node.id, hash, vec);
     return vec;
+  }
+
+  // ── Re-analysis embedding preservation ────────────────────────────────────
+
+  /**
+   * Return all stored content hashes as a Map<nodeId, contentHash>.
+   *
+   * Used before re-analysis to determine which nodes have unchanged content
+   * and can skip re-embedding.
+   */
+  getExistingHashes(): Map<string, string> {
+    const rows = this.getAllHashesStmt.all() as { node_id: string; hash: string }[];
+    const result = new Map<string, string>();
+    for (const row of rows) {
+      result.set(row.node_id, row.hash);
+    }
+    return result;
+  }
+
+  /**
+   * Check whether a specific node needs re-embedding.
+   *
+   * Returns `true` when:
+   *  - The node has no stored embedding at all, OR
+   *  - The stored content hash differs from the provided one
+   *
+   * Returns `false` when the stored hash matches — the embedding is still valid.
+   */
+  needsReembedding(nodeId: string, contentHash: string): boolean {
+    const row = this.getHashStmt.get(nodeId) as { hash: string } | undefined;
+    if (!row) return true; // no stored embedding
+    return row.hash !== contentHash;
+  }
+
+  /**
+   * Detect whether stored embeddings have a dimensionality that differs from
+   * the current provider.
+   *
+   * This happens when the embedding model is upgraded (e.g. 384D → 768D).
+   * When a mismatch is detected, all existing embeddings are invalid and
+   * must be rebuilt — call {@link clearAll} and re-embed everything.
+   */
+  detectDimensionMismatch(currentDims: number): boolean {
+    const rows = this.getDimsStmt.all() as { dims: number }[];
+    // No stored embeddings — no mismatch possible
+    if (rows.length === 0) return false;
+    return rows.some((row) => row.dims !== currentDims);
+  }
+
+  /**
+   * Delete all stored embeddings.
+   *
+   * Call this when {@link detectDimensionMismatch} returns `true` before
+   * re-embedding the entire graph with the new provider.
+   */
+  clearAll(): void {
+    this.clearAllStmt.run();
   }
 
   close(): void {

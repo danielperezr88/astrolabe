@@ -155,9 +155,7 @@ program
       // Save graph to SQLite
       const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
-      const fts = createFtsSearch(dbPath);
-      fts.indexGraph(store);
-      fts.close();
+      // FTS index is created lazily on first query — no eager creation here
       store.close();
 
       // Save meta.json with current file hashes for next incremental run

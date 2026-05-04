@@ -35,9 +35,26 @@ const FTS_SCHEMA = `
   );
 `;
 
+// ── Lazy index check ────────────────────────────────────────────────────────
+
+const FTS_EXISTS = `
+  SELECT name FROM sqlite_master
+  WHERE type='table' AND name='fts_nodes'
+`;
+
+const POPULATE_FROM_NODES = `
+  SELECT id, label, properties FROM nodes
+  WHERE json_extract(properties, '$.name') IS NOT NULL
+`;
+
+const NODES_EXIST = `
+  SELECT name FROM sqlite_master
+  WHERE type='table' AND name='nodes'
+`;
+
 // ── Prepared statements ─────────────────────────────────────────────────────
 
-function prepare(db: Database.Database) {
+function prepareStatements(db: Database.Database) {
   return {
     search: db.prepare(`
       SELECT
@@ -83,7 +100,11 @@ export interface FtsSearch {
 }
 
 /**
- * Create an FTS5 search index.
+ * Create an FTS5 search index with lazy initialization.
+ *
+ * The FTS5 virtual table is NOT created until the first operation that
+ * needs it (search, indexNode, etc.). This avoids the cost of building
+ * the full-text index for repos that are analyzed but never queried.
  *
  * Accepts either a Database instance (to share the connection with the
  * persistence layer) or a file path (creates a new connection).
@@ -95,21 +116,71 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
     db.pragma('journal_mode = WAL');
   }
   // Don't set journal_mode on a shared connection — the owner controls it.
-  db.exec(FTS_SCHEMA);
 
-  const stmts = prepare(db);
+  let indexCreated = false;
+  let stmts: ReturnType<typeof prepareStatements> | null = null;
+
+  /** Populate FTS from the `nodes` table already present in the database. */
+  function populateFromNodesTable(): void {
+    const hasNodes = db.prepare(NODES_EXIST).get();
+    if (!hasNodes) return;
+    const rows = db.prepare(POPULATE_FROM_NODES)
+      .all() as Array<{ id: string; label: string; properties: string }>;
+    if (rows.length === 0) return;
+    const insertStmt = db.prepare(`
+      INSERT OR REPLACE INTO fts_nodes (node_id, label, name, filePath, keywords)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const props = JSON.parse(row.properties);
+        const keywords = Array.isArray(props.keywords)
+          ? (props.keywords as string[]).join(' ')
+          : (props.keywords as string | undefined) ?? '';
+        insertStmt.run(
+          row.id,
+          row.label,
+          props.name ?? '',
+          props.filePath ?? '',
+          keywords,
+        );
+      }
+    });
+    tx();
+  }
+
+  /**
+   * Ensure the FTS5 virtual table exists before any read/write operation.
+   *
+   * - First call checks `sqlite_master` and creates the table if absent,
+   *   populating it from any pre-existing node data.
+   * - Subsequent calls are a no-op thanks to the in-process flag.
+   */
+  function ensureIndex(): void {
+    if (indexCreated) return;
+
+    const exists = db.prepare(FTS_EXISTS).get();
+    if (!exists) {
+      db.exec(FTS_SCHEMA);
+      populateFromNodesTable();
+    }
+
+    stmts = prepareStatements(db);
+    indexCreated = true;
+  }
 
   return {
     indexGraph(store: SqliteStore): void {
+      ensureIndex();
       const graph = store.loadGraph();
       // Combine clear + reindex into a single transaction to avoid a window
       // where concurrent searches return zero results.
       const tx = db.transaction(() => {
-        stmts.clear.run();
+        stmts!.clear.run();
         for (const node of graph.iterNodes()) {
           if (!node.properties.name) continue;
           const keywords = (node.properties.keywords as string[])?.join(' ') ?? '';
-          stmts.insert.run(
+          stmts!.insert.run(
             node.id,
             node.label,
             node.properties.name ?? '',
@@ -122,6 +193,7 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
     },
 
     search(query: string, limit = 20): SearchResult[] {
+      ensureIndex();
       // Sanitize query for FTS5 (remove special chars, keep alphanumeric + underscore)
       // #310: Also escape { } : which are FTS5 special chars
       const sanitized = query.replace(/['"*()^~!@#$%&=+<>|{}:]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -132,7 +204,7 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
       const ftsQuery = terms.map((t) => `"${t}"*`).join(' AND ');
 
       try {
-        return stmts.search.all(ftsQuery, limit) as SearchResult[];
+        return stmts!.search.all(ftsQuery, limit) as SearchResult[];
       } catch {
         // Graceful fallback for bad queries
         return [];
@@ -140,11 +212,13 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
     },
 
     indexNode(nodeId: string, label: string, name: string, filePath: string, keywords?: string[]): void {
-      stmts.insert.run(nodeId, label, name, filePath, (keywords ?? []).join(' '));
+      ensureIndex();
+      stmts!.insert.run(nodeId, label, name, filePath, (keywords ?? []).join(' '));
     },
 
     deindexNode(nodeId: string): void {
-      stmts.deleteById.run(nodeId);
+      ensureIndex();
+      stmts!.deleteById.run(nodeId);
     },
 
     close(): void {
