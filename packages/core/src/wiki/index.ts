@@ -6,9 +6,15 @@
  * for basic offline mode.
  */
 
-import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import type { KnowledgeGraph } from '../core/types.js';
+
+export interface WikiMeta {
+  lastCommit: string;
+  modules: Record<string, string[]>;
+}
 
 export interface WikiOptions {
   repoPath: string;
@@ -22,6 +28,56 @@ export interface WikiOptions {
   apiKey?: string;
   /** Force full regeneration (clears existing wiki). */
   force?: boolean;
+}
+
+const WIKI_META_FILE = 'meta.json';
+
+function getWikiMetaPath(repoPath: string): string {
+  return join(repoPath, '.astrolabe', 'wiki', WIKI_META_FILE);
+}
+
+function loadWikiMeta(repoPath: string): WikiMeta | null {
+  const metaPath = getWikiMetaPath(repoPath);
+  if (!existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf-8')) as WikiMeta;
+  } catch {
+    return null;
+  }
+}
+
+function saveWikiMeta(repoPath: string, meta: WikiMeta): void {
+  const metaPath = getWikiMetaPath(repoPath);
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+}
+
+function getCurrentCommit(repoPath: string): string | null {
+  try {
+    const commit = execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim();
+    return commit || null;
+  } catch {
+    return null;
+  }
+}
+
+function getChangedFiles(repoPath: string): string[] | null {
+  try {
+    const diff = execSync('git diff HEAD~1..HEAD --name-only', { cwd: repoPath, encoding: 'utf-8' }).trim();
+    return diff ? diff.split('\n').filter(Boolean) : [];
+  } catch {
+    return null;
+  }
+}
+
+function getAffectedModules(meta: WikiMeta, changedFiles: string[]): string[] | null {
+  if (!changedFiles.length) return [];
+  const affected = new Set<string>();
+  for (const file of changedFiles) {
+    for (const [module, files] of Object.entries(meta.modules)) {
+      if (files.includes(file)) affected.add(module);
+    }
+  }
+  return Array.from(affected);
 }
 
 export interface WikiResult {
@@ -119,9 +175,28 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
     }
   }
 
+  // Determine which modules to regenerate (incremental mode)
+  let modulesToRegenerate: string[] | null = null;
+  if (!opts.force) {
+    const currentCommit = getCurrentCommit(opts.repoPath);
+    const meta = loadWikiMeta(opts.repoPath);
+    if (meta && currentCommit && meta.lastCommit) {
+      const changedFiles = getChangedFiles(opts.repoPath);
+      if (changedFiles !== null) {
+        modulesToRegenerate = getAffectedModules(meta, changedFiles);
+        if (modulesToRegenerate?.length) {
+          console.log(`[wiki] Incremental mode: regenerating ${modulesToRegenerate.length} affected module(s)`);
+        }
+      }
+    }
+  }
+
   let pageCount = 0;
   const usedNames = new Set<string>(); // #357: collision-safe naming
   const safeNameMap = new Map<string, string>(); // #416: track safeName per community
+
+  // Build module-to-files mapping for meta.json
+  const moduleFilesMap: Record<string, string[]> = {};
 
   // Generate per-module pages
   for (const [name, symbols] of communities) {
@@ -134,6 +209,21 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
     }
     usedNames.add(safeName);
     safeNameMap.set(name, safeName); // #416: remember for overview
+
+    // Skip non-affected modules in incremental mode
+    if (modulesToRegenerate !== null && !modulesToRegenerate.includes(name)) continue;
+
+    // Collect source files for this module's symbols
+    const filesForModule: string[] = [];
+    for (const symbol of symbols) {
+      const symbolNode = Array.from(graph.iterNodes()).find(n => (n.properties.name as string) === symbol);
+      if (symbolNode?.properties?.sourceFile) {
+        const sourceFile = symbolNode.properties.sourceFile as string;
+        if (!filesForModule.includes(sourceFile)) filesForModule.push(sourceFile);
+      }
+    }
+    moduleFilesMap[name] = filesForModule;
+
     const description = await generateModuleDescription(name, symbols, opts);
 
     const content = [
@@ -173,6 +263,12 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
   );
 
   writeFileSync(join(wikiDir, 'README.md'), overviewLines.join('\n'), 'utf-8');
+
+  // Save meta.json with current commit and module-file mapping
+  const currentCommit = getCurrentCommit(opts.repoPath);
+  if (currentCommit) {
+    saveWikiMeta(opts.repoPath, { lastCommit: currentCommit, modules: moduleFilesMap });
+  }
 
   return { pageCount, moduleCount: communities.size, overviewPath: join(wikiDir, 'README.md') };
 }

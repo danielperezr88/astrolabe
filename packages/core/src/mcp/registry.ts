@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger({ level: 'info' });
@@ -17,6 +18,8 @@ export interface RegistryEntry {
   dbPath: string;
   lastCommit: string;
   indexedAt: number;
+  /** Git remote URL for sibling clone detection */
+  remoteUrl?: string;
 }
 
 const REGISTRY_DIR = join(homedir(), '.astrolabe');
@@ -38,6 +41,79 @@ export function loadRegistry(): RegistryEntry[] {
     log.warn('Registry file corrupted, ignoring', { path: REGISTRY_FILE, error: String(err) });
     return [];
   }
+}
+
+/**
+ * Get the git remote URL for a repository.
+ * Returns null if not a git repo or git command fails.
+ */
+export function getGitRemote(repoPath: string): string | null {
+  try {
+    return execSync('git remote get-url origin', { cwd: repoPath, encoding: 'utf-8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Result type for sibling clone detection.
+ */
+export interface SiblingCloneInfo {
+  isSibling: boolean;
+  indexedPath: string;
+  indexedRemoteUrl: string;
+  currentPath: string;
+}
+
+/**
+ * Detect if the given repo path is a sibling clone of another indexed repo.
+ * A sibling clone has the same remote URL but a different local path.
+ *
+ * Returns SiblingCloneInfo if a sibling is found, null otherwise.
+ */
+export function detectSiblingClone(repoPath: string): SiblingCloneInfo | null {
+  const currentRemote = getGitRemote(repoPath);
+  if (!currentRemote) return null;
+
+  const entries = loadRegistry();
+  for (const entry of entries) {
+    if (entry.path === repoPath) continue; // skip self
+    if (entry.remoteUrl && entry.remoteUrl === currentRemote) {
+      return {
+        isSibling: true,
+        indexedPath: entry.path,
+        indexedRemoteUrl: entry.remoteUrl,
+        currentPath: repoPath,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Find a registry entry by path, with sibling clone warning.
+ * Returns { entry, siblingWarning } where siblingWarning is a warning message
+ * if the current path is a sibling clone of an indexed repo.
+ */
+export function findEntryWithSiblingWarning(repoPath: string): { entry: RegistryEntry | undefined; siblingWarning: string | null } {
+  const entries = loadRegistry();
+
+  // First try exact path match
+  let entry = entries.find((e) => e.path === repoPath);
+
+  // If not found by exact path, check for siblings with same remote
+  if (!entry) {
+    const sibling = detectSiblingClone(repoPath);
+    if (sibling) {
+      const warning = `Warning: This repo (${sibling.currentPath}) shares the same remote URL as another indexed clone (${sibling.indexedPath}). Data may be stale or duplicated. Consider re-analyzing from the primary location.`;
+      log.warn('Sibling clone detected', { current: sibling.currentPath, indexed: sibling.indexedPath, remoteUrl: sibling.indexedRemoteUrl });
+      // Return the sibling's entry as a fallback
+      entry = entries.find((e) => e.path === sibling.indexedPath);
+      return { entry, siblingWarning: warning };
+    }
+  }
+
+  return { entry: undefined, siblingWarning: null };
 }
 
 export function saveRegistry(entries: RegistryEntry[]): void {

@@ -1,5 +1,5 @@
 export { startMcpServer } from './server.js';
-export { loadRegistry, saveRegistry, removeRepo } from './registry.js';
+export { loadRegistry, saveRegistry, removeRepo, getGitRemote, findEntryWithSiblingWarning } from './registry.js';
 export type { RegistryEntry } from './registry.js';
 export {
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup,

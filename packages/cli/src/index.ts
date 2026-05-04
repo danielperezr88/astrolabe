@@ -16,7 +16,7 @@ import {
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
-  loadRegistry, saveRegistry, removeRepo,
+  loadRegistry, saveRegistry, removeRepo, getGitRemote,
   generateSkill,
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
@@ -165,7 +165,8 @@ program
       // Register repo in global registry for multi-repo MCP support
       const repos = loadRegistry();
       const existingIdx = repos.findIndex((r) => r.path === repoPath);
-      const entry = { name: repoName, path: repoPath, dbPath, lastCommit, indexedAt: Date.now() };
+      const remoteUrl = getGitRemote(repoPath) ?? undefined;
+      const entry = { name: repoName, path: repoPath, dbPath, lastCommit, indexedAt: Date.now(), remoteUrl };
       if (existingIdx >= 0) repos[existingIdx] = entry; else repos.push(entry);
       saveRegistry(repos);
 

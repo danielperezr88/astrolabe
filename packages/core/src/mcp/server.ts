@@ -16,7 +16,7 @@ import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
 import type { FtsSearch } from '../search/fts.js';
 import type { GraphNode } from '../core/types.js';
-import { loadRegistry, type RegistryEntry } from './registry.js';
+import { loadRegistry, findEntryWithSiblingWarning, type RegistryEntry } from './registry.js';
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
 import { syncGroupContracts, getGroupContracts } from './contracts.js';
 import { McpTransport } from './transport.js';
@@ -164,6 +164,15 @@ class LocalBackend {
   private repos = new Map<string, RepoContext>();
   private maxConns = 5;
   private lastAccess = new Map<string, number>();
+
+  /**
+   * Get the sibling clone warning for a given repo path.
+   * Returns a warning message if the path shares the same remote as an indexed repo.
+   */
+  getSiblingWarning(repoPath: string): string | null {
+    const result = findEntryWithSiblingWarning(repoPath);
+    return result.siblingWarning;
+  }
 
   getRepo(repoParam?: string): RepoContext {
     const entries = loadRegistry();
@@ -323,7 +332,11 @@ class LocalBackend {
   query(query: string, repo?: string, limit = 20, taskContext?: string, goal?: string) {
     const ctx = this.getRepo(repo);
     const results = ctx.fts.search(query, limit);
-    if (results.length === 0) return { definitions: [], processes: [], process_symbols: [] };
+
+    // Check for sibling clone warning
+    const siblingWarning = this.getSiblingWarning(ctx.entry.path);
+
+    if (results.length === 0) return { definitions: [], processes: [], process_symbols: [], siblingWarning };
 
     // Boost results based on task_context and goal keywords
     boostResults(results, taskContext, goal);
@@ -368,12 +381,15 @@ class LocalBackend {
       .filter((r) => !defNodeIds.has(`${r.filePath}:${r.name}`))
       .map((r) => ({ name: r.name, type: r.label, filePath: r.filePath }));
 
-    return { processes, process_symbols: processSymbols, definitions };
+    return { processes, process_symbols: processSymbols, definitions, siblingWarning };
   }
 
   context(nameOrUid: string, repo?: string) {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
+
+    // Check for sibling clone warning
+    const siblingWarning = this.getSiblingWarning(ctx.entry.path);
 
     // Find ALL matching symbols (handle overloads) (#116)
     const symbols: GraphNode[] = [];
@@ -382,7 +398,7 @@ class LocalBackend {
         symbols.push(node);
       }
     }
-    if (symbols.length === 0) return { error: `Symbol "${nameOrUid}" not found.` };
+    if (symbols.length === 0) return { error: `Symbol "${nameOrUid}" not found.`, siblingWarning };
 
     // #177: Build adjacency index ONCE for all symbols (O(R) not O(S × R))
     const incomingMap = new Map<string, Map<string, string[]>>();
@@ -453,7 +469,7 @@ class LocalBackend {
       };
     });
 
-    return { match_count: results.length, matches: results };
+    return { match_count: results.length, matches: results, siblingWarning };
   }
 
   impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3) {

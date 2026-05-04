@@ -53,6 +53,114 @@ function resolveModule(baseDir: string, spec: string): string {
   return parts.join('/');
 }
 
+/**
+ * Check if a string looks like an import path (starts with . or /)
+ */
+function isImportPath(value: string): boolean {
+  return value.startsWith('.') || value.startsWith('/');
+}
+
+/**
+ * Wildcard synthesis: resolve dynamic/glob import patterns using cross-file binding info.
+ * Common pattern: const modulePath = './utils'; require(modulePath);
+ */
+function synthesizeWildcardImports(
+  graph: PhaseContext['graph'],
+  symbolIndex: SymbolIndex
+): number {
+  let resolved = 0;
+
+  // Phase 1: Collect string assignments from Variable/Const nodes per file
+  // Map<filePath, Map<varName, assignedStringValue>>
+  const fileBindings = new Map<string, Map<string, string>>();
+
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Variable' && node.label !== 'Const') continue;
+    const fp = node.properties.filePath as string;
+    const name = node.properties.name as string;
+    if (!fp || !name) continue;
+
+    // Capture assigned string value (if parser populates it)
+    const value = node.properties.value as string | undefined;
+    if (value && typeof value === 'string' && isImportPath(value)) {
+      let bindings = fileBindings.get(fp);
+      if (!bindings) { bindings = new Map(); fileBindings.set(fp, bindings); }
+      bindings.set(name, value);
+    }
+  }
+
+  // Phase 2: Find unresolved imports that reference variables
+  for (const impNode of graph.iterNodes()) {
+    if (impNode.label !== 'Import') continue;
+    const fp = impNode.properties.filePath as string;
+    const importName = impNode.properties.name as string;
+    if (!fp || !importName) continue;
+
+    // Skip if it looks like a static path (already handled by main resolution)
+    if (importName.startsWith('.') || importName.startsWith('/')) continue;
+
+    // Look up binding for this variable
+    const bindings = fileBindings.get(fp);
+    const resolvedPath = bindings?.get(importName);
+    if (!resolvedPath) continue;
+
+    // Resolve using same logic as main resolution
+    const baseDir = dirname(fp);
+    const resolvedModule = resolveModule(baseDir, resolvedPath);
+
+    // Find matching targets in symbol index
+    for (const [targetFp, symMap] of symbolIndex) {
+      const targetFpNoExt = targetFp.replace(/\.[^.]+$/, '');
+      const resolvedNoExt = resolvedModule.replace(/\.[^.]+$/, '');
+
+      // Exact file match (with or without extension)
+      if (targetFp === resolvedModule || targetFpNoExt === resolvedNoExt) {
+        for (const [, nodes] of symMap) {
+          for (const target of nodes) {
+            const edgeId = `wild:${impNode.id}:to:${target.id}`;
+            if (graph.getRelationship(edgeId)) continue;
+
+            graph.addRelationship({
+              id: edgeId,
+              sourceId: impNode.id,
+              targetId: target.id,
+              type: 'USES',
+              confidence: 0.6, // Lower confidence than static imports
+              reason: `wildcard import '${importName}' → '${resolvedPath}'`,
+            });
+            resolved++;
+          }
+        }
+      }
+
+      // Directory import
+      if (targetFp.startsWith(resolvedModule + '/')) {
+        const subPath = targetFp.slice(resolvedModule.length + 1);
+        if (!subPath.includes('/')) {
+          for (const [, nodes] of symMap) {
+            for (const target of nodes) {
+              const edgeId = `wild:${impNode.id}:to:${target.id}`;
+              if (graph.getRelationship(edgeId)) continue;
+
+              graph.addRelationship({
+                id: edgeId,
+                sourceId: impNode.id,
+                targetId: target.id,
+                type: 'USES',
+                confidence: 0.6,
+                reason: `wildcard import '${importName}' → '${resolvedPath}'`,
+              });
+              resolved++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return resolved;
+}
+
 export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
   name: 'resolution',
   dependencies: ['parse-emit'],
@@ -150,6 +258,13 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
       // EXTENDS edges: only if class AST reveals explicit extends clause
       // Removed weak heuristic that created false-positive EXTENDS edges
       // just because a class imported another class (#65, #60)
+    }
+
+    // Wildcard synthesis: resolve dynamic imports using binding info
+    const synthesized = synthesizeWildcardImports(graph, symbolIndex);
+    edgeCount += synthesized;
+    if (synthesized > 0) {
+      edgeCounts['USES'] = (edgeCounts['USES'] ?? 0) + synthesized;
     }
 
     return {
