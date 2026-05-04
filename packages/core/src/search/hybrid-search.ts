@@ -4,8 +4,14 @@
  * Merges results from both search methods using Reciprocal Rank Fusion (RRF)
  * with configurable K parameter. This provides the best of both worlds:
  * exact keyword matching from FTS and semantic similarity from embeddings.
+ *
+ * Community cohesion boost: results from tightly-knit modules rank higher.
+ * When a graph is provided, the cohesion of each result's community is computed
+ * as the ratio of internal coupling edges to total coupling edges, and the
+ * RRF score is scaled: combinedScore *= (1 + cohesionBoost * cohesion).
  */
 
+import type { KnowledgeGraph, RelationshipType } from '@astrolabe/shared';
 import type { FtsSearch } from './fts.js';
 import { EmbeddingStore } from './embeddings-store.js';
 import type { EmbeddingProvider } from './embeddings-store.js';
@@ -18,12 +24,26 @@ export interface HybridResult {
   ftsRank: number;
   /** Vector similarity score (0-1, higher = better). */
   vectorScore: number;
-  /** Combined RRF score (higher = better). */
+  /** Combined RRF score (higher = better). After cohesion boost if graph provided. */
   combinedScore: number;
   /** Metadata from the FTS result. */
   name?: string;
   label?: string;
   filePath?: string;
+  /** Process type classification (intra_community vs cross_community). */
+  processType?: 'intra_community' | 'cross_community';
+  /** Number of steps in the process this node belongs to. */
+  stepCount?: number;
+  /** Cohesion-weighted priority score. */
+  priority?: number;
+}
+
+/** Optional configuration for hybrid search with graph awareness. */
+export interface HybridSearchOptions {
+  /** Knowledge graph for community cohesion boosting. */
+  graph?: KnowledgeGraph;
+  /** Cohesion boost factor applied to tightly-knit communities (default: 0.15). */
+  cohesionBoost?: number;
 }
 
 // ── RRF constants ──────────────────────────────────────────────────────────
@@ -78,6 +98,136 @@ export async function searchVector(
     .slice(0, limit);
 }
 
+// ── Cohesion boost ──────────────────────────────────────────────────────────
+
+/** Relationship types that indicate functional coupling for cohesion computation. */
+const COUPLING_TYPES: readonly RelationshipType[] = [
+  'CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'DEFINES',
+] as const;
+
+/** Default cohesion boost factor. */
+const DEFAULT_COHESION_BOOST = 0.15;
+
+/**
+ * Build node→community map and compute cohesion per community.
+ *
+ * Cohesion = internal coupling edges / total coupling edges for the community.
+ * A community where most edges stay internal (high cohesion) is tightly-knit.
+ */
+function computeCommunityCohesion(
+  graph: KnowledgeGraph,
+): {
+  nodeToCommunity: Map<string, string>;
+  cohesion: Map<string, number>;
+} {
+  const nodeToCommunity = new Map<string, string>();
+
+  // Build node → community map from MEMBER_OF edges
+  for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+    nodeToCommunity.set(rel.sourceId, rel.targetId);
+  }
+
+  if (nodeToCommunity.size === 0) {
+    return { nodeToCommunity, cohesion: new Map() };
+  }
+
+  // Count internal vs total coupling edges per community
+  const edgeCounts = new Map<string, { internal: number; total: number }>();
+
+  for (const type of COUPLING_TYPES) {
+    for (const rel of graph.iterRelationshipsByType(type)) {
+      const srcComm = nodeToCommunity.get(rel.sourceId);
+      const tgtComm = nodeToCommunity.get(rel.targetId);
+
+      if (srcComm) {
+        const counts = edgeCounts.get(srcComm) ?? { internal: 0, total: 0 };
+        counts.total++;
+        if (srcComm === tgtComm) counts.internal++;
+        edgeCounts.set(srcComm, counts);
+      }
+      if (tgtComm && tgtComm !== srcComm) {
+        const counts = edgeCounts.get(tgtComm) ?? { internal: 0, total: 0 };
+        counts.total++;
+        edgeCounts.set(tgtComm, counts);
+      }
+    }
+  }
+
+  // Compute cohesion ratio per community
+  const cohesion = new Map<string, number>();
+  for (const [comm, counts] of edgeCounts) {
+    cohesion.set(comm, counts.total > 0 ? counts.internal / counts.total : 0);
+  }
+
+  return { nodeToCommunity, cohesion };
+}
+
+/**
+ * Determine process type (intra/cross community) and step count for a node.
+ */
+function getProcessInfo(
+  nodeId: string,
+  graph: KnowledgeGraph,
+  nodeToCommunity: Map<string, string>,
+): Pick<HybridResult, 'processType' | 'stepCount'> {
+  const nodeComm = nodeToCommunity.get(nodeId);
+  let stepCount = 0;
+  let crossCommunity = false;
+
+  for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+    // STEP_IN_PROCESS edges go from process → step node
+    if (rel.targetId === nodeId) {
+      stepCount++;
+      // Check if the process entry point is in a different community
+      const processComm = nodeToCommunity.get(rel.sourceId);
+      if (nodeComm && processComm && processComm !== nodeComm) {
+        crossCommunity = true;
+      }
+    }
+  }
+
+  if (stepCount === 0) return {};
+
+  return {
+    processType: crossCommunity ? 'cross_community' : 'intra_community',
+    stepCount,
+  };
+}
+
+/**
+ * Apply community cohesion boost to hybrid search results.
+ *
+ * Results from tightly-knit communities (high internal edge ratio) rank higher.
+ * Boost formula: finalScore = rrfScore * (1 + boost * cohesion)
+ *
+ * Also enriches results with process metadata (processType, stepCount, priority).
+ */
+function applyCohesionBoost(
+  results: HybridResult[],
+  graph: KnowledgeGraph,
+  boost = DEFAULT_COHESION_BOOST,
+): HybridResult[] {
+  const { nodeToCommunity, cohesion } = computeCommunityCohesion(graph);
+
+  if (nodeToCommunity.size === 0) return results;
+
+  for (const r of results) {
+    const community = nodeToCommunity.get(r.nodeId);
+    if (!community) continue;
+
+    const commCohesion = cohesion.get(community) ?? 0;
+    r.combinedScore = r.combinedScore * (1 + boost * commCohesion);
+    r.priority = r.combinedScore;
+
+    // Enrich with process info
+    const processInfo = getProcessInfo(r.nodeId, graph, nodeToCommunity);
+    if (processInfo.processType) r.processType = processInfo.processType;
+    if (processInfo.stepCount) r.stepCount = processInfo.stepCount;
+  }
+
+  return results.sort((a, b) => b.combinedScore - a.combinedScore);
+}
+
 // ── Hybrid search ──────────────────────────────────────────────────────────
 
 /**
@@ -88,7 +238,11 @@ export async function searchVector(
  *
  * Where k=60 (standard), and rank_i(d) starts at 1.
  *
- * @returns Combined results sorted by RRF score descending.
+ * When a graph is provided via options, a community cohesion boost is applied:
+ * results from tightly-knit communities (high ratio of internal coupling edges)
+ * receive a score boost proportional to their cohesion.
+ *
+ * @returns Combined results sorted by (boosted) RRF score descending.
  */
 export async function hybridSearch(
   query: string,
@@ -96,6 +250,7 @@ export async function hybridSearch(
   store: EmbeddingStore,
   provider: EmbeddingProvider,
   limit = 20,
+  options?: HybridSearchOptions,
 ): Promise<HybridResult[]> {
   // Run both searches in parallel
   const ftsResults = fts.search(query, 50); // fetch more for RRF
@@ -144,10 +299,15 @@ export async function hybridSearch(
   }
 
   // Sort by combined RRF score descending
-  const results = Array.from(rrfScores.entries()).map(([nodeId, entry]) => ({
+  let results = Array.from(rrfScores.entries()).map(([nodeId, entry]) => ({
     nodeId,
     ...entry,
   }));
+
+  // Apply community cohesion boost when graph is provided
+  if (options?.graph) {
+    results = applyCohesionBoost(results, options.graph, options.cohesionBoost);
+  }
 
   return results
     .sort((a, b) => b.combinedScore - a.combinedScore)

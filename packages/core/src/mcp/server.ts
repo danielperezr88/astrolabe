@@ -1292,6 +1292,184 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       return { content: [{ type: 'text', text: `Shape Check for "${path}" (${mismatches.length} issues):\n${lines.join('\n')}` }] };
     },
   },
+
+  'astrolabe.group_impact': {
+    name: 'astrolabe.group_impact',
+    description: `Cross-repo impact analysis within a group. Resolves target symbol across all group members, runs local impact, then fans out via contract bridges (HTTP, gRPC, topic contracts).
+
+Returns direct impacts (within same repo) plus cross-repo impacts discovered through contract links, with an overall risk assessment.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Group name' },
+        target: { type: 'string', description: 'Target symbol to analyze' },
+        direction: { type: 'string', enum: ['upstream', 'downstream', 'both'], default: 'both' },
+        maxDepth: { type: 'number', default: 3 },
+        crossDepth: { type: 'number', default: 2 },
+        minConfidence: { type: 'number', default: 0.3 },
+      },
+      required: ['name', 'target'],
+    },
+    handler: async (params) => {
+      const timer = new PhaseTimer('group_impact');
+      timer.start();
+      const groupName = requireString(params, 'name');
+      const target = requireString(params, 'target');
+      const direction = (params.direction as 'upstream' | 'downstream' | 'both') ?? 'both';
+      const maxDepth = requireNumber(params, 'maxDepth', 3);
+      const crossDepth = requireNumber(params, 'crossDepth', 2);
+      const minConfidence = requireNumber(params, 'minConfidence', 0.3);
+
+      // 1. Resolve the group
+      const groups = listGroups();
+      const group = groups.find((g) => g.name === groupName);
+      if (!group) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: `Group '${groupName}' not found` }) }] };
+      }
+
+      // 2. Load reachable contexts for all group members
+      let contexts: Array<{ repo: RepoContext; memberPath: string }>;
+      try {
+        ({ contexts } = backend.resolveGroupRepos(`@${groupName}`));
+      } catch {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: `No reachable repos in group '${groupName}'` }) }] };
+      }
+      if (contexts.length === 0) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: `No reachable repos in group '${groupName}'` }) }] };
+      }
+
+      // 3. Search for target across all group members
+      let anchorRepo: string | undefined;
+      const reposWithTarget: string[] = [];
+      for (const { repo } of contexts) {
+        const graph = repo.loadGraph();
+        let found = false;
+        for (const node of graph.iterNodes()) {
+          if (node.id === target || node.properties.name === target) {
+            found = true;
+            break;
+          }
+        }
+        if (found) {
+          if (!anchorRepo) anchorRepo = repo.entry.name;
+          if (!reposWithTarget.includes(repo.entry.name)) {
+            reposWithTarget.push(repo.entry.name);
+          }
+        }
+      }
+
+      if (!anchorRepo) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: `Target '${target}' not found in group '${groupName}'` }) }] };
+      }
+
+      timer.mark('resolve');
+
+      // 4. Run impact within anchor repo (call once per direction)
+      const directions: Array<'upstream' | 'downstream'> = direction === 'both'
+        ? ['upstream', 'downstream']
+        : [direction];
+
+      const directResults: Record<string, ReturnType<LocalBackend['impact']>> = {};
+      const affectedSymbols = new Set<string>();
+
+      for (const dir of directions) {
+        const result = backend.impact(target, dir, anchorRepo, maxDepth, minConfidence);
+        directResults[dir] = result;
+        // Collect affected symbol names for contract fan-out
+        if (result && typeof result === 'object' && 'depth_groups' in result) {
+          const dg = (result as { depth_groups: Record<string, { items: Array<{ name: string }> }> }).depth_groups;
+          for (const group of Object.values(dg)) {
+            for (const item of group.items) {
+              affectedSymbols.add(item.name);
+            }
+          }
+        }
+      }
+
+      timer.mark('direct_impact');
+
+      // 5. Fan out via contracts
+      const crossRepoImpacts: Array<Record<string, unknown>> = [];
+      if (crossDepth > 0) {
+        try {
+          const contracts = getGroupContracts(groupName);
+          if (contracts) {
+            for (const link of contracts.crossLinks) {
+              const linkConsumed = (link.provider.handlerName !== undefined && affectedSymbols.has(link.provider.handlerName))
+                || affectedSymbols.has(link.consumer.functionName);
+              if (!linkConsumed) continue;
+
+              // Skip same-repo (already covered by direct analysis)
+              if (link.consumer.repoName === anchorRepo && link.provider.repoName === anchorRepo) continue;
+
+              const isProviderAffected = affectedSymbols.has(link.provider.handlerName ?? '');
+              const targetRepo = isProviderAffected ? link.consumer.repoName : link.provider.repoName;
+              const targetSymbol = isProviderAffected ? link.consumer.functionName : (link.provider.handlerName ?? link.provider.path);
+
+              try {
+                const crossResult = backend.impact(
+                  targetSymbol,
+                  'downstream',
+                  targetRepo,
+                  Math.min(maxDepth, crossDepth),
+                  minConfidence,
+                );
+                crossRepoImpacts.push({
+                  repo: targetRepo,
+                  contractType: link.contractType,
+                  confidence: link.confidence,
+                  bridge: `${link.provider.repoName} → ${link.consumer.repoName} (${link.contractType})`,
+                  result: crossResult,
+                });
+              } catch {
+                // skip unreachable repos
+              }
+            }
+          }
+        } catch {
+          // group contracts not available — skip cross-repo fan-out
+        }
+      }
+
+      timer.mark('cross_repo');
+
+      // 6. Risk assessment
+      let directCount = 0;
+      for (const result of Object.values(directResults)) {
+        if (result && typeof result === 'object' && 'affected_count' in result) {
+          directCount += (result as { affected_count: number }).affected_count;
+        }
+      }
+
+      const crossCount = crossRepoImpacts.length;
+      const riskLevel = directCount > 10 || crossCount > 3 ? 'critical'
+        : directCount > 5 || crossCount > 1 ? 'high'
+        : directCount > 0 || crossCount > 0 ? 'medium'
+        : 'low';
+
+      const output = {
+        group: groupName,
+        target,
+        anchorRepo,
+        reposWithTarget,
+        directImpacts: direction === 'both' ? directResults : directResults[direction],
+        crossRepoImpacts: crossRepoImpacts.length > 0 ? crossRepoImpacts : undefined,
+        riskAssessment: {
+          level: riskLevel,
+          directAffectedCount: directCount,
+          crossRepoBridges: crossCount,
+          breakdown: {
+            willBreak: directCount > 0 ? 'direct dependents at depth 1' : 'none',
+            crossRepo: crossCount > 0 ? `${crossCount} cross-repo contract bridge(s) affected` : 'none',
+          },
+        },
+      };
+
+      timer.mark('format');
+      timer.stop();
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+    },
+  },
 };
 
 // ── Resources ──────────────────────────────────────────────────────────────

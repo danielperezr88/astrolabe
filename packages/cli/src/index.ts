@@ -477,6 +477,150 @@ program.command('setup')
     }
   });
 
+// ── augment ───────────────────────────────────────────────────────────────────
+interface AugmentRelated {
+  name: string;
+  label: string;
+  filePath: string;
+  relationship: string;
+  direction: 'incoming' | 'outgoing';
+  depth: number;
+}
+
+function augmentTraverse(
+  graph: ReturnType<typeof createKnowledgeGraph>,
+  startIds: Set<string>,
+  maxDepth: number,
+): AugmentRelated[] {
+  // Build bidirectional adjacency index
+  const adj = new Map<string, Array<{ neighborId: string; type: string; direction: 'incoming' | 'outgoing' }>>();
+  for (const rel of graph.iterRelationships()) {
+    let bucket = adj.get(rel.sourceId);
+    if (!bucket) { bucket = []; adj.set(rel.sourceId, bucket); }
+    bucket.push({ neighborId: rel.targetId, type: rel.type, direction: 'outgoing' });
+    bucket = adj.get(rel.targetId);
+    if (!bucket) { bucket = []; adj.set(rel.targetId, bucket); }
+    bucket.push({ neighborId: rel.sourceId, type: rel.type, direction: 'incoming' });
+  }
+
+  // Relationship types we care about for augmentation
+  const augTypes = new Set(['CALLS', 'IMPORTS', 'MEMBER_OF']);
+
+  const visited = new Set<string>(startIds);
+  const results: AugmentRelated[] = [];
+  let frontier = new Set<string>(startIds);
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    const nextFrontier = new Set<string>();
+    for (const nodeId of frontier) {
+      const neighbors = adj.get(nodeId) ?? [];
+      for (const { neighborId, type, direction } of neighbors) {
+        if (!augTypes.has(type)) continue;
+        if (visited.has(neighborId)) continue;
+        visited.add(neighborId);
+        const neighbor = graph.getNode(neighborId);
+        results.push({
+          name: neighbor?.properties.name ?? neighborId,
+          label: neighbor?.label ?? 'Unknown',
+          filePath: neighbor?.properties.filePath ?? '',
+          relationship: type,
+          direction,
+          depth,
+        });
+        nextFrontier.add(neighborId);
+      }
+    }
+    frontier = nextFrontier;
+    if (frontier.size === 0) break;
+  }
+
+  return results;
+}
+
+program
+  .command('augment <pattern>')
+  .description('Enrich a search pattern with graph context (callers, callees, imports, community members)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--depth <number>', 'Traversal depth (hops)', '2')
+  .option('--format <format>', 'Output format: text or json', 'text')
+  .action((pattern: string, opts: { db: string; depth: string; format: string }) => {
+    if (!existsSync(opts.db)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const depth = Math.max(1, parseInt(opts.depth, 10) || 2);
+    const format = opts.format === 'json' ? 'json' : 'text';
+
+    const store = createSqliteStore(opts.db);
+    try {
+      const graph = store.loadGraph();
+
+      // Find nodes matching pattern (case-insensitive substring)
+      const lowerPattern = pattern.toLowerCase();
+      const matches: Array<{ id: string; name: string; label: string; filePath: string; startLine: number }> = [];
+      for (const node of graph.iterNodes()) {
+        const name = (node.properties.name as string) ?? '';
+        if (name.toLowerCase().includes(lowerPattern)) {
+          matches.push({
+            id: node.id,
+            name,
+            label: node.label,
+            filePath: (node.properties.filePath as string) ?? '',
+            startLine: (node.properties.startLine as number) ?? 0,
+          });
+        }
+      }
+
+      if (matches.length === 0) {
+        console.log(`No symbols found matching "${pattern}".`);
+        return;
+      }
+
+      // Traverse from matched nodes
+      const startIds = new Set(matches.map((m) => m.id));
+      const related = augmentTraverse(graph, startIds, depth);
+
+      if (format === 'json') {
+        const output = {
+          pattern,
+          matches: matches.map((m) => ({
+            id: m.id,
+            name: m.name,
+            label: m.label,
+            filePath: m.filePath,
+            startLine: m.startLine,
+          })),
+          related: related.map((r) => ({
+            name: r.name,
+            label: r.label,
+            filePath: r.filePath,
+            relationship: r.relationship,
+            direction: r.direction,
+            depth: r.depth,
+          })),
+        };
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(`Pattern: ${pattern}`);
+        for (const m of matches) {
+          console.log(`  Match: ${m.label}:${m.name} (${m.filePath}${m.startLine ? ':' + m.startLine : ''})`);
+        }
+        console.log(`Related (depth ${depth}):`);
+        if (related.length === 0) {
+          console.log('  (none)');
+        } else {
+          for (const r of related) {
+            const dirLabel = r.direction === 'outgoing' ? 'callee' : 'caller';
+            const relLabel = r.relationship === 'MEMBER_OF' ? 'same community' : dirLabel;
+            const loc = r.filePath ? ` (${r.filePath})` : '';
+            console.log(`  - ${r.name} (${relLabel}, depth ${r.depth})${loc}`);
+          }
+        }
+      }
+    } finally { store.close(); }
+  });
+
 // ── wiki (LLM-powered documentation generation) ────────────────────────────
 program.command('wiki <repoPath>')
   .description('Generate LLM-powered wiki documentation from knowledge graph (#269)')
