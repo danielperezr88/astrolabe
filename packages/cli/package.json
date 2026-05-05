@@ -12,6 +12,9 @@
     "dist",
     "!dist/**/*.test.*"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
