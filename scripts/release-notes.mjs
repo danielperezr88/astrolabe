@@ -18,20 +18,20 @@
  *   chore:    → 🔨 Chore
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function git(args) {
+function git(...args) {
   try {
-    return execSync(`git ${args}`, { encoding: 'utf-8' }).trim();
+    return execFileSync('git', args, { encoding: 'utf-8' }).trim();
   } catch {
     return '';
   }
 }
 
 function getLatestStableTag() {
-  const output = git('tag -l "v*"');
+  const output = git('tag', '-l', 'v*');
   if (!output) return null;
   const tags = output
     .split('\n')
@@ -53,8 +53,19 @@ function getLatestStableTag() {
 const fromTag = process.argv[2] || getLatestStableTag();
 const toRef = process.argv[3] || 'HEAD';
 
-const range = fromTag ? `${fromTag}..${toRef}` : toRef;
-const log = git(`log ${range} --pretty=format:"%H|||%s|||%an|||%b" --no-merges`);
+// Validate inputs: only allow git ref patterns (tags, HEAD, branch names)
+const GIT_REF_RE = /^[\w.\-\/]+$/;
+if (fromTag && !GIT_REF_RE.test(fromTag)) {
+  console.error(`Invalid from-tag: ${fromTag}`);
+  process.exit(1);
+}
+if (toRef && !GIT_REF_RE.test(toRef)) {
+  console.error(`Invalid to-ref: ${toRef}`);
+  process.exit(1);
+}
+
+const range = fromTag ? [`${fromTag}..${toRef}`] : [toRef];
+const log = git('log', ...range, '--pretty=format:%H|||%s|||%an', '--no-merges');
 
 if (!log) {
   console.log('No changes since last release.');
@@ -76,7 +87,7 @@ const uncategorized = [];
 
 for (const line of log.split('\n')) {
   if (!line.trim()) continue;
-  const [hash, subject, author, body] = line.split('|||');
+  const [hash, subject, author] = line.split('|||');
 
   // Parse conventional commit: type(scope): description
   const match = subject.match(/^(\w+)(?:\(([^)]+)\))?:\s*(.+)$/);
