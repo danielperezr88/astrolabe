@@ -115,6 +115,8 @@ npm test                    # 472 pass, 12 skipped (WASM/grammar)
 npm run build --workspace packages/shared  # Must run before core build
 gh issue list --repo danielperezr88/astrolabe --state open --limit 50 --json number,title,labels
 gh issue view <N> --repo danielperezr88/astrolabe --json body
+gh pr list --repo danielperezr88/astrolabe --state open --json number,title,headRefName
+gh pr view <N> --repo danielperezr88/astrolabe --json reviews,comments
 node scripts/next-version.mjs --rc         # Check next RC version
 node scripts/next-version.mjs --release    # Check next stable version
 node scripts/next-version.mjs --current    # Check current stable version
@@ -122,12 +124,13 @@ node scripts/next-version.mjs --current    # Check current stable version
 
 ## Reviewer
 
-A reviewer agent works in 10-minute rounds: fetches latest commits, reviews, files new issues, closes verified ones.
-- If no new issues for 40+ minutes, reviewer may be done.
-- All non-enhancement issues are filed by the reviewer — trust their analysis.
+A reviewer agent works in 10-minute rounds: reviews open PRs, pushes back with change requests, approves when ready.
+- Reviewer **does NOT file bug issues** — instead, pushes back directly on PRs (request changes, comment with findings).
+- If reviewer finds issues not tied to an existing PR, they may file an issue first, then reference it in their PR review.
 - Reviewer follows the same branching model: creates feature branches, opens draft PRs, links PRs to issues.
 - Reviewer marks PRs as ready for review after implementation is complete and tests pass.
-- The implementer and reviewer coordinate via GitHub issues — no direct push to protected branches.
+- The implementer and reviewer coordinate via GitHub issues AND PR reviews — no direct push to protected branches.
+- **Always check PR reviews**: `gh pr view <number> --repo danielperezr88/astrolabe --json reviews,comments` — fix any reviewer feedback before merging.
 
 ## Repository
 
