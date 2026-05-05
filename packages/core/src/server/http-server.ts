@@ -8,6 +8,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join as pathJoin, resolve as pathResolve, dirname, basename, normalize, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -664,6 +665,10 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
   }
 
   const server = createServer(async (req, res) => {
+    // #483: Request tracing — generate or preserve request ID
+    const requestId = (req.headers['x-request-id'] as string) || randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
