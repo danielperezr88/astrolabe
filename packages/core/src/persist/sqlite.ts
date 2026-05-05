@@ -10,6 +10,9 @@ import './native-preload.js'; // #224: triggers electron binary copy before bett
 import Database from 'better-sqlite3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
+import { createLogger } from '../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 // ── DB Lock Retry Helpers ──────────────────────────────────────────────────
 
@@ -214,7 +217,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
       for (const row of nodeRows) {
         // #311: Graceful fallback for corrupted JSON properties
         let props: Record<string, unknown>;
-        try { props = JSON.parse(row.properties); } catch { props = {}; }
+        try { props = JSON.parse(row.properties); } catch (err) { log.debug('Corrupted node properties, using empty fallback', { nodeId: row.id, error: String(err) }); props = {}; }
         graph.addNode({
           id: row.id,
           label: row.label as GraphNode['label'],
@@ -230,7 +233,7 @@ export function createSqliteStore(dbPath: string): SqliteStore {
         // #423: Graceful fallback for corrupted evidence JSON
         let evidence: readonly any[] | undefined;
         if (row.evidence) {
-          try { evidence = JSON.parse(row.evidence); } catch { /* skip corrupted evidence */ }
+          try { evidence = JSON.parse(row.evidence); } catch (err) { log.debug('Skipping corrupted evidence JSON', { relId: row.id, error: String(err) }); }
         }
         graph.addRelationship({
           id: row.id,

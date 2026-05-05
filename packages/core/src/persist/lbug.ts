@@ -11,6 +11,9 @@
 
 import type { KnowledgeGraph, GraphNode } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
+import { createLogger } from '../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createSqliteStore } from './sqlite.js'; // #360: ESM import, not require()
@@ -130,15 +133,16 @@ export class LbugStore {
           if (!node?.id) continue;
           // #361: Parse JSON properties blob
           let properties: Record<string, unknown> = {};
-          try { properties = node.props ? JSON.parse(node.props) : {}; } catch { /* skip bad JSON */ }
+          try { properties = node.props ? JSON.parse(node.props) : {}; } catch (err) { log.debug('Skipping bad JSON properties', { nodeId: node.id, error: String(err) }); }
           graph.addNode({
             id: node.id,
             label: label as any,
             properties,
           });
         }
-      } catch {
+      } catch (err) {
         // Table may not exist yet — skip
+        log.debug('Node label query failed, table may not exist', { label, error: String(err) });
       }
     }
 
@@ -155,7 +159,7 @@ export class LbugStore {
           reason: row['r.reason'] ?? '',
         });
       }
-    } catch { /* no rels yet */ }
+    } catch (err) { log.debug('Relationship query failed, no relationships yet', { error: String(err) }); }
 
     return graph;
   }
