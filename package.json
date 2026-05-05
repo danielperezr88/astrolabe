@@ -16,6 +16,9 @@
     "clean": "npm run clean --workspaces --if-present",
     "postinstall": "node scripts/postinstall.mjs"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "license": "MIT",
   "keywords": [
     "code-analysis",
