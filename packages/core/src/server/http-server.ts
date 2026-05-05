@@ -19,6 +19,7 @@ import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
 import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
+import { isAstrolabeError } from '@astrolabe/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,15 @@ function error(res: ServerResponse, message: string, status = 400) {
   json(res, { error: message }, status);
 }
 
+/** Handle thrown errors — AstrolabeError produces structured response, others return 500 */
+function handleError(res: ServerResponse, err: unknown) {
+  if (isAstrolabeError(err)) {
+    json(res, err.toJSON(), err.statusCode);
+  } else {
+    json(res, { error: err instanceof Error ? err.message : String(err), code: 'INTERNAL_ERROR' }, 500);
+  }
+}
+
 // #471: Body size limit to prevent DoS (10 MB, same as MCP transport)
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
@@ -209,7 +219,7 @@ async function handleContext(res: ServerResponse, repoName: string) {
       metaStale: meta ? meta.lastCommit !== entry.lastCommit : null,
     });
   } catch (err) {
-    error(res, `Failed to read repo: ${(err as Error).message}`, 500);
+    handleError(res, err);
   }
 }
 
@@ -233,7 +243,7 @@ async function handleClusters(res: ServerResponse, repoName: string) {
     }
     json(res, { clusters });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -292,7 +302,7 @@ async function handleGraph(res: ServerResponse, repoName: string, clusterId?: st
 
     json(res, { nodes, edges, nodeCount: nodes.length, edgeCount: edges.length });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -310,7 +320,7 @@ async function handleQuery(res: ServerResponse, repoName: string, params: Record
     const results = ctx.fts.search(query, limit);
     json(res, { results: results.map((r) => ({ label: r.label, name: r.name, filePath: r.filePath, rank: r.score })) });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -358,7 +368,7 @@ async function handleImpact(res: ServerResponse, repoName: string, params: Recor
 
     json(res, { results });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -422,7 +432,7 @@ async function handleGrep(res: ServerResponse, repoName: string, pattern: string
 
     json(res, { matches: results.length, results });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -617,7 +627,7 @@ async function handleGraphStream(res: ServerResponse, repoName: string) {
     res.end();
   } catch (err) {
     if (!res.headersSent) {
-      error(res, String(err), 500);
+      handleError(res, err);
     } else {
       try { res.write(JSON.stringify({ type: 'error', error: String(err) }) + '\n'); } catch { /* best effort */ }
       res.end();
@@ -645,7 +655,7 @@ async function handleChat(res: ServerResponse, params: Record<string, unknown>) 
     const result = await ragChat(messages, { repo });
     json(res, result);
   } catch (err: any) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 }
 
@@ -792,7 +802,7 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       // 404
       error(res, `Not found: ${req.method} ${path}`, 404);
     } catch (err) {
-      error(res, String(err), 500);
+      handleError(res, err);
     }
   });
 

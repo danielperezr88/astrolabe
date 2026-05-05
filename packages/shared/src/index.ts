@@ -23,3 +23,14 @@ export {
   isRelativeImport,
   appDataDir,
 } from './path-utils.js';
+
+export {
+  AstrolabeError,
+  ParseError,
+  GraphError,
+  QueryError,
+  NotFoundError,
+  AnalysisError,
+  ConfigError,
+  isAstrolabeError,
+} from './errors.js';
