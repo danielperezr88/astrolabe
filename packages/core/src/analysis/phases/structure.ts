@@ -7,6 +7,7 @@
  */
 
 import { dirname } from 'node:path';
+import { toPosix } from '@astrolabe/shared';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import { getPhaseOutput } from '../../core/pipeline.js';
 import type { ScanOutput } from './scan.js';
@@ -98,11 +99,11 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       graph.addNode(node);
       fileCount++;
 
-      const d = depthOf(dirname(entry.path).replace(/\\/g, '/'));
+      const d = depthOf(toPosix(dirname(entry.path)));
       if (d > maxDepth) maxDepth = d;
 
       // Ensure all ancestor folders exist
-      const dir = dirname(entry.path).replace(/\\/g, '/');
+      const dir = toPosix(dirname(entry.path));
       if (dir === '.') continue;
       ensureFolderPath(graph, dir, folderIds);
     }
@@ -111,7 +112,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
     // Build file-by-folder index for O(Files) instead of O(Folders × Files) (#172)
     const filesByDir = new Map<string, typeof scanOutput.files>();
     for (const entry of scanOutput.files) {
-      const dir = dirname(entry.path).replace(/\\/g, '/');
+      const dir = toPosix(dirname(entry.path));
       let arr = filesByDir.get(dir);
       if (!arr) { arr = []; filesByDir.set(dir, arr); }
       arr.push(entry);
@@ -121,7 +122,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
 
     for (const folderPath of allFolders) {
       const folderId = `folder:${folderPath}`;
-      const parentDir = dirname(folderPath).replace(/\\/g, '/');
+      const parentDir = toPosix(dirname(folderPath));
 
       // CONTAINS for files directly in this folder
       const entries = filesByDir.get(folderPath);
@@ -164,7 +165,7 @@ export const structurePhase: PhaseDefinition<StructureOutput> = {
       const fileName = entry.path.split('/').pop() || '';
       if (!PACKAGE_MANIFESTS.includes(fileName)) continue;
 
-      const pkgDir = dirname(entry.path).replace(/\\/g, '/');
+      const pkgDir = toPosix(dirname(entry.path));
 
       const pkgId = `pkg:${pkgDir}:${fileName}`;
       const existing = graph.getNode(pkgId);

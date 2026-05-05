@@ -10,6 +10,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { toPosix } from '@astrolabe/shared';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 export interface MarkdownOutput {
@@ -182,7 +183,7 @@ export const markdownPhase: PhaseDefinition<MarkdownOutput> = {
  * result repo-relative (not absolute). Handles '../' segments (#200).
  */
 function resolveRelative(baseDir: string, target: string): string {
-  const parts = target.replace(/\\/g, '/').split('/');
+  const parts = toPosix(target).split('/');
   const stack = baseDir.split('/').filter((p) => p && p !== '.');
 
   for (const part of parts) {

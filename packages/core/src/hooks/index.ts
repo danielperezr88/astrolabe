@@ -48,8 +48,9 @@ function getAstrolabeCli() {
 function querySymbols(filePath, repoRoot) {
   try {
     const relPath = path.relative(repoRoot, filePath).replace(/\\\\/g, '/');
+    const dbPath = path.join(repoRoot, '.astrolabe', 'astrolabe.db');
     const result = require('child_process').execFileSync(
-      'npx', ['-y', '@astrolabe/cli', 'list', '--label', 'Function', '--db', repoRoot + '/.astrolabe/astrolabe.db'],
+      'npx', ['-y', '@astrolabe/cli', 'list', '--label', 'Function', '--db', dbPath],
       { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const lines = result.split('\\n').filter(l => l.includes(relPath));

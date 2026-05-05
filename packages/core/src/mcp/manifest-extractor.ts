@@ -10,6 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathBasename } from '@astrolabe/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -30,12 +31,12 @@ const OPENAPI_FILENAMES = new Set([
 ]);
 
 function isOpenApiFile(filePath: string): boolean {
-  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const base = pathBasename(filePath);
   return OPENAPI_FILENAMES.has(base);
 }
 
 function isDockerComposeFile(filePath: string): boolean {
-  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const base = pathBasename(filePath);
   return base === 'docker-compose.yaml' || base === 'docker-compose.yml';
 }
 
@@ -58,7 +59,7 @@ function deriveOpenApiName(content: string, filePath: string): string {
   // JSON: "title": "My API"
   const jsonTitle = content.match(/"title"\s*:\s*"([^"]+)"/);
   if (jsonTitle) return jsonTitle[1];
-  return filePath.replace(/\\/g, '/').split('/').pop() ?? filePath;
+  return pathBasename(filePath);
 }
 
 /**
@@ -104,7 +105,7 @@ function extractOpenApiFromParsed(spec: Record<string, unknown>, filePath: strin
   if (endpoints.length === 0) return [];
 
   const info = spec.info as Record<string, unknown> | undefined;
-  const name = (info?.title as string) ?? filePath.replace(/\\/g, '/').split('/').pop() ?? filePath;
+  const name = (info?.title as string) ?? pathBasename(filePath);
   return [{ type: 'openapi', name, endpoints, filePath }];
 }
 
@@ -200,7 +201,7 @@ export function extractDockerComposeContracts(content: string, filePath: string)
 
     if (services.length === 0) return [];
 
-    const name = filePath.replace(/\\/g, '/').split('/').pop() ?? filePath;
+    const name = pathBasename(filePath);
     return [{ type: 'docker-compose', name, services, filePath }];
   } catch {
     return [];

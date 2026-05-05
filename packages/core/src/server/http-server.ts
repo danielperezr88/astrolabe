@@ -9,7 +9,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { join as pathJoin, resolve as pathResolve, dirname, basename, normalize } from 'node:path';
+import { join as pathJoin, resolve as pathResolve, dirname, basename, normalize, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fork } from 'node:child_process';
 import { createSqliteStore } from '../persist/sqlite.js';
@@ -397,9 +397,7 @@ async function handleAnalyze(res: ServerResponse, params: Record<string, unknown
   if (normalized.includes('..')) {
     return error(res, '"path" must not contain traversal sequences');
   }
-  if (!pathResolve(repoPath).startsWith(process.cwd().slice(0, 3))) {
-    // On Windows, ensure drive letter matches (e.g. C:\)
-    // On Unix, this just checks it starts with /
+  if (!isAbsolute(pathResolve(repoPath))) {
     return error(res, '"path" must be an absolute path');
   }
   if (!existsSync(repoPath as string)) {

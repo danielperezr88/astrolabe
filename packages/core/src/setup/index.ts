@@ -9,7 +9,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
+import { appDataDir } from '@astrolabe/shared';
 
 // ── Atomic write helper (#333) ─────────────────────────────────────────────
 
@@ -51,12 +52,18 @@ const EDITORS: EditorConfig[] = [
   {
     name: 'Cursor',
     detect() {
-      // Check for Cursor installation + mcp config directory
-      return existsSync(join(HOME, '.cursor')) ||
-             existsSync(join(HOME, 'AppData', 'Roaming', 'Cursor'));
+      // Cross-platform: check all possible Cursor config directories
+      const candidates = [
+        join(HOME, '.cursor'),                         // Linux / universal fallback
+        join(appDataDir(), 'Cursor'),                  // macOS: ~/Library/Application Support/Cursor, Windows: %APPDATA%/Cursor
+      ];
+      return candidates.some((p) => existsSync(p));
     },
     configure(force) {
-      const dir = join(HOME, '.cursor');
+      // Use platform-appropriate config directory
+      const dir = existsSync(join(HOME, '.cursor'))
+        ? join(HOME, '.cursor')
+        : join(appDataDir(), 'Cursor');
       const configPath = join(dir, 'mcp.json');
 
       if (!force && existsSync(configPath)) {
@@ -90,11 +97,18 @@ const EDITORS: EditorConfig[] = [
   {
     name: 'Windsurf',
     detect() {
-      return existsSync(join(HOME, '.windsurf')) ||
-             existsSync(join(HOME, 'AppData', 'Roaming', 'Windsurf'));
+      // Cross-platform: check all possible Windsurf config directories
+      const candidates = [
+        join(HOME, '.windsurf'),                       // Linux / universal fallback
+        join(appDataDir(), 'Windsurf'),                // macOS: ~/Library/Application Support/Windsurf, Windows: %APPDATA%/Windsurf
+      ];
+      return candidates.some((p) => existsSync(p));
     },
     configure(force) {
-      const dir = join(HOME, '.windsurf');
+      // Use platform-appropriate config directory
+      const dir = existsSync(join(HOME, '.windsurf'))
+        ? join(HOME, '.windsurf')
+        : join(appDataDir(), 'Windsurf');
       const configPath = join(dir, 'mcp.json');
 
       if (!force && existsSync(configPath)) {
@@ -127,14 +141,20 @@ const EDITORS: EditorConfig[] = [
   {
     name: 'OpenCode',
     detect() {
-      const paths = [
-        join(HOME, '.config', 'opencode'),
-        join(HOME, 'AppData', 'Roaming', 'opencode'),
+      // Cross-platform: check all possible OpenCode config directories
+      const candidates = [
+        join(HOME, '.config', 'opencode'),             // Linux (XDG)
+        join(appDataDir(), 'opencode'),                // macOS: ~/Library/Application Support/opencode, Windows: %APPDATA%/opencode
       ];
-      return paths.some((p) => existsSync(p));
+      return candidates.some((p) => existsSync(p));
     },
     configure(force) {
-      const dir = join(HOME, '.config', 'opencode');
+      // Use first existing platform-appropriate config directory
+      const candidates = [
+        join(HOME, '.config', 'opencode'),
+        join(appDataDir(), 'opencode'),
+      ];
+      const dir = candidates.find((p) => existsSync(p)) || candidates[0];
       const configPath = join(dir, 'config.json');
 
       if (!force && existsSync(configPath)) {
@@ -177,9 +197,10 @@ const EDITORS: EditorConfig[] = [
     },
     configure(_force) {
       // Claude Code uses `claude mcp add` command
+      // Use execFileSync for cross-platform argument safety (avoids shell parsing issues)
       try {
-        execSync(
-          'claude mcp add astrolabe -- npx -y @astrolabe/cli serve-mcp',
+        execFileSync(
+          'claude', ['mcp', 'add', 'astrolabe', '--', 'npx', '-y', '@astrolabe/cli', 'serve-mcp'],
           { stdio: 'pipe', timeout: 10000, encoding: 'utf-8' },
         );
         return { path: 'via claude mcp add' };

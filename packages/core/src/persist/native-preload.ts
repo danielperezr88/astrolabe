@@ -15,7 +15,7 @@
  */
 
 import { copyFileSync, renameSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 
 let initialized = false;
@@ -28,8 +28,8 @@ export function ensureNativeBinary(): void {
   try {
     const defaultBin: string = req.resolve('better-sqlite3/build/Release/better_sqlite3.node');
     const baseDir = dirname(defaultBin);
-    const nodeBackup = baseDir + '/node/better_sqlite3.node';
-    const electronSidecar = baseDir + '/electron/better_sqlite3.node';
+    const nodeBackup = join(baseDir, 'node', 'better_sqlite3.node');
+    const electronSidecar = join(baseDir, 'electron', 'better_sqlite3.node');
 
     if ('electron' in process.versions) {
       // ── Electron (VSCode): swap to electron binary ──

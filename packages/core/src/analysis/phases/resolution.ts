@@ -7,6 +7,7 @@
  */
 
 import { dirname } from 'node:path';
+import { toPosix } from '@astrolabe/shared';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { GraphNode } from '../../core/types.js';
 import { languageForFile } from '../languages/index.js';
@@ -44,7 +45,7 @@ function buildSymbolIndex(graph: PhaseContext['graph']): SymbolIndex {
 function resolveModule(baseDir: string, spec: string): string {
   if (!spec.startsWith('.')) return spec;
   // Normalize to forward slashes for cross-platform compatibility (#144)
-  const normalized = baseDir.replace(/\\/g, '/');
+  const normalized = toPosix(baseDir);
   const parts = normalized.split('/').filter(Boolean);
   for (const p of spec.split('/')) {
     if (p === '..') parts.pop();

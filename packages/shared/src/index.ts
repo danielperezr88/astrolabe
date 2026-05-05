@@ -15,3 +15,11 @@ export {
   type GraphRelationship,
   type KnowledgeGraph,
 } from './types.js';
+
+export {
+  toPosix,
+  pathBasename,
+  stripTrailingSep,
+  isRelativeImport,
+  appDataDir,
+} from './path-utils.js';
