@@ -7,6 +7,35 @@ on:
     branches: [main, staging]
 
 jobs:
+  # ── Security: dependency review on PRs ───────────────────────────────────
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Review dependencies for vulnerabilities
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+  # ── Security: npm audit ──────────────────────────────────────────────────
+  npm-audit:
+    name: npm Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run npm audit
+        run: npm audit --audit-level=high --omit=dev || true
+      - name: Check for critical vulnerabilities
+        run: npm audit --audit-level=critical --omit=dev
+
   unit-test:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

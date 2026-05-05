@@ -90,6 +90,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ── Security: scan Docker image ──────────────────────────────────────
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          format: 'table'
+
       # ── Sign the image ──────────────────────────────────────────────────
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
