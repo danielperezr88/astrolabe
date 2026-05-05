@@ -17,20 +17,20 @@
  * Works both locally (git CLI) and in CI (GitHub Actions).
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function git(args) {
+function git(...args) {
   try {
-    return execSync(`git ${args}`, { encoding: 'utf-8' }).trim();
+    return execFileSync('git', args, { encoding: 'utf-8' }).trim();
   } catch {
     return '';
   }
 }
 
 function getTags() {
-  const output = git('tag -l "v*"');
+  const output = git('tag', '-l', 'v*');
   if (!output) return [];
   return output
     .split('\n')
