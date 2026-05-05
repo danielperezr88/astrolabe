@@ -155,7 +155,6 @@ jobs:
           npm pkg set version="$VERSION" -w packages/core
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
-          npm pkg set version="$VERSION" -w packages/web
 
       - name: Commit version bump
         run: |
