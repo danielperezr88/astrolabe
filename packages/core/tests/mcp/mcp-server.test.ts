@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createSqliteStore } from '../../src/persist/sqlite.js';
@@ -26,6 +26,7 @@ let child: ChildProcess;
 let originalRegistry: RegistryEntry[];
 let msgId = 0;
 let responseBuffer = '';
+let stderrBuffer = '';
 let pendingResolvers = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 /** Handle incoming data — parse newline-delimited JSON and dispatch to waiting callers. */
@@ -72,8 +73,8 @@ beforeAll(async () => {
   originalRegistry = loadRegistry();
 
   // Create test database with graph data
-  testDir = mkdtempSync(join(tmpdir(), 'astrolabe-mcp-e2e-'));
-  dbPath = join(testDir, 'mcp-e2e.db');
+  testDir = mkdtempSync(resolve(tmpdir(), 'astrolabe-mcp-e2e-'));
+  dbPath = resolve(testDir, 'mcp-e2e.db');
 
   const store = createSqliteStore(dbPath);
   const graph = createKnowledgeGraph();
@@ -110,14 +111,24 @@ beforeAll(async () => {
   }]);
 
   // Spawn MCP server via helper (which calls startMcpServer())
-  const helperPath = join(__dirname, 'mcp-server-helper.mjs');
+  const helperPath = resolve(__dirname, 'mcp-server-helper.mjs');
   child = spawn(process.execPath, [helperPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: { ...process.env, NODE_ENV: 'test' },
   });
 
-  child.stderr!.on('data', () => { /* drain stderr */ });
+  // Wait for READY signal on stderr before sending requests
+  const ready = new Promise<void>((resolveReady, rejectReady) => {
+    child.stderr!.on('data', (d: Buffer) => {
+      stderrBuffer += d.toString();
+      if (stderrBuffer.includes('READY\n')) resolveReady();
+    });
+    setTimeout(() => rejectReady(new Error(`MCP server not ready after 25s. stderr: ${stderrBuffer}`)), 25000);
+  });
+
   child.stdout!.on('data', handleStdoutData);
+
+  await ready;
 
   // Send initialize request to start the server
   const initResponse = await sendRpc('initialize', {
@@ -132,11 +143,13 @@ beforeAll(async () => {
   child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
   // Small delay for the notification to be processed
   await new Promise((r) => setTimeout(r, 100));
-}, 15000);
+}, 30000);
 
 afterAll(() => {
   child?.kill();
   saveRegistry(originalRegistry);
+  // Log stderr for debugging (helps diagnose subprocess startup failures)
+  if (stderrBuffer) console.warn(`[MCP server stderr]:\n${stderrBuffer}`);
   // Temp dir may be locked by subprocess SQLite — best-effort cleanup
   try { if (testDir) rmSync(testDir, { recursive: true, force: true }); } catch { /* locked */ }
 });
