@@ -7,8 +7,7 @@
     "packages/shared",
     "packages/core",
     "packages/cli",
-    "packages/vscode",
-    "packages/web"
+    "packages/vscode"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
