@@ -70,6 +70,49 @@ function getRepo(dbPath: string, name: string) {
   return ctx;
 }
 
+// #485: Rate limiting — token bucket per IP
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_DEFAULT = 100; // requests per window
+
+interface RateBucket { count: number; resetAt: number; }
+const rateBuckets = new Map<string, RateBucket>();
+
+function rateLimiter(req: IncomingMessage, res: ServerResponse): boolean {
+  // Skip rate limiting for health endpoint
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname === '/api/health') return true;
+
+  const ip = req.socket.remoteAddress || 'unknown';
+  const limit = parseInt(process.env.ASTROLABE_RATE_LIMIT || String(RATE_LIMIT_DEFAULT), 10);
+  const now = Date.now();
+
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    rateBuckets.set(ip, bucket);
+  }
+
+  bucket.count++;
+  const remaining = Math.max(0, limit - bucket.count);
+  const resetSec = Math.ceil((bucket.resetAt - now) / 1000);
+
+  res.setHeader('X-RateLimit-Limit', limit);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+  res.setHeader('X-RateLimit-Reset', resetSec);
+
+  if (bucket.count > limit) {
+    res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': _corsOrigin,
+      'Retry-After': String(resetSec),
+    });
+    res.end(JSON.stringify({ error: 'Too many requests', retryAfter: resetSec }));
+    return false;
+  }
+
+  return true;
+}
+
 // ── JSON helpers ──────────────────────────────────────────────────────────
 
 let _corsOrigin = '*';
@@ -649,6 +692,9 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
         })),
       });
     }
+
+    // #485: Rate limiting
+    if (!rateLimiter(req, res)) return;
 
     // #329: Auth middleware
     if (!authMiddleware(req, res)) return;
