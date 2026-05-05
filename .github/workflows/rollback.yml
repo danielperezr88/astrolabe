@@ -1,0 +1,148 @@
+# Rollback Workflow — re-tags a previous Docker image as latest/stable.
+# Triggered manually via workflow_dispatch with a target version input.
+
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Target version to roll back to (e.g. 0.2.0)"
+        required: true
+        type: string
+      confirm:
+        description: "Type 'ROLLBACK' to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  validate:
+    name: Validate rollback request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "ROLLBACK" ]; then
+            echo "✗ Confirmation mismatch. Type 'ROLLBACK' to proceed."
+            exit 1
+          fi
+          echo "✓ Rollback confirmed for version ${{ inputs.version }}"
+
+      - name: Verify image exists
+        run: |
+          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}"
+          echo "✓ Image ${{ inputs.version }} found in registry"
+
+  rollback:
+    name: Re-tag ${{ inputs.version }} as latest/stable
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull target image
+        run: docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}"
+
+      - name: Re-tag as latest and stable
+        run: |
+          TARGET="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}"
+          docker tag "$TARGET" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          docker tag "$TARGET" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stable"
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:stable"
+          echo "✓ Re-tagged ${{ inputs.version }} as latest and stable"
+
+  smoke-test:
+    name: Smoke test rollback image
+    runs-on: ubuntu-latest
+    needs: rollback
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run smoke test
+        run: bash scripts/smoke-test.sh "${{ inputs.version }}"
+
+  tag:
+    name: Create rollback release
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create rollback tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          TAG="v${VERSION}-rollback-$(date +%Y%m%d%H%M%S)"
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          NOTES_FILE="/tmp/rollback-notes.md"
+          {
+            echo "## ⏪ Rollback to ${VERSION}"
+            echo ""
+            echo "This release reverts the \`latest\` and \`stable\` Docker tags to version \`${VERSION}\`."
+            echo ""
+            echo "### Docker"
+            echo ""
+            echo '```bash'
+            echo "docker pull ghcr.io/danielperezr88/astrolabe:${VERSION}"
+            echo "docker pull ghcr.io/danielperezr88/astrolabe:latest"
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            echo "Triggered by: @${{ github.actor }}"
+            echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$NOTES_FILE"
+
+          gh release create "$TAG" \
+            --title "Rollback to ${VERSION}" \
+            --notes-file "$NOTES_FILE" \
+            --prerelease
+
+          echo "✓ Rollback release created: ${TAG}"
+
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [validate, rollback, smoke-test, tag]
+    if: failure() && always()
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue on rollback failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Rollback failed: ${context.workflow} #${context.runNumber}`,
+              body: [
+                `**Workflow**: ${context.workflow}`,
+                `**Target version**: ${{ inputs.version }}`,
+                `**Run**: ${runUrl}`,
+                '',
+                `@${context.actor} — Rollback to ${{ inputs.version }} failed. Manual intervention required.`,
+              ].join('\n'),
+              labels: ['bug'],
+            });

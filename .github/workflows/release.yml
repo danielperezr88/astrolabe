@@ -130,6 +130,10 @@ jobs:
           exit-code: '1'
           format: 'table'
 
+      # ── Smoke test: verify container starts and responds ────────────────
+      - name: Run deployment smoke test
+        run: bash scripts/smoke-test.sh "${{ steps.version.outputs.version }}"
+
       # ── Sign the image ──────────────────────────────────────────────────
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
