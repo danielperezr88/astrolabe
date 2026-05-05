@@ -1,6 +1,8 @@
 node_modules/
 packages/*/node_modules/
 packages/*/dist/
+packages/web/
+packages/vscode/
 .astrolabe/
 .git/
 *.db
@@ -8,3 +10,4 @@ packages/*/dist/
 *.db-shm
 .env
 .DS_Store
+coverage/
