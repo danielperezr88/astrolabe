@@ -12,6 +12,9 @@ import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import { loadRegistry } from '../mcp/registry.js';
 import { execFileSync } from 'node:child_process';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger({ level: 'info' });
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -341,7 +344,7 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
       idleTimer = setTimeout(() => {
         const elapsed = (Date.now() - lastRequestTime) / 1000;
         if (elapsed >= idleTimeout) {
-          console.error(`Eval server: idle timeout (${idleTimeout}s) reached, shutting down.`);
+          log.info('Eval server idle timeout reached, shutting down', { idleTimeout, elapsed: Math.round(elapsed) });
           shutdownEvalServer();
           server.close();
         }
@@ -406,8 +409,7 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
   });
 
   server.listen(port, host, () => {
-    console.error(`Astrolabe eval server listening on http://${host}:${port}`);
-    console.error(`Idle timeout: ${idleTimeout}s`);
+    log.info('Eval server started', { host, port, idleTimeout });
   });
 
   // Start idle timer
