@@ -175,6 +175,18 @@ jobs:
             git push origin main
           }
 
+      # ── Publish to npm ────────────────────────────────────────────────────
+      - name: Build CLI package
+        run: |
+          npm run build --workspace packages/shared
+          npm run build --workspace packages/core
+          npm run build --workspace packages/cli
+
+      - name: Publish @astrolabe/cli to npm
+        run: npm publish --workspace packages/cli --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       # ── GitHub release ──────────────────────────────────────────────────
       - name: Generate release notes
         id: notes
