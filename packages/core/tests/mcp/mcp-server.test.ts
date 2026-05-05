@@ -10,20 +10,18 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createSqliteStore } from '../../src/persist/sqlite.js';
 import { createFtsSearch } from '../../src/search/fts.js';
 import { createKnowledgeGraph } from '../../src/core/graph.js';
-import { loadRegistry, saveRegistry, type RegistryEntry } from '../../src/mcp/registry.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let testDir: string;
 let dbPath: string;
 let child: ChildProcess;
-let originalRegistry: RegistryEntry[];
 let msgId = 0;
 let responseBuffer = '';
 let stderrBuffer = '';
@@ -70,9 +68,7 @@ function sendRpc(method: string, params?: Record<string, unknown>): Promise<unkn
 // ── Setup ────────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
-  originalRegistry = loadRegistry();
-
-  // Create test database with graph data
+  // Use isolated temp directory for DB, registry, and subprocess home
   testDir = mkdtempSync(resolve(tmpdir(), 'astrolabe-mcp-e2e-'));
   dbPath = resolve(testDir, 'mcp-e2e.db');
 
@@ -101,20 +97,28 @@ beforeAll(async () => {
   fts.close();
   store.close();
 
-  // Register in global registry
-  saveRegistry([{
+  // Register in subprocess-isolated registry (separate home dir)
+  const astrolabeDir = resolve(testDir, '.astrolabe');
+  mkdirSync(astrolabeDir);
+  writeFileSync(resolve(astrolabeDir, 'registry.json'), JSON.stringify([{
     name: 'mcp-e2e-repo',
     path: testDir,
     dbPath,
     lastCommit: 'abc123',
     indexedAt: Date.now(),
-  }]);
+  }]));
 
   // Spawn MCP server via helper (which calls startMcpServer())
   const helperPath = resolve(__dirname, 'mcp-server-helper.mjs');
   child = spawn(process.execPath, [helperPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_ENV: 'test' },
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      // Isolate subprocess home dir so registry.json is from testDir
+      HOME: testDir,
+      USERPROFILE: testDir,
+    },
   });
 
   // Wait for READY signal on stderr before sending requests
@@ -147,7 +151,6 @@ beforeAll(async () => {
 
 afterAll(() => {
   child?.kill();
-  saveRegistry(originalRegistry);
   // Log stderr for debugging (helps diagnose subprocess startup failures)
   if (stderrBuffer) console.warn(`[MCP server stderr]:\n${stderrBuffer}`);
   // Temp dir may be locked by subprocess SQLite — best-effort cleanup
