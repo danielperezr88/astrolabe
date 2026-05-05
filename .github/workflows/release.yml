@@ -1,0 +1,213 @@
+# Stable Release Pipeline — fires on every push to main.
+# Calculates the stable version from the latest RC, builds Docker image
+# with stable + latest tags, publishes to GHCR, signs with Cosign,
+# creates a GitHub release with auto-generated release notes.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Prevent infinite loop: the check job detects version-bump commits
+# (messages starting with "chore: release v") and skips the pipeline.
+concurrency:
+  group: release-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # push stable tags + create release
+  packages: write       # push Docker image to GHCR
+  id-token: write       # keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ── Skip if this is a version-bump commit (prevent infinite loop) ────────
+  check:
+    name: Check trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - id: check
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          if echo "$MSG" | grep -q "chore: release v"; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping — version bump commit."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Proceeding with release."
+          fi
+
+  # ── Gate: full integration tests must pass ──────────────────────────────
+  integration-test:
+    name: Integration Tests (release gate)
+    runs-on: ubuntu-latest
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build --workspace packages/shared
+      - run: npm test
+      - run: npm test
+        env:
+          ASTROLABE_INTEGRATION: '1'
+
+  # ── Publish stable release ─────────────────────────────────────────────
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: needs.check.outputs.should_release == 'true'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Version calculation ─────────────────────────────────────────────
+      - name: Calculate stable version
+        id: version
+        run: |
+          VERSION=$(node scripts/next-version.mjs --release)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Stable version: $VERSION"
+
+      # ── Docker build + push ─────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+            type=raw,value=stable
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
+            type=sha,prefix=
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Sign the image ──────────────────────────────────────────────────
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with GitHub OIDC
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+
+      # ── Push stable Git tag ─────────────────────────────────────────────
+      - name: Push stable tag
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          # Skip if tag already exists (e.g. re-run)
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+      # ── Update package.json versions (commit with [skip ci]) ────────────
+      - name: Bump workspace versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Update root package.json
+          npm pkg set version="$VERSION"
+          # Update workspace packages
+          npm pkg set version="$VERSION" -w packages/shared
+          npm pkg set version="$VERSION" -w packages/core
+          npm pkg set version="$VERSION" -w packages/cli
+          npm pkg set version="$VERSION" -w packages/vscode
+          npm pkg set version="$VERSION" -w packages/web
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "**/package.json" package.json package-lock.json
+          git diff --cached --quiet && echo "No version changes to commit" || {
+            git commit -m "chore: release v${{ steps.version.outputs.version }}"
+            git push origin main
+          }
+
+      # ── GitHub release ──────────────────────────────────────────────────
+      - name: Generate release notes
+        id: notes
+        run: |
+          NOTES=$(node scripts/release-notes.mjs)
+          {
+            echo "notes<<NOTES_EOF"
+            echo "$NOTES"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          NOTES_FILE="/tmp/release-notes.md"
+
+          # Build release notes body
+          {
+            echo "## 🚀 Release ${TAG}"
+            echo ""
+            echo "### Docker"
+            echo ""
+            echo '```bash'
+            echo "docker pull ghcr.io/danielperezr88/astrolabe:${VERSION}"
+            echo "docker pull ghcr.io/danielperezr88/astrolabe:latest"
+            echo '```'
+            echo ""
+            echo "### CLI"
+            echo ""
+            echo '```bash'
+            echo "npm install -g @astrolabe/cli@${VERSION}"
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            echo "${{ steps.notes.outputs.notes }}"
+          } > "$NOTES_FILE"
+
+          gh release create "$TAG" \
+            --title "Release ${TAG}" \
+            --notes-file "$NOTES_FILE"

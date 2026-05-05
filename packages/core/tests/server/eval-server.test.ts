@@ -191,13 +191,16 @@ describe('Eval Server (#448)', () => {
   });
 
   it('idle timeout triggers shutdown', async () => {
-    const idleServer = startEvalServer({ port: 0, host: '127.0.0.1', idleTimeout: 1 });
+    // Use 3s idle timeout — 1s was too tight for slow CI runners where
+    // event-loop scheduling delays caused the timer callback to miss the
+    // window.  3s gives comfortable headroom while keeping the test fast.
+    const idleServer = startEvalServer({ port: 0, host: '127.0.0.1', idleTimeout: 3 });
     await new Promise<void>((resolve) => { idleServer.on('listening', resolve); });
 
-    // Wait for idle timeout + small buffer
+    // Wait for idle timeout + generous buffer for CI scheduling variance
     const closed = new Promise<boolean>((resolve) => {
       idleServer.on('close', () => resolve(true));
-      setTimeout(() => resolve(false), 3000);
+      setTimeout(() => resolve(false), 8000);
     });
 
     const didClose = await closed;
