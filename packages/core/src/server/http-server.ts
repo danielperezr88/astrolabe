@@ -801,11 +801,39 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
     console.error(`API docs: http://${host}:${port}/api/repos`);
   });
 
-  // #332: Graceful shutdown — close all connections
+  // #332: Graceful shutdown — drain active connections before exit (#495)
+  let shuttingDown = false;
+  let activeRequests = 0;
+
+  server.on('request', (_req: IncomingMessage, res: ServerResponse) => {
+    activeRequests++;
+    if (shuttingDown) res.setHeader('Connection', 'close');
+    res.on('finish', () => { activeRequests--; });
+    res.on('close', () => { activeRequests--; });
+  });
+
+  const DRAIN_TIMEOUT_MS = 10_000;
   const cleanup = () => {
+    if (shuttingDown) return; // Prevent double-shutdown
+    shuttingDown = true;
+    console.error(`Astrolabe: shutting down, draining ${activeRequests} active requests...`);
+
     jobManager.dispose();
     shutdownHttpServer();
-    process.exit(0);
+    server.close(); // Stop accepting new connections
+
+    // Force exit after drain timeout
+    setTimeout(() => {
+      if (activeRequests > 0) {
+        console.error(`Astrolabe: forcing exit, ${activeRequests} requests still active`);
+      }
+      process.exit(activeRequests > 0 ? 1 : 0);
+    }, DRAIN_TIMEOUT_MS);
+
+    // Exit immediately if no active requests
+    if (activeRequests === 0) {
+      process.exit(0);
+    }
   };
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
