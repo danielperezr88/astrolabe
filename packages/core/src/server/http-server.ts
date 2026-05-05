@@ -9,7 +9,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { join as pathJoin, resolve as pathResolve, dirname, basename } from 'node:path';
+import { join as pathJoin, resolve as pathResolve, dirname, basename, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fork } from 'node:child_process';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
@@ -391,9 +392,15 @@ async function handleAnalyze(res: ServerResponse, params: Record<string, unknown
   const repoPath = params.path as string | undefined;
   if (!repoPath) return error(res, 'Missing "path" in request body');
 
-  // Path validation: require absolute path, reject traversal
-  if (!pathResolve(repoPath).startsWith(pathResolve(repoPath))) {
+  // #479: Path validation — require absolute path, reject traversal sequences
+  const normalized = normalize(repoPath);
+  if (normalized.includes('..')) {
     return error(res, '"path" must not contain traversal sequences');
+  }
+  if (!pathResolve(repoPath).startsWith(process.cwd().slice(0, 3))) {
+    // On Windows, ensure drive letter matches (e.g. C:\)
+    // On Unix, this just checks it starts with /
+    return error(res, '"path" must be an absolute path');
   }
   if (!existsSync(repoPath as string)) {
     return error(res, `"${repoPath}" does not exist`);
@@ -417,8 +424,9 @@ async function handleAnalyze(res: ServerResponse, params: Record<string, unknown
   jobManager.updateJob(job.id, { status: 'analyzing', progress: { phase: 'analyzing', percent: 0, message: 'Starting analysis...' } });
 
   // Fork CLI child process for analysis
-  // Resolve CLI path relative to this package
-  const cliDistPath = pathResolve(new URL(import.meta.url).pathname, '..', '..', '..', 'cli', 'dist', 'index.js');
+  // #480: Use fileURLToPath to handle Windows file:// URL correctly
+  const __filename = fileURLToPath(import.meta.url);
+  const cliDistPath = pathResolve(__filename, '..', '..', '..', 'cli', 'dist', 'index.js');
   const workerPath = existsSync(cliDistPath) ? cliDistPath : process.argv[1] ?? cliDistPath;
 
   const args = ['analyze', repoPath, '-o', pathJoin(repoPath, '.astrolabe', 'astrolabe.db')];
