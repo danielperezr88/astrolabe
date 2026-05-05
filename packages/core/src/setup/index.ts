@@ -11,6 +11,9 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { appDataDir } from '@astrolabe/shared';
+import { createLogger } from '../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 // ── Atomic write helper (#333) ─────────────────────────────────────────────
 
@@ -73,14 +76,14 @@ const EDITORS: EditorConfig[] = [
           if (existing.mcpServers?.astrolabe) {
             return { error: 'Already configured (use --force to overwrite)' };
           }
-        } catch { /* corrupt config — overwrite */ }
+        } catch (err) { log.debug('Corrupt MCP config, will overwrite', { path: configPath, error: String(err) }); }
       }
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       let mcp: any = { mcpServers: {} };
       if (existsSync(configPath)) {
-        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch { /* start fresh */ }
+        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh MCP config', { path: configPath, error: String(err) }); }
       }
 
       mcp.mcpServers = mcp.mcpServers || {};
@@ -117,14 +120,14 @@ const EDITORS: EditorConfig[] = [
           if (existing.mcpServers?.astrolabe) {
             return { error: 'Already configured (use --force to overwrite)' };
           }
-        } catch { /* corrupt config */ }
+        } catch (err) { log.debug('Corrupt Windsurf MCP config, will overwrite', { path: configPath, error: String(err) }); }
       }
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       let mcp: any = { mcpServers: {} };
       if (existsSync(configPath)) {
-        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch { /* start fresh */ }
+        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh Windsurf MCP config', { path: configPath, error: String(err) }); }
       }
 
       mcp.mcpServers = mcp.mcpServers || {};
@@ -163,14 +166,14 @@ const EDITORS: EditorConfig[] = [
           if (existing.mcpServers?.astrolabe) {
             return { error: 'Already configured (use --force to overwrite)' };
           }
-        } catch { /* corrupt config */ }
+        } catch (err) { log.debug('Corrupt OpenCode config, will overwrite', { path: configPath, error: String(err) }); }
       }
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       let config: any = { mcpServers: {} };
       if (existsSync(configPath)) {
-        try { config = JSON.parse(readFileSync(configPath, 'utf-8')); } catch { /* start fresh */ }
+        try { config = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh OpenCode config', { path: configPath, error: String(err) }); }
       }
 
       config.mcpServers = config.mcpServers || {};
@@ -192,6 +195,7 @@ const EDITORS: EditorConfig[] = [
         execSync('claude --version', { stdio: 'ignore', timeout: 3000 });
         return true;
       } catch {
+        log.debug('Claude Code CLI not detected');
         return false;
       }
     },
@@ -230,14 +234,14 @@ const EDITORS: EditorConfig[] = [
           if (existing.servers?.astrolabe) {
             return { error: 'Already configured (use --force to overwrite)' };
           }
-        } catch { /* corrupt config */ }
+        } catch (err) { log.debug('Corrupt VS Code MCP config, will overwrite', { path: configPath, error: String(err) }); }
       }
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       let mcp: any = {};
       if (existsSync(configPath)) {
-        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch { /* start fresh */ }
+        try { mcp = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh VS Code MCP config', { path: configPath, error: String(err) }); }
       }
 
       mcp.servers = mcp.servers || {};

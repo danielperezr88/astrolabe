@@ -11,6 +11,9 @@ import { basename } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import { getPhaseOutput } from '../../core/pipeline.js';
 import type { ScanOutput } from '../phases/scan.js';
+import { createLogger } from '../../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 export interface CobolOutput {
   programCount: number;
@@ -45,7 +48,7 @@ export const cobolPhase: PhaseDefinition<CobolOutput> = {
 
     for (const file of cobolFiles) {
       let source: string;
-      try { source = readFileSync(file.path, 'utf-8'); } catch { continue; }
+      try { source = readFileSync(file.path, 'utf-8'); } catch (err) { log.debug('Skipping unreadable COBOL file', { file: file.path, error: String(err) }); continue; }
 
       // Detect PROGRAM-ID
       let programName = '';
