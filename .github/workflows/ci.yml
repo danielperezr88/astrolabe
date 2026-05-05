@@ -8,10 +8,13 @@ on:
 
 jobs:
   # ── Security: dependency review on PRs ───────────────────────────────────
+  # TODO: Remove continue-on-error once Dependency Graph is enabled in
+  # Settings > Code security and analysis > Dependency graph
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Review dependencies for vulnerabilities

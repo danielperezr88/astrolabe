@@ -92,7 +92,7 @@ jobs:
 
       # ── Security: scan Docker image ──────────────────────────────────────
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}'
           severity: 'CRITICAL,HIGH'
