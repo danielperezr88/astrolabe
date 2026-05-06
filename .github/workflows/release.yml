@@ -58,7 +58,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
+      - run: npm install --no-save --package-lock=false --legacy-peer-deps
       - run: npm run build --workspace packages/shared
+      - run: npm run build --workspace packages/core
       - run: npm test
       - run: npm test
         env:
@@ -121,6 +123,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ── Security: scan Docker image ─────────────────────────────────────
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          format: 'table'
+
+      # ── Smoke test: verify container starts and responds ────────────────
+      - name: Run deployment smoke test
+        run: bash scripts/smoke-test.sh "${{ steps.version.outputs.version }}"
+
       # ── Sign the image ──────────────────────────────────────────────────
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
@@ -155,7 +170,6 @@ jobs:
           npm pkg set version="$VERSION" -w packages/core
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
-          npm pkg set version="$VERSION" -w packages/web
 
       - name: Commit version bump
         run: |
@@ -164,6 +178,46 @@ jobs:
           git add "**/package.json" package.json package-lock.json
           git diff --cached --quiet && echo "No version changes to commit" || {
             git commit -m "chore: release v${{ steps.version.outputs.version }}"
+            git push origin main
+          }
+
+      # ── Publish to npm ────────────────────────────────────────────────────
+      - name: Build CLI package
+        run: |
+          npm run build --workspace packages/shared
+          npm run build --workspace packages/core
+          npm run build --workspace packages/cli
+
+      - name: Publish @astrolabe/cli to npm
+        run: npm publish --workspace packages/cli --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # ── Update CHANGELOG.md ───────────────────────────────────────────────
+      - name: Update CHANGELOG.md
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          NOTES=$(node scripts/release-notes.mjs)
+
+          # Prepend new entry to CHANGELOG.md
+          HEADER="## [${VERSION}] — $(date +%Y-%m-%d)"
+          TEMP=$(mktemp)
+          {
+            echo "# Changelog"
+            echo ""
+            echo "${HEADER}"
+            echo ""
+            echo "${NOTES}"
+            echo ""
+            # Skip the first 2 lines (title + blank) of existing changelog
+            tail -n +3 CHANGELOG.md
+          } > "${TEMP}"
+          mv "${TEMP}" CHANGELOG.md
+
+          git add CHANGELOG.md
+          git diff --cached --quiet && echo "No CHANGELOG changes" || {
+            git commit -m "docs: update CHANGELOG for ${TAG}"
             git push origin main
           }
 
@@ -211,3 +265,31 @@ jobs:
           gh release create "$TAG" \
             --title "Release ${TAG}" \
             --notes-file "$NOTES_FILE"
+
+  # ── Notify on failure ──────────────────────────────────────────────────
+  notify-failure:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [check, integration-test, release]
+    if: failure() && always()
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue on release failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Release pipeline failed: ${context.workflow} #${context.runNumber}`,
+              body: [
+                `**Workflow**: ${context.workflow}`,
+                `**Branch**: main`,
+                `**Run**: ${runUrl}`,
+                '',
+                `@${context.actor} — Release pipeline failure requires immediate attention.`,
+              ].join('\n'),
+              labels: ['bug'],
+            });

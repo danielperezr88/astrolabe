@@ -12,6 +12,9 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
+import { createLogger } from '../../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 export interface OrmOutput {
   modelCount: number;
@@ -51,7 +54,7 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
           modelCount++;
         }
         frameworks.add('prisma');
-      } catch { /* skip */ }
+      } catch (err) { log.debug('Skipping unreadable ORM schema file', { file: prismaSchema, error: String(err) }); }
     }
 
     // Detect Django models

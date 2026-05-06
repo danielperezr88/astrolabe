@@ -11,6 +11,9 @@ import { join } from 'node:path';
 import { execSync, execFileSync } from 'node:child_process';
 import type { KnowledgeGraph } from '../core/types.js';
 import { generateHtmlViewer } from './html-viewer.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger({ level: 'info' });
 export { generateHtmlViewer } from './html-viewer.js';
 
 export interface WikiMeta {
@@ -133,7 +136,7 @@ function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise
     .catch((e) => {
       clearTimeout(timeout);
       if ((e as Error).name === 'AbortError') {
-        console.warn(`[wiki] LLM call timed out for "${moduleName}"`);
+        log.warn('LLM call timed out', { moduleName });
       }
       return '';
     });
@@ -359,7 +362,7 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`[wiki] Gist publishing failed: ${msg}`);
+      log.warn('Gist publishing failed', { error: msg });
     }
   }
 

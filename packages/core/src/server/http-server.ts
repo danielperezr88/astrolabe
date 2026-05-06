@@ -8,6 +8,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join as pathJoin, resolve as pathResolve, dirname, basename, normalize, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,7 @@ import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
 import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
+import { isAstrolabeError } from '@astrolabe/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -70,6 +72,49 @@ function getRepo(dbPath: string, name: string) {
   return ctx;
 }
 
+// #485: Rate limiting — token bucket per IP
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_DEFAULT = 100; // requests per window
+
+interface RateBucket { count: number; resetAt: number; }
+const rateBuckets = new Map<string, RateBucket>();
+
+function rateLimiter(req: IncomingMessage, res: ServerResponse): boolean {
+  // Skip rate limiting for health endpoint
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname === '/api/health') return true;
+
+  const ip = req.socket.remoteAddress || 'unknown';
+  const limit = parseInt(process.env.ASTROLABE_RATE_LIMIT || String(RATE_LIMIT_DEFAULT), 10);
+  const now = Date.now();
+
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    rateBuckets.set(ip, bucket);
+  }
+
+  bucket.count++;
+  const remaining = Math.max(0, limit - bucket.count);
+  const resetSec = Math.ceil((bucket.resetAt - now) / 1000);
+
+  res.setHeader('X-RateLimit-Limit', limit);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+  res.setHeader('X-RateLimit-Reset', resetSec);
+
+  if (bucket.count > limit) {
+    res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': _corsOrigin,
+      'Retry-After': String(resetSec),
+    });
+    res.end(JSON.stringify({ error: 'Too many requests', retryAfter: resetSec }));
+    return false;
+  }
+
+  return true;
+}
+
 // ── JSON helpers ──────────────────────────────────────────────────────────
 
 let _corsOrigin = '*';
@@ -101,6 +146,15 @@ function json(res: ServerResponse, data: unknown, status = 200) {
 
 function error(res: ServerResponse, message: string, status = 400) {
   json(res, { error: message }, status);
+}
+
+/** Handle thrown errors — AstrolabeError produces structured response, others return 500 */
+function handleError(res: ServerResponse, err: unknown) {
+  if (isAstrolabeError(err)) {
+    json(res, err.toJSON(), err.statusCode);
+  } else {
+    json(res, { error: err instanceof Error ? err.message : String(err), code: 'INTERNAL_ERROR' }, 500);
+  }
 }
 
 // #471: Body size limit to prevent DoS (10 MB, same as MCP transport)
@@ -165,7 +219,7 @@ async function handleContext(res: ServerResponse, repoName: string) {
       metaStale: meta ? meta.lastCommit !== entry.lastCommit : null,
     });
   } catch (err) {
-    error(res, `Failed to read repo: ${(err as Error).message}`, 500);
+    handleError(res, err);
   }
 }
 
@@ -189,7 +243,7 @@ async function handleClusters(res: ServerResponse, repoName: string) {
     }
     json(res, { clusters });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -248,7 +302,7 @@ async function handleGraph(res: ServerResponse, repoName: string, clusterId?: st
 
     json(res, { nodes, edges, nodeCount: nodes.length, edgeCount: edges.length });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -266,7 +320,7 @@ async function handleQuery(res: ServerResponse, repoName: string, params: Record
     const results = ctx.fts.search(query, limit);
     json(res, { results: results.map((r) => ({ label: r.label, name: r.name, filePath: r.filePath, rank: r.score })) });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -314,7 +368,7 @@ async function handleImpact(res: ServerResponse, repoName: string, params: Recor
 
     json(res, { results });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -378,7 +432,7 @@ async function handleGrep(res: ServerResponse, repoName: string, pattern: string
 
     json(res, { matches: results.length, results });
   } catch (err) {
-    error(res, String(err), 500);
+    handleError(res, err);
   }
 }
 
@@ -573,7 +627,7 @@ async function handleGraphStream(res: ServerResponse, repoName: string) {
     res.end();
   } catch (err) {
     if (!res.headersSent) {
-      error(res, String(err), 500);
+      handleError(res, err);
     } else {
       try { res.write(JSON.stringify({ type: 'error', error: String(err) }) + '\n'); } catch { /* best effort */ }
       res.end();
@@ -601,7 +655,7 @@ async function handleChat(res: ServerResponse, params: Record<string, unknown>) 
     const result = await ragChat(messages, { repo });
     json(res, result);
   } catch (err: any) {
-    error(res, err.message, 500);
+    handleError(res, err);
   }
 }
 
@@ -621,6 +675,10 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
   }
 
   const server = createServer(async (req, res) => {
+    // #483: Request tracing — generate or preserve request ID
+    const requestId = (req.headers['x-request-id'] as string) || randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -649,6 +707,9 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
         })),
       });
     }
+
+    // #485: Rate limiting
+    if (!rateLimiter(req, res)) return;
 
     // #329: Auth middleware
     if (!authMiddleware(req, res)) return;
@@ -741,7 +802,7 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
       // 404
       error(res, `Not found: ${req.method} ${path}`, 404);
     } catch (err) {
-      error(res, String(err), 500);
+      handleError(res, err);
     }
   });
 
@@ -750,11 +811,39 @@ export function startHttpServer(opts: ServeOptions = {}): Server {
     console.error(`API docs: http://${host}:${port}/api/repos`);
   });
 
-  // #332: Graceful shutdown — close all connections
+  // #332: Graceful shutdown — drain active connections before exit (#495)
+  let shuttingDown = false;
+  let activeRequests = 0;
+
+  server.on('request', (_req: IncomingMessage, res: ServerResponse) => {
+    activeRequests++;
+    if (shuttingDown) res.setHeader('Connection', 'close');
+    res.on('finish', () => { activeRequests--; });
+    res.on('close', () => { activeRequests--; });
+  });
+
+  const DRAIN_TIMEOUT_MS = 10_000;
   const cleanup = () => {
+    if (shuttingDown) return; // Prevent double-shutdown
+    shuttingDown = true;
+    console.error(`Astrolabe: shutting down, draining ${activeRequests} active requests...`);
+
     jobManager.dispose();
     shutdownHttpServer();
-    process.exit(0);
+    server.close(); // Stop accepting new connections
+
+    // Force exit after drain timeout
+    setTimeout(() => {
+      if (activeRequests > 0) {
+        console.error(`Astrolabe: forcing exit, ${activeRequests} requests still active`);
+      }
+      process.exit(activeRequests > 0 ? 1 : 0);
+    }, DRAIN_TIMEOUT_MS);
+
+    // Exit immediately if no active requests
+    if (activeRequests === 0) {
+      process.exit(0);
+    }
   };
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);

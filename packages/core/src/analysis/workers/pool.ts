@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { cpus } from 'node:os';
+import { createLogger } from '../../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -255,7 +258,7 @@ export async function parseFilesParallel(
 
   // Shutdown workers
   for (const w of workers) {
-    try { w.postMessage({ type: 'shutdown' }); } catch { /* ignore */ }
+    try { w.postMessage({ type: 'shutdown' }); } catch (err) { log.debug('Worker shutdown message failed', { error: String(err) }); }
   }
 
   return {

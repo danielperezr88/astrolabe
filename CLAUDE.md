@@ -5,6 +5,7 @@
 **Never wait for directions. Never go idle. Work relentlessly.**
 
 - Don't ask for validation or guidance. Comment on issues if unclear, jump to next one, let reviewer respond async.
+- Always push when ready. Don't ask "should I push?"
 - Set a 10-minute deferred `gh issue list` check when expecting reviewer feedback.
 
 ## Priority Order
@@ -39,12 +40,20 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 
 1. Check `gh issue list --repo danielperezr88/astrolabe --state open` for what to do next.
 2. Create a feature branch: `git checkout -b fix/issue-123-description origin/staging`
-3. Work 1-by-1: read issue → implement fix → run `npm test` → commit.
-4. Push feature branch: `git push -u origin fix/issue-123-description`
-5. Open PR to `staging`: `gh pr create --base staging --title "fix: description (#123)"`
-6. Wait for checks to pass and approval, then merge.
-7. When staging is ready for release, open PR from `staging` → `main`.
-8. Merge triggers the release pipeline automatically.
+3. **Immediately open a draft PR** to `staging`: `gh pr create --base staging --draft --title "fix: description (#123)"` — this signals work is in progress and links the issue to the PR.
+4. Work 1-by-1: read issue → implement fix → run `npm test` → commit.
+5. Push feature branch: `git push -u origin fix/issue-123-description`
+6. When ready for review, **mark PR as ready**: `gh pr ready <number>` — removes draft status.
+7. Wait for checks to pass and approval, then merge.
+8. When staging is ready for release, open PR from `staging` → `main`.
+9. Merge triggers the release pipeline automatically.
+
+### Issue-PR Linking
+
+- Every PR **must** reference its issue in the title or body: `fix: description (#123)` or `Closes #123`.
+- Use GitHub's keywords (`Closes`, `Fixes`, `Resolves`) in the PR body to auto-close issues on merge.
+- Draft PRs should be created immediately when starting work on an issue — don't wait until implementation is complete.
+- If an issue has no linked draft PR, it's considered unassigned / up for grabs.
 
 ### Commit Style
 
@@ -106,6 +115,8 @@ npm test                    # 472 pass, 12 skipped (WASM/grammar)
 npm run build --workspace packages/shared  # Must run before core build
 gh issue list --repo danielperezr88/astrolabe --state open --limit 50 --json number,title,labels
 gh issue view <N> --repo danielperezr88/astrolabe --json body
+gh pr list --repo danielperezr88/astrolabe --state open --json number,title,headRefName
+gh pr view <N> --repo danielperezr88/astrolabe --json reviews,comments
 node scripts/next-version.mjs --rc         # Check next RC version
 node scripts/next-version.mjs --release    # Check next stable version
 node scripts/next-version.mjs --current    # Check current stable version
@@ -113,9 +124,13 @@ node scripts/next-version.mjs --current    # Check current stable version
 
 ## Reviewer
 
-A reviewer agent works in 10-minute rounds: fetches latest commits, reviews, files new issues, closes verified ones.
-- If no new issues for 40+ minutes, reviewer may be done.
-- All non-enhancement issues are filed by the reviewer — trust their analysis.
+A reviewer agent works in 10-minute rounds: reviews open PRs, pushes back with change requests, approves when ready.
+- Reviewer **does NOT file bug issues** — instead, pushes back directly on PRs (request changes, comment with findings).
+- If reviewer finds issues not tied to an existing PR, they may file an issue first, then reference it in their PR review.
+- Reviewer follows the same branching model: creates feature branches, opens draft PRs, links PRs to issues.
+- Reviewer marks PRs as ready for review after implementation is complete and tests pass.
+- The implementer and reviewer coordinate via GitHub issues AND PR reviews — no direct push to protected branches.
+- **Always check PR reviews**: `gh pr view <number> --repo danielperezr88/astrolabe --json reviews,comments` — fix any reviewer feedback before merging.
 
 ## Repository
 

@@ -8,6 +8,9 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
+import { createLogger } from '../../logging/index.js';
+
+const log = createLogger({ level: 'debug' });
 
 export interface ToolsOutput { toolCount: number; toolTypes: string[]; }
 
@@ -58,7 +61,7 @@ export const toolsPhase: PhaseDefinition<ToolsOutput> = {
             toolCount++; toolTypes.add(pat.type);
           }
         }
-      } catch { /* skip unreadable */ }
+      } catch (err) { log.debug('Skipping unreadable file in tool detection', { file: fp, error: String(err) }); }
     }
     return { toolCount, toolTypes: Array.from(toolTypes) };
   },
