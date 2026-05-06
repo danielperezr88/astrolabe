@@ -27,7 +27,7 @@
     "tree-sitter"
   ],
   "dependencies": {
-    "@astrolabe/shared": "^0.1.0",
+    "@astrolabe/shared": "^1.0.0",
     "@huggingface/transformers": "^4.2.0",
     "@ladybugdb/core": "^0.16.1",
     "better-sqlite3": "^11.0.0",
