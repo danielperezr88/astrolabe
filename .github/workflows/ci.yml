@@ -33,6 +33,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      - run: rm -rf node_modules package-lock.json
       - run: npm install
       - name: Run npm audit
         run: npm audit --audit-level=high --omit=dev || true
@@ -53,6 +54,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+      - run: rm -rf node_modules package-lock.json
       - run: npm install
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
@@ -75,6 +77,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      - run: rm -rf node_modules package-lock.json
       - run: npm install
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
