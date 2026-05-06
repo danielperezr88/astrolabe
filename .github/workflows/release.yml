@@ -177,13 +177,10 @@ jobs:
           npm run build --workspace packages/core
           npm run build --workspace packages/cli
 
-      - name: Configure npm auth
-        run: npm config set '//registry.npmjs.org/:_authToken' "$NODE_AUTH_TOKEN"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Publish @astrolabe/cli to npm
-        run: npm publish --workspace packages/cli --access public
+        run: |
+          echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" > .npmrc
+          npm publish --workspace packages/cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
