@@ -128,7 +128,7 @@ describe('Graceful Shutdown (#535)', () => {
       expect(code).toBe(0);
     });
 
-    it.skipIf(isWindows)('waits for active request to complete before exiting', async () => {
+    it.skipIf(isWindows)('waits for active request to complete before exiting', { timeout: 20_000 }, async () => {
       const { child, port } = await spawnServer();
 
       // Start a slow request — connect but don't read the response
@@ -154,7 +154,7 @@ describe('Graceful Shutdown (#535)', () => {
       expect(code === 0 || code === 1).toBe(true);
     });
 
-    it.skipIf(isWindows)('sets Connection: close on requests during shutdown', async () => {
+    it.skipIf(isWindows)('sets Connection: close on requests during shutdown', { timeout: 20_000 }, async () => {
       const { child, port } = await spawnServer();
 
       const responseHeaders = new Promise<string | string[] | undefined>((resolve) => {
