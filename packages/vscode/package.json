@@ -47,8 +47,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@astrolabe/core": "^0.1.0",
-    "@astrolabe/shared": "^0.1.0"
+    "@astrolabe/core": "^1.0.0",
+    "@astrolabe/shared": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
