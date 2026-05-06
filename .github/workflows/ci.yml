@@ -33,8 +33,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: rm -rf node_modules package-lock.json
-      - run: npm install
+      - run: npm ci
       - name: Run npm audit
         run: npm audit --audit-level=high --omit=dev || true
       - name: Check for critical vulnerabilities
@@ -54,8 +53,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-      - run: rm -rf node_modules package-lock.json
-      - run: npm install
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - run: npm test -- --coverage
@@ -77,8 +76,8 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: rm -rf node_modules package-lock.json
-      - run: npm install
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - run: npm test

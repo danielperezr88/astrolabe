@@ -57,8 +57,8 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: rm -rf node_modules package-lock.json
-      - run: npm install
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false
       - run: npm run build --workspace packages/shared
       - run: npm test
       - run: npm test
