@@ -1,4 +1,4 @@
-﻿# Stable Release Pipeline — fires on every push to main.
+# Stable Release Pipeline — fires on every push to main.
 # Calculates the stable version from the latest RC, builds Docker image
 # with stable + latest tags, publishes to GHCR, signs with Cosign,
 # creates a GitHub release with auto-generated release notes.
@@ -57,7 +57,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: npm ci
+      - run: npm install
       - run: npm run build --workspace packages/shared
       - run: npm test
       - run: npm test
