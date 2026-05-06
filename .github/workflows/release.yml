@@ -160,6 +160,16 @@ jobs:
           fi
 
       # ── Publish to npm ────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - run: npm install --no-save --package-lock=false --legacy-peer-deps
+
       - name: Build CLI package
         run: |
           npm run build --workspace packages/shared

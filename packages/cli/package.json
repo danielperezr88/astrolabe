@@ -1,6 +1,6 @@
 {
   "name": "@astrolabe/cli",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Astrolabe CLI — command-line interface for codebase knowledge graph analysis",
   "type": "module",
   "main": "dist/index.js",
