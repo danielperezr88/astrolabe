@@ -33,6 +33,7 @@ jobs:
       - run: npm ci
       - run: npm install --no-save --package-lock=false --legacy-peer-deps
       - run: npm run build --workspace packages/shared
+      - run: npm run build --workspace packages/core
       - run: npm test
       - run: npm test
         env:
