@@ -32,7 +32,7 @@ trap cleanup EXIT
 echo "Waiting up to ${TIMEOUT}s for server..."
 elapsed=0
 while [ "$elapsed" -lt "$TIMEOUT" ]; do
-  if curl -sf "http://localhost:${PORT}/" -o /dev/null 2>/dev/null; then
+  if curl -sf "http://localhost:${PORT}/api/repos" -o /dev/null 2>/dev/null; then
     echo "✓ Server responded on port ${PORT}"
     echo "✓ Smoke test PASSED"
     exit 0
