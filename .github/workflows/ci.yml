@@ -54,7 +54,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
-      - run: npm install --no-save --package-lock=false
+      - run: npm install --no-save --package-lock=false --legacy-peer-deps
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - run: npm test -- --coverage
@@ -77,7 +77,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npm install --no-save --package-lock=false
+      - run: npm install --no-save --package-lock=false --legacy-peer-deps
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - run: npm test
