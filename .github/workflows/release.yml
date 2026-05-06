@@ -178,7 +178,7 @@ jobs:
           git add "**/package.json" package.json package-lock.json
           git diff --cached --quiet && echo "No version changes to commit" || {
             git commit -m "chore: release v${{ steps.version.outputs.version }}"
-            git push origin main
+            git push origin main || echo "Push blocked by branch protection (requires admin). Version bump not committed."
           }
 
       # ── Publish to npm ────────────────────────────────────────────────────
