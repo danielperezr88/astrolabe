@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. The format foll
 
 Releases are auto-generated from conventional commits. See [GitHub Releases](https://github.com/danielperezr88/astrolabe/releases) for detailed release notes.
 
-## [0.2.0] — Unreleased
+## [1.0.0] — 2026-05-07
 
 ### Added
 
