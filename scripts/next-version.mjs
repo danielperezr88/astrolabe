@@ -119,10 +119,15 @@ function nextRC(tags) {
 }
 
 function nextRelease(tags) {
+  const seed = checkSeedTag(tags);
   const latestRC = getLatestRC(tags);
   if (latestRC) {
     // Strip the -rc.N suffix
     return versionString(latestRC.major, latestRC.minor, latestRC.patch, 0);
+  }
+  if (seed) {
+    // A seed tag exists but no real RC yet — use seed as base
+    return versionString(seed.major, seed.minor, seed.patch, 0);
   }
   // No RC exists — shouldn't normally happen, but fallback to next minor from stable
   const latestStable = getLatestStable(tags);
