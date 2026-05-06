@@ -225,9 +225,14 @@ jobs:
             echo "${{ steps.notes.outputs.notes }}"
           } > "$NOTES_FILE"
 
-          gh release create "$TAG" \
-            --title "Release ${TAG}" \
-            --notes-file "$NOTES_FILE"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating notes..."
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" \
+              --title "Release ${TAG}" \
+              --notes-file "$NOTES_FILE"
+          fi
 
   # ── Notify on failure ──────────────────────────────────────────────────
   notify-failure:
