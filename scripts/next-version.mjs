@@ -99,20 +99,19 @@ function checkSeedTag(tags) {
 }
 
 function nextRC(tags) {
-  const seed = checkSeedTag(tags);
-  const latestStable = getLatestStable(tags);
   const latestRC = getLatestRC(tags);
-
-  if (seed) {
-    // A seed tag exists (e.g. v2.0.0-rc.seed) — use that as the base
-    return versionString(seed.major, seed.minor, seed.patch, 1);
-  }
-
   if (latestRC) {
     // An RC cycle is already in progress — increment
     return versionString(latestRC.major, latestRC.minor, latestRC.patch, latestRC.rc + 1);
   }
 
+  const seed = checkSeedTag(tags);
+  if (seed) {
+    // A seed tag exists (e.g. v2.0.0-rc.seed) and no real RC yet — use seed as base
+    return versionString(seed.major, seed.minor, seed.patch, 1);
+  }
+
+  const latestStable = getLatestStable(tags);
   // No RC in progress — start a new minor bump from latest stable
   const base = latestStable || { major: 0, minor: 0, patch: 0 };
   return versionString(base.major, base.minor + 1, 0, 1);
@@ -121,18 +120,42 @@ function nextRC(tags) {
 function nextRelease(tags) {
   const seed = checkSeedTag(tags);
   const latestRC = getLatestRC(tags);
+  let major, minor, patch;
+
   if (latestRC) {
     // Strip the -rc.N suffix
-    return versionString(latestRC.major, latestRC.minor, latestRC.patch, 0);
-  }
-  if (seed) {
+    major = latestRC.major;
+    minor = latestRC.minor;
+    patch = latestRC.patch;
+  } else if (seed) {
     // A seed tag exists but no real RC yet — use seed as base
-    return versionString(seed.major, seed.minor, seed.patch, 0);
+    major = seed.major;
+    minor = seed.minor;
+    patch = seed.patch;
+  } else {
+    // No RC exists — shouldn't normally happen, but fallback to next minor from stable
+    const latestStable = getLatestStable(tags);
+    const base = latestStable || { major: 0, minor: 0, patch: 0 };
+    major = base.major;
+    minor = base.minor + 1;
+    patch = 0;
   }
-  // No RC exists — shouldn't normally happen, but fallback to next minor from stable
-  const latestStable = getLatestStable(tags);
-  const base = latestStable || { major: 0, minor: 0, patch: 0 };
-  return versionString(base.major, base.minor + 1, 0, 0);
+
+  // If a stable tag with this version already exists, bump the patch
+  const stableTags = new Set(
+    tags
+      .map(parseTag)
+      .filter((t) => t && !t.isRC)
+      .map((t) => versionString(t.major, t.minor, t.patch, 0)),
+  );
+
+  let version = versionString(major, minor, patch, 0);
+  while (stableTags.has(version)) {
+    patch++;
+    version = versionString(major, minor, patch, 0);
+  }
+
+  return version;
 }
 
 function currentStable(tags) {
