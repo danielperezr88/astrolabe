@@ -894,12 +894,15 @@ export async function parseFile(
   const normalisedPath = filePath.replace(/\\/g, '/');
 
   // Check cache first
+  let mtimeMs: number | undefined;
   try {
-    const st = statSync(normalisedPath);
-    const cached = parseResultCache.get(normalisedPath, st.mtimeMs);
-    if (cached) return cached;
+    mtimeMs = statSync(normalisedPath).mtimeMs;
   } catch {
-    // If stat fails, proceed without cache
+    // File doesn't exist or can't stat — proceed without cache
+  }
+  if (mtimeMs !== undefined) {
+    const cached = parseResultCache.get(normalisedPath, mtimeMs);
+    if (cached) return cached;
   }
 
   // Determine language

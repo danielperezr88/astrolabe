@@ -136,7 +136,6 @@ if (uncategorized.length > 0) {
 }
 
 // Summary
-const totalCommits = Object.values(groups).flat().length + uncategorized.length;
 sections.unshift(`## What's Changed\n`);
 sections.push(`**Full Changelog**: ${fromTag ? `${fromTag}...${toRef}` : 'Initial release'}`);
 

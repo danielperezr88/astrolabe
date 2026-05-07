@@ -404,7 +404,15 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
       // 404
       error(res, `Not found: ${req.method} ${path}`, 404);
     } catch (err) {
-      error(res, String(err), 500);
+      if (err instanceof Error) {
+        const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
+        if (process.env.NODE_ENV === 'development') {
+          body.stack = err.stack;
+        }
+        json(res, body, 500);
+      } else {
+        error(res, String(err), 500);
+      }
     }
   });
 

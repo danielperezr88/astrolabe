@@ -130,7 +130,7 @@ export function saveRegistry(entries: RegistryEntry[]): void {
  */
 export function removeRepo(target: string): RegistryEntry | null {
   const entries = loadRegistry();
-  const resolvedTarget = target.replace(/[/\\]+$/, ''); // strip trailing slashes
+  const resolvedTarget = target.replace(/[/\\]*$/, ''); // strip trailing slashes
   let matchIndex = entries.findIndex(
     (e) => e.name === resolvedTarget || e.path === resolvedTarget,
   );

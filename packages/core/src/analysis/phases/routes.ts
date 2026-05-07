@@ -44,7 +44,7 @@ const TEMPLATE_FORM_PATTERNS: Array<{ regex: RegExp; extract: (m: RegExpExecArra
   { regex: /<form[^>]*action\s*=\s*['"]([^'"]+)['"][^>]*(?:method\s*=\s*['"](\w+)['"])?>/gi,
     extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
   // Pug form actions
-  { regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)[''])?/gm,
+  { regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)["'])?/gm,
     extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
   // Blade Form::open helper
   { regex: /\{\{\s*Form::open\s*\(\s*\[\s*['"]url['"]\s*=>\s*['"]([^'"]+)['"]/g,
@@ -98,7 +98,7 @@ const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegE
   // Template: HTML form actions (HTML, EJS, Handlebars, JSX, TSX)
   { name: 'html-template', regex: /<form[^>]*action\s*=\s*['"]([^'"]+)['"][^>]*(?:method\s*=\s*['"](\w+)['"])?>/gi, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
   // Template: Pug form actions (indentation-based syntax)
-  { name: 'pug-template', regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)[''])?/gm, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
+  { name: 'pug-template', regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)["'])?/gm, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
   // Template: Blade Form::open helper
   { name: 'blade-template', regex: /\{\{\s*Form::open\s*\(\s*\[\s*['"]url['"]\s*=>\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'POST', path: m[1] }) },
 ];

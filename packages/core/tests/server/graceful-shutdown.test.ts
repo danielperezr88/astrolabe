@@ -132,7 +132,7 @@ describe('Graceful Shutdown (#535)', () => {
       const { child, port } = await spawnServer();
 
       // Start a slow request — connect but don't read the response
-      const requestPromise = new Promise<void>((resolve) => {
+      new Promise<void>((resolve) => {
         const req = http.request(`http://127.0.0.1:${port}/api/health`, { method: 'GET' }, (res) => {
           res.on('data', () => {});
           res.on('end', () => resolve());

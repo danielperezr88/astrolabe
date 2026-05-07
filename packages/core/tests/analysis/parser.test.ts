@@ -43,16 +43,6 @@ function nl(...lines: string[]): string {
   return lines.join('\n') + '\n';
 }
 
-/** Sort symbols by name for deterministic assertions. */
-function byName(a: { name: string }, b: { name: string }) {
-  return a.name.localeCompare(b.name);
-}
-
-/** Sort imports by source for deterministic assertions. */
-function bySource(a: { source: string }, b: { source: string }) {
-  return a.source.localeCompare(b.source);
-}
-
 // ── Setup / Teardown ────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -427,8 +417,6 @@ describe('Parser', () => {
   describe('parseFile - Python', () => {
     let pySymbolsFile: string;
     let pyImportsFile: string;
-    let pyExportsFile: string;
-
     beforeAll(() => {
       pySymbolsFile = writeFixture(
         'symbols.py',

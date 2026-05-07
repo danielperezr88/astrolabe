@@ -51,7 +51,7 @@ export async function callLLM(messages: ChatMessage[], config?: Partial<LLMConfi
   const cfg = { ...DEFAULT_LLM_CONFIG, ...config };
   if (!cfg.apiKey) throw new Error('No API key configured. Set ASTROLABE_API_KEY or OPENAI_API_KEY.');
 
-  const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const url = `${cfg.baseUrl.replace(/\/*$/, '')}/chat/completions`;
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,

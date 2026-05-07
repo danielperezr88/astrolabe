@@ -97,7 +97,7 @@ describe('CLI Integration (#537)', () => {
 
   describe('query (no repos)', () => {
     it('query without repos shows error', async () => {
-      const { stderr, code } = await runCli('query', 'test');
+      const { code } = await runCli('query', 'test');
       // Should fail since no repos are indexed
       expect(code).not.toBe(0);
     }, TEST_TIMEOUT);
@@ -127,7 +127,7 @@ describe('CLI Integration (#537)', () => {
 
   describe('group commands', () => {
     it('group list shows empty', async () => {
-      const { stdout, code } = await runCli('group', 'list');
+      const { code } = await runCli('group', 'list');
       expect(code === 0 || code === null).toBe(true);
     }, TEST_TIMEOUT);
   });

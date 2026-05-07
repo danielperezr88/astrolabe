@@ -152,8 +152,14 @@ function error(res: ServerResponse, message: string, status = 400) {
 function handleError(res: ServerResponse, err: unknown) {
   if (isAstrolabeError(err)) {
     json(res, err.toJSON(), err.statusCode);
+  } else if (err instanceof Error) {
+    const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
+    if (process.env.NODE_ENV === 'development') {
+      body.stack = err.stack;
+    }
+    json(res, body, 500);
   } else {
-    json(res, { error: err instanceof Error ? err.message : String(err), code: 'INTERNAL_ERROR' }, 500);
+    json(res, { error: String(err), code: 'INTERNAL_ERROR' }, 500);
   }
 }
 
@@ -380,9 +386,11 @@ async function handleGrep(res: ServerResponse, repoName: string, pattern: string
   if (!pattern) return error(res, 'Missing pattern parameter');
   if (pattern.length > 200) return error(res, 'Pattern too long (max 200 characters)');
 
+  // Escape regex special characters to prevent ReDoS injection
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern, 'gim');
+    regex = new RegExp(escaped, 'gi');
   } catch {
     return error(res, 'Invalid regex pattern');
   }

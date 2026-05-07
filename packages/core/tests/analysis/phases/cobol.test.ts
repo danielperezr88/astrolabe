@@ -2,7 +2,7 @@
  * Tests for COBOL phase (#271) — regex-based program detection.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createKnowledgeGraph } from '../../../src/core/graph.js';
@@ -30,8 +30,7 @@ function makeContext(graph: any, filePaths: string[]) {
 
 describe('COBOL Phase (#271)', () => {
   beforeAll(() => {
-    testDir = join(tmpdir(), 'astrolabe-cobol-' + Date.now());
-    mkdirSync(testDir, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), 'astrolabe-cobol-'));
   });
 
   afterAll(() => {

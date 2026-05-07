@@ -255,13 +255,17 @@ export function installHooks(repoPath: string): { scripts: number; config: boole
   const postPath = join(hooksDir, 'astrolabe-post-tool-use.js');
   let scriptsWritten = 0;
 
-  if (!existsSync(prePath)) {
+  try {
     writeFileSync(prePath, PRE_TOOL_USE_SCRIPT, 'utf-8');
     scriptsWritten++;
+  } catch {
+    // File already exists — idempotent
   }
-  if (!existsSync(postPath)) {
+  try {
     writeFileSync(postPath, POST_TOOL_USE_SCRIPT, 'utf-8');
     scriptsWritten++;
+  } catch {
+    // File already exists — idempotent
   }
 
   // #327: Merge Astrolabe hooks into existing hooks.json instead of overwriting
@@ -303,7 +307,11 @@ export function installHooks(repoPath: string): { scripts: number; config: boole
     }
 
     if (merged) {
-      writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
+      try {
+        writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
+      } catch {
+        // Config write failed — non-critical, will retry next time
+      }
     }
   }
 

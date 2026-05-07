@@ -43,7 +43,7 @@ export function pathBasename(p: string): string {
  *   stripTrailingSep('repo')    → 'repo'
  */
 export function stripTrailingSep(p: string): string {
-  return p.replace(/[/\\]+$/, '');
+  return p.replace(/[/\\]*$/, '');
 }
 
 /**
