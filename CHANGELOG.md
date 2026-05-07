@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3] — 2026-05-07
+
+### 🐛 Bug Fixes
+
+- release check trigger only inspects first line of commit message (6c740f4)
+- configure git identity and filter CHANGELOG commits in release pipeline (6474b22)
+
 ## [1.0.1] — 2026-05-07
 
 ### 🐛 Bug Fixes
