@@ -8,10 +8,10 @@
  * call resolution accuracy, type inference accuracy.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { initParser, parseFile, defaultWasmDir } from '../../src/analysis/parser.js';
 import type { FileParseResult } from '../../src/analysis/language-definition.js';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -82,8 +82,8 @@ function evalSymbols(actual: FileParseResult, expected: ExpectedSymbol[]): EvalR
 }
 
 async function runEval(fixture: EvalFixture): Promise<EvalResult> {
-  const tmpDir = tmpdir();
-  const filePath = join(tmpDir, `eval-${Date.now()}.${fixture.language}`);
+  const tmpDir = mkdtempSync(join(tmpdir(), 'astrolabe-eval-harness-'));
+  const filePath = join(tmpDir, `eval.${fixture.language}`);
 
   writeFileSync(filePath, fixture.source, 'utf-8');
   let result: FileParseResult;

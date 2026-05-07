@@ -12,9 +12,8 @@ import { parseEmitPhase } from '../../../src/analysis/phases/parse-emit.js';
 import type { ParseEmitOutput } from '../../../src/analysis/phases/parse-emit.js';
 import { createPhaseContext, runPipeline, getPhaseOutput } from '../../../src/core/pipeline.js';
 import { createKnowledgeGraph } from '../../../src/core/graph.js';
-import { initParser, resetParser } from '../../../src/analysis/parser.js';
-import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { initParser } from '../../../src/analysis/parser.js';
+
 
 let testDir: string;
 

@@ -134,7 +134,7 @@ function updateFile(path: string, newBlock: string): boolean {
   }
 
   // Create new file
-  writeFileSync(path, newBlock + '\n', 'utf-8');
+  atomicWrite(path, newBlock + '\n');
   return true;
 }
 
@@ -196,7 +196,7 @@ function installCoreSkills(repoPath: string): void {
   ];
 
   for (const { name, content } of coreSkills) {
-    writeFileSync(join(skillsDir, `${name}.md`), content, 'utf-8');
+    atomicWrite(join(skillsDir, `${name}.md`), content);
   }
 }
 
@@ -284,7 +284,7 @@ function generateCommunitySkills(repoPath: string, opts: GenerateOptions): numbe
     ].join('\n');
 
     const skillPath = join(generatedDir, `${safeName}.md`);
-    writeFileSync(skillPath, content, 'utf-8');
+    atomicWrite(skillPath, content);
     count++;
   }
 

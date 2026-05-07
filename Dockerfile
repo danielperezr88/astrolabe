@@ -52,4 +52,4 @@ ENV NODE_ENV=production
 EXPOSE 4747
 
 # Default: start HTTP server
-CMD ["npx", "astrolabe", "serve", "--host", "0.0.0.0"]
+CMD ["node", "packages/cli/dist/index.js", "serve", "--host", "0.0.0.0"]

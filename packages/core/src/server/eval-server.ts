@@ -57,6 +57,11 @@ function json(res: ServerResponse, data: unknown, status = 200) {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   });
+  // Sanitize: early return on Error objects to prevent stack trace exposure
+  if (data instanceof Error) {
+    res.end(JSON.stringify({ error: data.message }));
+    return;
+  }
   res.end(JSON.stringify(data));
 }
 
@@ -404,7 +409,12 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
       // 404
       error(res, `Not found: ${req.method} ${path}`, 404);
     } catch (err) {
-      error(res, String(err), 500);
+      if (err instanceof Error) {
+        const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
+        json(res, body, 500);
+      } else {
+        error(res, String(err), 500);
+      }
     }
   });
 

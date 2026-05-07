@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildTfIdfIndex } from '../../src/search/embeddings.js';
 import { createTfIdfEmbeddingProvider } from '../../src/search/embeddings-store.js';
-import { cosineSimilarityVec, hybridSearch, searchVector } from '../../src/search/hybrid-search.js';
+import { cosineSimilarityVec, hybridSearch } from '../../src/search/hybrid-search.js';
 import { createFtsSearch } from '../../src/search/fts.js';
 import { createSqliteStore } from '../../src/persist/sqlite.js';
 import { createKnowledgeGraph } from '../../src/core/graph.js';
@@ -94,7 +94,7 @@ describe('Hybrid Search (#261)', () => {
 
     it('creates embeddings table on construction', () => {
       const db = new Database(dbPath);
-      const store = new EmbeddingStore(db);
+      new EmbeddingStore(db);
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'").all();
       expect(tables.length).toBe(1);
       db.close();

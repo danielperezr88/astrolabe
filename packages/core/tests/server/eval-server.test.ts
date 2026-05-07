@@ -3,10 +3,10 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createServer, type Server, type IncomingMessage } from 'node:http';
+import { type Server, type IncomingMessage } from 'node:http';
 import { startEvalServer, shutdownEvalServer } from '../../src/server/eval-server.js';
 import { createSqliteStore } from '../../src/persist/sqlite.js';
 import { createFtsSearch } from '../../src/search/fts.js';
@@ -24,7 +24,7 @@ function fetchJson(method: string, path: string, body?: unknown): Promise<{ stat
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     const payload = body ? JSON.stringify(body) : undefined;
-    const req = import('node:http').then((http) => {
+    import('node:http').then((http) => {
       const req = http.request(url, {
         method,
         headers: { 'Content-Type': 'application/json' },

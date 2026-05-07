@@ -8,7 +8,7 @@
  */
 
 import * as vscode from 'vscode';
-import type { KnowledgeGraph } from '@astrolabe/core';
+import type { KnowledgeGraph } from '@astrolabe-dev/core';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -23,7 +23,7 @@ import {
   createSqliteStore, createFtsSearch,
   loadRegistry, saveRegistry,
   createLogger,
-} from '@astrolabe/core';
+} from '@astrolabe-dev/core';
 import { showGraphPanel } from './webview';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

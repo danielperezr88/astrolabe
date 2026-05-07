@@ -2,12 +2,11 @@
  * Tests for embedding providers — TransformersEmbeddingProvider,
  * RemoteEmbeddingProvider, and provider factory (#371).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   TransformersEmbeddingProvider,
   RemoteEmbeddingProvider,
   createEmbeddingProvider,
-  createTfIdfEmbeddingProvider,
   isTransformersAvailable,
 } from '../../src/search/embeddings-store.js';
 import { buildTfIdfIndex } from '../../src/search/embeddings.js';

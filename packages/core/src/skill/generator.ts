@@ -6,7 +6,7 @@
  * by LLM-based tool dispatchers to integrate codebase analysis into
  * their workflow.
  *
- * Usage: npx @astrolabe/cli generate-skill [--output astrolabe-skill.md]
+ * Usage: npx @astrolabe-dev/cli generate-skill [--output astrolabe-skill.md]
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';

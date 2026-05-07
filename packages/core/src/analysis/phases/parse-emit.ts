@@ -311,7 +311,6 @@ function emitRelationship(
     if (node.properties.filePath !== relPath) continue;
     if (node.properties.name === rel.sourceName && node.properties.startLine === rel.sourceStartLine) {
       sourceId = node.id;
-      if (targetId) break;
     }
     // #296: Remove dead !startLine check — ALL symbol nodes have startLine
     if (node.properties.name === rel.targetName) {

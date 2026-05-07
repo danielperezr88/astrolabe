@@ -8,6 +8,31 @@
 - Always push when ready. Don't ask "should I push?"
 - Set a 10-minute deferred `gh issue list` check when expecting reviewer feedback.
 
+## Release Flow is MANDATORY (ABSOLUTE — NO EXCEPTIONS)
+
+**Every change must flow through staging. There is no bypass for any reason — not for emergencies, not for security fixes, not for admin pushes.**
+
+```
+feature/fix-xxx ──PR──▶ staging ──PR──▶ main
+```
+
+- **Push to staging** triggers `rc.yml`: tests → auto version bump → Docker RC image → GitHub pre-release
+- **Push to main** triggers `release.yml`: integration test gate → stable Docker image → GitHub release with notes → npm publish
+- **Skipping staging means**: no RC, no auto version bump, no release notes generation, release pipeline breaks on duplicate versions
+
+### What Happens When You Bypass Staging (The Mess You Create)
+
+1. `main` gets commits that `staging` doesn't have → branches diverge
+2. Release pipeline fails because version already exists on npm (no auto-bump)
+3. Docker image gets pushed but GitHub release is stale
+4. npm package is out of sync with the actual code
+5. Manual cleanup required: sync staging, create proper PR, re-trigger release
+
+**If you bypassed staging (even as admin), you MUST:**
+1. Sync staging with main: `git checkout staging && git merge main && git push`
+2. Create PR from `staging` → `main` (this triggers the proper release pipeline)
+3. Never push directly again
+
 ## Priority Order
 
 1. **Bugs first** — critical → moderate → minor. Fix with real code changes, not bulk-closing.
@@ -31,7 +56,8 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 
 ### Rules
 
-- **NEVER push directly to `main` or `staging`.** Always go through PRs.
+- **NEVER push directly to `main` or `staging`. Always go through PRs.** See [Release Flow is MANDATORY](#release-flow-is-mandatory-absolute--no-exceptions) above.
+- **Admin bypass does not exist.** Even if you can force-push as admin, you must not. The release flow is the only path.
 - All PRs require passing status checks: unit tests (ubuntu + windows), integration tests (main only), Docker build validation.
 - All PRs require at least 1 approval. Stale reviews are auto-dismissed on new pushes.
 - Use linear history (no merge commits). Rebase or squash-merge.

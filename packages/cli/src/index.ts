@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @astrolabe/cli — CLI entry point with full command suite.
+ * @astrolabe-dev/cli — CLI entry point with full command suite.
  */
 import { program } from 'commander';
 import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
@@ -26,8 +26,8 @@ import {
   startHttpServer,
   generateWiki,
   startEvalServer,
-} from '@astrolabe/core';
-import type { ScanOutput } from '@astrolabe/core';
+} from '@astrolabe-dev/core';
+import type { ScanOutput } from '@astrolabe-dev/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));

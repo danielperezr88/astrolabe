@@ -7,7 +7,7 @@
  */
 
 import { dirname } from 'node:path';
-import { toPosix } from '@astrolabe/shared';
+import { toPosix } from '@astrolabe-dev/shared';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { GraphNode } from '../../core/types.js';
 import { languageForFile } from '../languages/index.js';

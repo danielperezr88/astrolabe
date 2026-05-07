@@ -10,7 +10,7 @@ import { routesPhase, urlMatchesRoute } from '../../../src/analysis/phases/route
 import type { RoutesOutput } from '../../../src/analysis/phases/routes.js';
 import { createPhaseContext, runPipeline } from '../../../src/core/pipeline.js';
 import { createKnowledgeGraph } from '../../../src/core/graph.js';
-import type { GraphNode } from '@astrolabe/shared';
+import type { GraphNode } from '@astrolabe-dev/shared';
 
 function makeRepo(fixtures: Record<string, string>): string {
   const tmp = mkdtempSync(join(tmpdir(), 'astrolabe-routes-'));

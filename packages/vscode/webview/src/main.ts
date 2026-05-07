@@ -304,6 +304,8 @@ declare global { interface Window { graphData: { nodes: NodeData[]; edges: EdgeD
 function init() {
   // #307: Named function so we can remove the listener instead of stacking new ones
   function onMessage(e: MessageEvent) {
+    // Only accept messages from the extension host (no origin in VSCode webviews)
+    if (e.origin !== '') return;
     if (e.data?.type === 'graphData') {
       window.graphData = e.data.data;
       render(window.graphData!);

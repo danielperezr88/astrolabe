@@ -34,12 +34,12 @@ export function preprocessVueSfc(filePath: string, content?: string): { content:
 
 function extractScriptContent(source: string): { content: string; isSetup: boolean } | null {
   // Try <script setup lang="ts"> or <script setup> first
-  const setupMatch = source.match(/<script\s+setup(?:\s+lang=["'][^"']*["'])?\s*>\s*([\s\S]*?)<\/script>/);
+  const setupMatch = source.match(/<script\s+setup(?:\s+lang=["'][^"']*["'])?\s*>\s*([\s\S]*?)<\/script>/i);
   if (setupMatch) {
     return { content: setupMatch[1].trim(), isSetup: true };
   }
   // Try regular <script lang="ts"> or <script>
-  const normalMatch = source.match(/<script(?:\s+lang=["'][^"']*["'])?\s*>\s*([\s\S]*?)<\/script>/);
+  const normalMatch = source.match(/<script(?:\s+lang=["'][^"']*["'])?\s*>\s*([\s\S]*?)<\/script>/i);
   if (normalMatch) {
     return { content: normalMatch[1].trim(), isSetup: false };
   }

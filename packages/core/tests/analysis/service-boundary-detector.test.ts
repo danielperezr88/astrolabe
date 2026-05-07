@@ -7,7 +7,7 @@
  * contribute +0.1 via the src/lib subdirectory check.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -19,10 +19,8 @@ const { ServiceBoundaryDetector, autoDetectGroups } = await vi.importActual<
 
 let testDir: string;
 
-function setupTempDir(name: string): string {
-  const dir = join(tmpdir(), `sbd-test-${name}-${Date.now()}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+function setupTempDir(_name: string): string {
+  return mkdtempSync(join(tmpdir(), 'sbd-test-'));
 }
 
 function cleanup(dir: string): void {

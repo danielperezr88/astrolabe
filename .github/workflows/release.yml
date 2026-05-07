@@ -171,25 +171,28 @@ jobs:
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
 
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "**/package.json" package.json package-lock.json
-          git diff --cached --quiet && echo "No version changes to commit" || {
-            git commit -m "chore: release v${{ steps.version.outputs.version }}"
-            git push origin main
-          }
-
       # ── Publish to npm ────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+          scope: '@astrolabe-dev'
+
+      - run: npm ci
+
+      - run: npm install --no-save --package-lock=false --legacy-peer-deps
+
       - name: Build CLI package
         run: |
           npm run build --workspace packages/shared
           npm run build --workspace packages/core
           npm run build --workspace packages/cli
 
-      - name: Publish @astrolabe/cli to npm
-        run: npm publish --workspace packages/cli --access public
+      - name: Publish @astrolabe-dev/cli to npm
+        run: |
+          echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" > .npmrc
+          npm publish --workspace packages/cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -254,7 +257,7 @@ jobs:
             echo "### CLI"
             echo ""
             echo '```bash'
-            echo "npm install -g @astrolabe/cli@${VERSION}"
+            echo "npm install -g @astrolabe-dev/cli@${VERSION}"
             echo '```'
             echo ""
             echo "---"
@@ -262,9 +265,14 @@ jobs:
             echo "${{ steps.notes.outputs.notes }}"
           } > "$NOTES_FILE"
 
-          gh release create "$TAG" \
-            --title "Release ${TAG}" \
-            --notes-file "$NOTES_FILE"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, updating notes..."
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" \
+              --title "Release ${TAG}" \
+              --notes-file "$NOTES_FILE"
+          fi
 
   # ── Notify on failure ──────────────────────────────────────────────────
   notify-failure:

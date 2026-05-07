@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathBasename } from '@astrolabe/shared';
+import { pathBasename } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

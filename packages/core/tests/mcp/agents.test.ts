@@ -2,7 +2,7 @@
  * Tests for AGENTS.md/CLAUDE.md generation (#268) and Community Skills (#267).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateAgentFiles, type AgentFilesResult } from '../../src/agents/index.js';
@@ -26,7 +26,7 @@ function createTestGraph() {
 }
 
 describe('Agents/CLAUDE.md Generation (#268)', () => {
-  const repoPath = join(tmpdir(), 'astrolabe-agents-test-' + Date.now());
+  const repoPath = mkdtempSync(join(tmpdir(), 'astrolabe-agents-test-'));
   const opts = {
     repoName: 'test-project',
     repoPath,
@@ -41,7 +41,7 @@ describe('Agents/CLAUDE.md Generation (#268)', () => {
   };
 
   beforeAll(() => {
-    mkdirSync(repoPath, { recursive: true });
+    // repoPath already created by mkdtempSync
   });
 
   afterAll(() => {
@@ -117,11 +117,11 @@ describe('Agents/CLAUDE.md Generation (#268)', () => {
 });
 
 describe('Community Skills (#267)', () => {
-  const skillsPath = join(tmpdir(), 'astrolabe-skills-test-' + Date.now());
+  const skillsPath = mkdtempSync(join(tmpdir(), 'astrolabe-skills-test-'));
   const graph = createTestGraph();
 
   beforeAll(() => {
-    mkdirSync(skillsPath, { recursive: true });
+    // skillsPath already created by mkdtempSync
   });
 
   afterAll(() => {

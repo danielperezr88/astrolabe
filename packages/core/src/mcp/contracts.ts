@@ -10,7 +10,7 @@
 import { existsSync } from 'node:fs';
 import { loadRegistry } from './registry.js';
 import { createSqliteStore } from '../persist/sqlite.js';
-import type { KnowledgeGraph, GraphNode } from '@astrolabe/shared';
+import type { KnowledgeGraph, GraphNode } from '@astrolabe-dev/shared';
 import type { RepoGroup } from './groups.js';
 import { loadGroups } from './groups.js';
 import { saveGroups } from './groups.js';

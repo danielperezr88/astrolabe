@@ -9,7 +9,7 @@ Astrolabe builds a rich knowledge graph of your codebase by parsing 15+ language
 docker run -p 4747:4747 -v $(pwd):/workspace ghcr.io/danielperezr88/astrolabe
 
 # Or install the CLI
-npm install -g @astrolabe/cli
+npm install -g @astrolabe-dev/cli
 astrolabe analyze .
 astrolabe query "authenticate"
 ```
@@ -18,9 +18,9 @@ astrolabe query "authenticate"
 
 | Package | Description |
 |---------|-------------|
-| [`@astrolabe/core`](./packages/core) | Knowledge graph engine — parsing, phases, persistence, MCP server, HTTP API |
-| [`@astrolabe/cli`](./packages/cli) | Command-line interface (`astrolabe` command) |
-| [`@astrolabe/shared`](./packages/shared) | Type definitions and cross-platform utilities |
+| [`@astrolabe-dev/core`](./packages/core) | Knowledge graph engine — parsing, phases, persistence, MCP server, HTTP API |
+| [`@astrolabe-dev/cli`](./packages/cli) | Command-line interface (`astrolabe` command) |
+| [`@astrolabe-dev/shared`](./packages/shared) | Type definitions and cross-platform utilities |
 | [`astrolabe-vscode`](./packages/vscode) | VS Code extension — interactive graph exploration |
 
 ## Installation
@@ -35,7 +35,7 @@ docker run -p 4747:4747 -v $(pwd):/workspace ghcr.io/danielperezr88/astrolabe
 ### CLI (npm)
 
 ```bash
-npm install -g @astrolabe/cli
+npm install -g @astrolabe-dev/cli
 astrolabe analyze /path/to/repo
 ```
 
@@ -164,7 +164,7 @@ Astrolabe provides a Model Context Protocol server for AI assistant integration 
   "mcpServers": {
     "astrolabe": {
       "command": "npx",
-      "args": ["-y", "@astrolabe/cli", "serve-mcp"]
+      "args": ["-y", "@astrolabe-dev/cli", "serve-mcp"]
     }
   }
 }

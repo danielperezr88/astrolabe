@@ -1,6 +1,6 @@
 {
-  "name": "@astrolabe/core",
-  "version": "0.1.0",
+  "name": "@astrolabe-dev/core",
+  "version": "1.0.0",
   "description": "Codebase knowledge graph engine — multi-language static analysis with graph persistence",
   "type": "module",
   "main": "dist/index.js",
@@ -27,7 +27,7 @@
     "tree-sitter"
   ],
   "dependencies": {
-    "@astrolabe/shared": "^0.1.0",
+    "@astrolabe-dev/shared": "^1.0.0",
     "@huggingface/transformers": "^4.2.0",
     "@ladybugdb/core": "^0.16.1",
     "better-sqlite3": "^11.0.0",

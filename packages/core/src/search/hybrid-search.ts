@@ -11,7 +11,7 @@
  * RRF score is scaled: combinedScore *= (1 + cohesionBoost * cohesion).
  */
 
-import type { KnowledgeGraph, RelationshipType } from '@astrolabe/shared';
+import type { KnowledgeGraph, RelationshipType } from '@astrolabe-dev/shared';
 import type { FtsSearch } from './fts.js';
 import { EmbeddingStore } from './embeddings-store.js';
 import type { EmbeddingProvider } from './embeddings-store.js';

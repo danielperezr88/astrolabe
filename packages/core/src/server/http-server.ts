@@ -19,7 +19,7 @@ import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
 import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
-import { isAstrolabeError } from '@astrolabe/shared';
+import { isAstrolabeError } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -141,6 +141,11 @@ function json(res: ServerResponse, data: unknown, status = 200) {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
+  // Sanitize: early return on Error objects to prevent stack trace exposure
+  if (data instanceof Error) {
+    res.end(JSON.stringify({ error: data.message }));
+    return;
+  }
   res.end(JSON.stringify(data));
 }
 
@@ -152,8 +157,11 @@ function error(res: ServerResponse, message: string, status = 400) {
 function handleError(res: ServerResponse, err: unknown) {
   if (isAstrolabeError(err)) {
     json(res, err.toJSON(), err.statusCode);
+  } else if (err instanceof Error) {
+    const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
+    json(res, body, 500);
   } else {
-    json(res, { error: err instanceof Error ? err.message : String(err), code: 'INTERNAL_ERROR' }, 500);
+    json(res, { error: String(err), code: 'INTERNAL_ERROR' }, 500);
   }
 }
 
@@ -380,9 +388,11 @@ async function handleGrep(res: ServerResponse, repoName: string, pattern: string
   if (!pattern) return error(res, 'Missing pattern parameter');
   if (pattern.length > 200) return error(res, 'Pattern too long (max 200 characters)');
 
+  // Escape regex special characters to prevent ReDoS injection
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern, 'gim');
+    regex = new RegExp(escaped, 'gi');
   } catch {
     return error(res, 'Invalid regex pattern');
   }

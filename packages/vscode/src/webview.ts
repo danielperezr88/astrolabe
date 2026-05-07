@@ -6,8 +6,8 @@
  */
 
 import * as vscode from 'vscode';
-import type { KnowledgeGraph } from '@astrolabe/core';
-import { createSqliteStore } from '@astrolabe/core';
+import type { KnowledgeGraph } from '@astrolabe-dev/core';
+import { createSqliteStore } from '@astrolabe-dev/core';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 

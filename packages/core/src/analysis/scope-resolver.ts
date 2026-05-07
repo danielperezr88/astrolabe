@@ -20,7 +20,7 @@
 
 import type { KnowledgeGraph, GraphNode } from '../core/types.js';
 import type { PhaseDefinition, PhaseContext } from '../core/pipeline.js';
-import type { SupportedLanguage } from '@astrolabe/shared';
+import type { SupportedLanguage } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
