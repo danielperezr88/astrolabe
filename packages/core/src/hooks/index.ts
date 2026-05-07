@@ -270,7 +270,7 @@ export function installHooks(repoPath: string): { scripts: number; config: boole
 
   // #327: Merge Astrolabe hooks into existing hooks.json instead of overwriting
   const configPath = join(hooksDir, 'hooks.json');
-  let existingConfig: any = { hooks: [] };
+  let existingConfig: Record<string, any>;
 
   try {
     existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));

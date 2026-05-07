@@ -141,8 +141,9 @@ function json(res: ServerResponse, data: unknown, status = 200) {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   });
-  // Guard against accidental Error object serialization (stack trace exposure)
-  res.end(JSON.stringify(data instanceof Error ? { error: data.message } : data));
+  // Sanitize to prevent stack trace exposure via Error objects
+  const safe = data instanceof Error ? { error: data.message } : data;
+  res.end(JSON.stringify(safe));
 }
 
 function error(res: ServerResponse, message: string, status = 400) {
