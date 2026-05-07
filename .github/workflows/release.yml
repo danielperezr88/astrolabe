@@ -224,7 +224,7 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet && echo "No CHANGELOG changes" || {
             git commit -m "docs: update CHANGELOG for ${TAG}"
-            git push origin main
+            echo "CHANGELOG updated locally — main is branch-protected; push manually via PR."
           }
 
       # ── GitHub release ──────────────────────────────────────────────────
