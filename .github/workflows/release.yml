@@ -165,7 +165,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
-          scope: '@astrolabe'
+          scope: '@astrolabe-dev'
 
       - run: npm ci
 
@@ -177,7 +177,7 @@ jobs:
           npm run build --workspace packages/core
           npm run build --workspace packages/cli
 
-      - name: Publish @astrolabe/cli to npm
+      - name: Publish @astrolabe-dev/cli to npm
         run: |
           echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" > .npmrc
           npm publish --workspace packages/cli --access public
@@ -217,7 +217,7 @@ jobs:
             echo "### CLI"
             echo ""
             echo '```bash'
-            echo "npm install -g @astrolabe/cli@${VERSION}"
+            echo "npm install -g @astrolabe-dev/cli@${VERSION}"
             echo '```'
             echo ""
             echo "---"

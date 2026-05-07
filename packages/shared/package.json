@@ -1,5 +1,5 @@
 {
-  "name": "@astrolabe/shared",
+  "name": "@astrolabe-dev/shared",
   "version": "1.0.0",
   "description": "Shared type definitions for Astrolabe packages",
   "type": "module",
