@@ -160,7 +160,7 @@ function handleError(res: ServerResponse, err: unknown) {
   } else if (err instanceof Error) {
     const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
     if (process.env.NODE_ENV === 'development') {
-      body.stack = err.stack;
+      console.error(err.stack);
     }
     json(res, body, 500);
   } else {
