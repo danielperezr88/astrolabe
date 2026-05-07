@@ -171,6 +171,14 @@ jobs:
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
 
+      # ── App token for branch protection bypass ──────────────────────────
+      - name: Generate GitHub App token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.RELEASE_APP_ID }}
+          private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       # ── Publish to npm ────────────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
@@ -224,7 +232,8 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet && echo "No CHANGELOG changes" || {
             git commit -m "docs: update CHANGELOG for ${TAG}"
-            echo "CHANGELOG updated locally — main is branch-protected; push manually via PR."
+            git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git" HEAD:main
+            echo "CHANGELOG.md updated and pushed to main"
           }
 
       # ── GitHub release ──────────────────────────────────────────────────
