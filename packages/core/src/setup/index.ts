@@ -10,7 +10,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
-import { appDataDir } from '@astrolabe/shared';
+import { appDataDir } from '@astrolabe-dev/shared';
 import { createLogger } from '../logging/index.js';
 
 const log = createLogger({ level: 'debug' });
@@ -89,7 +89,7 @@ const EDITORS: EditorConfig[] = [
       mcp.mcpServers = mcp.mcpServers || {};
       mcp.mcpServers.astrolabe = {
         command: 'npx',
-        args: ['-y', '@astrolabe/cli', 'serve-mcp'],
+        args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
       };
 
       atomicWriteJson(configPath, mcp);
@@ -133,7 +133,7 @@ const EDITORS: EditorConfig[] = [
       mcp.mcpServers = mcp.mcpServers || {};
       mcp.mcpServers.astrolabe = {
         command: 'npx',
-        args: ['-y', '@astrolabe/cli', 'serve-mcp'],
+        args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
       };
 
       atomicWriteJson(configPath, mcp);
@@ -179,7 +179,7 @@ const EDITORS: EditorConfig[] = [
       config.mcpServers = config.mcpServers || {};
       config.mcpServers.astrolabe = {
         command: 'npx',
-        args: ['-y', '@astrolabe/cli', 'serve-mcp'],
+        args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
       };
 
       atomicWriteJson(configPath, config);
@@ -204,7 +204,7 @@ const EDITORS: EditorConfig[] = [
       // Use execFileSync for cross-platform argument safety (avoids shell parsing issues)
       try {
         execFileSync(
-          'claude', ['mcp', 'add', 'astrolabe', '--', 'npx', '-y', '@astrolabe/cli', 'serve-mcp'],
+          'claude', ['mcp', 'add', 'astrolabe', '--', 'npx', '-y', '@astrolabe-dev/cli', 'serve-mcp'],
           { stdio: 'pipe', timeout: 10000, encoding: 'utf-8' },
         );
         return { path: 'via claude mcp add' };
@@ -248,7 +248,7 @@ const EDITORS: EditorConfig[] = [
       mcp.servers.astrolabe = {
         type: 'stdio',
         command: 'npx',
-        args: ['-y', '@astrolabe/cli', 'serve-mcp'],
+        args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
       };
 
       atomicWriteJson(configPath, mcp);
@@ -274,7 +274,7 @@ const EDITORS: EditorConfig[] = [
       const tomlBlock = `
 [mcp_servers.astrolabe]
 command = "npx"
-args = ["-y", "@astrolabe/cli", "serve-mcp"]
+args = ["-y", "@astrolabe-dev/cli", "serve-mcp"]
 `;
 
       const dir = join(HOME, '.codex');

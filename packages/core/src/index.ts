@@ -1,5 +1,5 @@
 /**
- * @astrolabe/core — Public API.
+ * @astrolabe-dev/core — Public API.
  *
  * Re-exports everything consumers of the library need.
  */
@@ -14,7 +14,7 @@ export {
   type GraphNode,
   type GraphRelationship,
   type KnowledgeGraph,
-} from '@astrolabe/shared';
+} from '@astrolabe-dev/shared';
 
 export { createKnowledgeGraph } from './core/graph.js';
 export { runPipeline, createPhaseContext, getPhaseOutput, type PhaseDefinition, type PhaseContext } from './core/pipeline.js';

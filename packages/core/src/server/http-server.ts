@@ -19,7 +19,7 @@ import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
 import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
-import { isAstrolabeError } from '@astrolabe/shared';
+import { isAstrolabeError } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

@@ -56,7 +56,7 @@ class ParseResultCache {
     this._store.clear();
   }
 }
-import type { NodeLabel } from '@astrolabe/shared';
+import type { NodeLabel } from '@astrolabe-dev/shared';
 import { preprocessVueSfc } from './languages/vue.js';
 
 // ── Module-level state ─────────────────────────────────────────────────────

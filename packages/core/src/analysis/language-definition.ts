@@ -8,7 +8,7 @@
  */
 
 import type { Language as WtsLanguage, QueryMatch } from 'web-tree-sitter';
-import type { SupportedLanguage, NodeLabel, RelationshipType } from '@astrolabe/shared';
+import type { SupportedLanguage, NodeLabel, RelationshipType } from '@astrolabe-dev/shared';
 
 // ── Import semantics (#279) ─────────────────────────────────────────────────
 

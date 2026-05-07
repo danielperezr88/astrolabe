@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { loadRegistry, saveRegistry } from '@astrolabe/core';
+import { loadRegistry, saveRegistry } from '@astrolabe-dev/core';
 
 const CLI_PATH = join(__dirname, '../dist/index.js');
 const originalRegistry = loadRegistry();

@@ -1,5 +1,5 @@
 /**
- * @astrolabe/shared — Public API.
+ * @astrolabe-dev/shared — Public API.
  *
  * Re-exports all shared type definitions consumed by all Astrolabe packages.
  */

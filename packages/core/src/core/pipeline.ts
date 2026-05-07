@@ -9,7 +9,7 @@
  * Inspired by GitNexus's 12-phase ingestion pipeline.
  */
 
-import type { KnowledgeGraph } from '@astrolabe/shared';
+import type { KnowledgeGraph } from '@astrolabe-dev/shared';
 import { PhaseTimer } from './phase-timer.js';
 import { AstCache, type AstCacheEntry } from '../analysis/ast-cache.js';
 import { treeCache } from '../analysis/parser.js';
