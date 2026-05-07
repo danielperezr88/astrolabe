@@ -35,9 +35,9 @@ jobs:
       - id: check
         run: |
           MSG="${{ github.event.head_commit.message }}"
-          if echo "$MSG" | grep -q "chore: release v"; then
+          if echo "$MSG" | grep -qE "chore: release v|docs: update CHANGELOG for v"; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping — version bump commit."
+            echo "Skipping — version bump or CHANGELOG commit."
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Proceeding with release."
@@ -199,6 +199,9 @@ jobs:
       # ── Update CHANGELOG.md ───────────────────────────────────────────────
       - name: Update CHANGELOG.md
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v${VERSION}"
           NOTES=$(node scripts/release-notes.mjs)
