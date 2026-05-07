@@ -57,7 +57,7 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 ### Rules
 
 - **NEVER push directly to `main` or `staging`. Always go through PRs.** See [Release Flow is MANDATORY](#release-flow-is-mandatory-absolute--no-exceptions) above.
-- **Admin bypass does not exist.** Even if you can force-push as admin, you must not. The release flow is the only path.
+- **Admin bypass does not exist.** Even if you can force-push as admin, you must not. The release flow is the only path. **Never use `--admin` flag on `gh pr merge`.** PRs that lack approval MUST wait for the reviewer — do not self-approve or bypass.
 - All PRs require passing status checks: unit tests (ubuntu + windows), integration tests (main only), Docker build validation.
 - All PRs require at least 1 approval. Stale reviews are auto-dismissed on new pushes.
 - Use linear history (no merge commits). Rebase or squash-merge.
@@ -157,6 +157,16 @@ A reviewer agent works in 10-minute rounds: reviews open PRs, pushes back with c
 - Reviewer marks PRs as ready for review after implementation is complete and tests pass.
 - The implementer and reviewer coordinate via GitHub issues AND PR reviews — no direct push to protected branches.
 - **Always check PR reviews**: `gh pr view <number> --repo danielperezr88/astrolabe --json reviews,comments` — fix any reviewer feedback before merging.
+- **When waiting for review**: Set a 10-minute deferred check to poll for reviewer approval. Never admin-merge to bypass the review requirement.
+  ```bash
+  # Bash/macOS/Linux — deferred check (10 min)
+  sleep 600 && gh pr view <N> --repo danielperezr88/astrolabe --json reviewDecision,reviews
+  ```
+  ```powershell
+  # PowerShell/Windows — deferred check (10 min)
+  Start-Sleep -Seconds 600; gh pr view <N> --repo danielperezr88/astrolabe --json reviewDecision,reviews
+  ```
+  Same pattern when waiting for CI/CD pipelines: `sleep 300 && gh run view <id>`.
 
 ## Repository
 
