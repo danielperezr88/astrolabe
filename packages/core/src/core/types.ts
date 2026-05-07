@@ -1,8 +1,8 @@
 /**
- * @astrolabe/core — Core types (re-export).
+ * @astrolabe-dev/core — Core types (re-export).
  *
- * Re-exports from @astrolabe/shared for convenience.
- * All types are defined in @astrolabe/shared to avoid duplication.
+ * Re-exports from @astrolabe-dev/shared for convenience.
+ * All types are defined in @astrolabe-dev/shared to avoid duplication.
  */
 
 export {
@@ -15,4 +15,4 @@ export {
   type GraphNode,
   type GraphRelationship,
   type KnowledgeGraph,
-} from '@astrolabe/shared';
+} from '@astrolabe-dev/shared';

@@ -10,7 +10,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { toPosix } from '@astrolabe/shared';
+import { toPosix } from '@astrolabe-dev/shared';
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 
 export interface MarkdownOutput {

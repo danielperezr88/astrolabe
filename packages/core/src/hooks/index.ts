@@ -39,7 +39,7 @@ const path = require('path');
 function getAstrolabeCli() {
   // Try local npx first, then global
   try {
-    return 'npx @astrolabe/cli';
+    return 'npx @astrolabe-dev/cli';
   } catch {
     return 'astrolabe';
   }
@@ -50,7 +50,7 @@ function querySymbols(filePath, repoRoot) {
     const relPath = path.relative(repoRoot, filePath).replace(/\\\\/g, '/');
     const dbPath = path.join(repoRoot, '.astrolabe', 'astrolabe.db');
     const result = require('child_process').execFileSync(
-      'npx', ['-y', '@astrolabe/cli', 'list', '--label', 'Function', '--db', dbPath],
+      'npx', ['-y', '@astrolabe-dev/cli', 'list', '--label', 'Function', '--db', dbPath],
       { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const lines = result.split('\\n').filter(l => l.includes(relPath));

@@ -16,7 +16,7 @@
  */
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
-import type { GraphNode } from '@astrolabe/shared';
+import type { GraphNode } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@
  * Designed as a JSON-friendly API for AI agents via the `cypher` MCP tool.
  */
 
-import type { KnowledgeGraph, GraphNode } from '@astrolabe/shared';
+import type { KnowledgeGraph, GraphNode } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
  *
  * Single source of truth for the knowledge graph data model.
  * All node labels, relationship types, and interfaces are defined here.
- * Consumed by all packages via `@astrolabe/shared`.
+ * Consumed by all packages via `@astrolabe-dev/shared`.
  */
 
 // ── Supported languages ────────────────────────────────────────────────────

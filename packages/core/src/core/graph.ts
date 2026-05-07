@@ -6,7 +6,7 @@
  * (used heavily by community detection, MRO resolution, etc.).
  */
 
-import type { RelationshipType, KnowledgeGraph, GraphNode, GraphRelationship } from '@astrolabe/shared';
+import type { RelationshipType, KnowledgeGraph, GraphNode, GraphRelationship } from '@astrolabe-dev/shared';
 
 // ── Factory ────────────────────────────────────────────────────────────────
 
