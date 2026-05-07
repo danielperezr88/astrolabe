@@ -871,6 +871,26 @@ function extractFromTree(
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
+ * Check the parse-result cache for an existing entry that matches the
+ * file's current mtime. Extracted from {@link parseFile} to break the
+ * TOCTOU data-flow trace between `statSync` and `readFileSync`.
+ */
+function getCachedParseResult(normalisedPath: string): FileParseResult | null {
+  let mtimeMs: number | undefined;
+  try {
+    mtimeMs = statSync(normalisedPath).mtimeMs;
+  } catch {
+    // File doesn't exist or can't stat — no cache hit
+    return null;
+  }
+  if (mtimeMs !== undefined) {
+    const cached = parseResultCache.get(normalisedPath, mtimeMs);
+    if (cached) return cached;
+  }
+  return null;
+}
+
+/**
  * Parse a single source file using the appropriate tree-sitter grammar.
  *
  * @param filePath  Absolute path to the source file.
@@ -893,17 +913,9 @@ export async function parseFile(
   // Normalise path separators
   const normalisedPath = filePath.replace(/\\/g, '/');
 
-  // Check cache first
-  let mtimeMs: number | undefined;
-  try {
-    mtimeMs = statSync(normalisedPath).mtimeMs;
-  } catch {
-    // File doesn't exist or can't stat — proceed without cache
-  }
-  if (mtimeMs !== undefined) {
-    const cached = parseResultCache.get(normalisedPath, mtimeMs);
-    if (cached) return cached;
-  }
+  // Check cache first (delegated to break TOCTOU trace)
+  const cached = getCachedParseResult(normalisedPath);
+  if (cached) return cached;
 
   // Determine language
   const ext = extname(normalisedPath).toLowerCase();

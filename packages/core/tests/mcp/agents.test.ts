@@ -2,7 +2,7 @@
  * Tests for AGENTS.md/CLAUDE.md generation (#268) and Community Skills (#267).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateAgentFiles, type AgentFilesResult } from '../../src/agents/index.js';

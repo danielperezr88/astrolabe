@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { stripTrailingSep } from '@astrolabe-dev/shared';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger({ level: 'info' });
@@ -130,7 +131,7 @@ export function saveRegistry(entries: RegistryEntry[]): void {
  */
 export function removeRepo(target: string): RegistryEntry | null {
   const entries = loadRegistry();
-  const resolvedTarget = target.replace(/[/\\]*$/, ''); // strip trailing slashes
+  const resolvedTarget = stripTrailingSep(target);
   let matchIndex = entries.findIndex(
     (e) => e.name === resolvedTarget || e.path === resolvedTarget,
   );

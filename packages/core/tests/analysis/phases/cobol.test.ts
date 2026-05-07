@@ -2,7 +2,7 @@
  * Tests for COBOL phase (#271) — regex-based program detection.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createKnowledgeGraph } from '../../../src/core/graph.js';

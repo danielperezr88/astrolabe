@@ -272,13 +272,11 @@ export function installHooks(repoPath: string): { scripts: number; config: boole
   const configPath = join(hooksDir, 'hooks.json');
   let existingConfig: any = { hooks: [] };
 
-  if (existsSync(configPath)) {
-    try {
-      existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
-    } catch {
-      // Corrupt config — start fresh
-      existingConfig = { hooks: [] };
-    }
+  try {
+    existingConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+  } catch {
+    // Missing or corrupt config — start fresh
+    existingConfig = { hooks: [] };
   }
 
   // Ensure hooks array exists
