@@ -159,9 +159,6 @@ function handleError(res: ServerResponse, err: unknown) {
     json(res, err.toJSON(), err.statusCode);
   } else if (err instanceof Error) {
     const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
-    if (process.env.NODE_ENV === 'development') {
-      console.error(err.stack);
-    }
     json(res, body, 500);
   } else {
     json(res, { error: String(err), code: 'INTERNAL_ERROR' }, 500);

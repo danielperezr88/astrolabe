@@ -411,9 +411,6 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
     } catch (err) {
       if (err instanceof Error) {
         const body: Record<string, unknown> = { error: err.message, code: 'INTERNAL_ERROR' };
-        if (process.env.NODE_ENV === 'development') {
-          console.error(err.stack);
-        }
         json(res, body, 500);
       } else {
         error(res, String(err), 500);
