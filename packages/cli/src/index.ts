@@ -17,6 +17,7 @@ import {
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry, removeRepo, getGitRemote,
+  acquireDbLock,
   generateSkill,
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
@@ -51,7 +52,8 @@ program
   .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
   .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; maxFileSize?: number }) => {
+  .option('--profile', 'Emit phase-level timing information (Pitfall 7)')
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; maxFileSize?: number; profile?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
 
@@ -61,12 +63,16 @@ program
       log.info(`ASTROLABE_MAX_FILE_SIZE: effective threshold ${process.env.ASTROLABE_MAX_FILE_SIZE}KB (default 512KB)`);
     }
 
+    let dbLock: ReturnType<typeof acquireDbLock> | null = null;
     try {
       await initParser();
       const outDir = dirname(opts.output);
       if (outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
       const dbPath = resolve(opts.output);
       const repoName = basename(repoPath);
+
+      // #643: Acquire advisory lock to prevent concurrent CLI + MCP writes
+      dbLock = acquireDbLock(dirname(dbPath));
       const lastCommit = getGitCommit(repoPath);
       const onProgress = () => undefined;
 
@@ -125,6 +131,7 @@ program
         const ctx = createPhaseContext(repoPath, graph, onProgress);
         ctx.state.set('output:scan', scanOutput);
         ctx.state.set('skipWorkers', opts.skipWorkers ?? false);
+        ctx.state.set('profile', opts.profile ?? false);
         ctx.state.set('incremental:changedPaths', new Set([...diff.changed, ...diff.added]));
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
@@ -142,6 +149,7 @@ program
         graph = createKnowledgeGraph();
         const context = createPhaseContext(repoPath, graph, onProgress);
         context.state.set('output:scan', scanOutput);
+        context.state.set('profile', opts.profile ?? false);
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
@@ -202,6 +210,8 @@ program
     } catch (err) {
       log.error('Analysis failed', { error: String(err) });
       process.exit(1);
+    } finally {
+      dbLock?.release();
     }
   });
 
