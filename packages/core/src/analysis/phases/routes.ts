@@ -19,6 +19,7 @@ export interface RoutesOutput {
   fetchesCount: number;
   responseShapeCount: number;
   middlewareCount: number;
+  wrapsCount: number;
 }
 
 // ── HTTP client detection patterns ─────────────────────────────────────────
@@ -290,6 +291,10 @@ const BUILTIN_IDENTS = new Set(['require', 'import', 'Promise', 'setTimeout', 's
  *
  * 1. Express: `app.get(path, mw1, mw2, handler)` — identifier args are middleware
  * 2. Higher-order: `withAuth(handler)`, `withRateLimit(handler)`
+ * 3. Express/Koa: `app.use(middleware)`, `router.use(middleware)` (#637)
+ * 4. FastAPI: `Depends(middleware)` (#637)
+ * 5. Django: `@login_required`, `@permission_required(...)`, etc. (#637)
+ * 6. Laravel: `->middleware('name')` (#637)
  */
 export function extractMiddlewareNames(code: string): string[] {
   const middleware: string[] = [];
@@ -320,6 +325,37 @@ export function extractMiddlewareNames(code: string): string[] {
     if (name && !BUILTIN_IDENTS.has(name) && !PARAM_IDENTS.has(name)) {
       if (!middleware.includes(name)) middleware.push(name);
     }
+  }
+
+  // Express/Koa app.use() / router.use() — middleware registration (#637)
+  const usePattern = /\b(?:app|router|koa)\.use\s*\(\s*([$\w]+)/g;
+  while ((match = usePattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !PARAM_IDENTS.has(name) && !BUILTIN_IDENTS.has(name)) {
+      if (!middleware.includes(name)) middleware.push(name);
+    }
+  }
+
+  // FastAPI Depends() injection (#637)
+  const dependsPattern = /Depends\s*\(\s*([$\w]+)/g;
+  while ((match = dependsPattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !middleware.includes(name)) middleware.push(name);
+  }
+
+  // Django view decorators (#637): @login_required, @permission_required, @csrf_exempt, etc.
+  const djangoDecoratorPattern = /@(login_required|permission_required|csrf_exempt|csrf_protect|require_http_methods|require_GET|require_POST|require_safe|staff_member_required|user_passes_test)/g;
+  while ((match = djangoDecoratorPattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !middleware.includes(name)) middleware.push(name);
+  }
+
+  // Laravel middleware() chain (#637): ->middleware('auth'), ->middleware('throttle:60')
+  const laravelMiddlewarePattern = /->middleware\s*\(\s*['"]([^'"]+)['"]/g;
+  while ((match = laravelMiddlewarePattern.exec(code)) !== null) {
+    // Laravel middleware names may have colon-separated params like 'throttle:60'
+    const name = match[1]!.split(':')[0]!;
+    if (!middleware.includes(name)) middleware.push(name);
   }
 
   return middleware;
@@ -604,6 +640,70 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       } catch { /* skip unreadable */ }
     }
 
+    // ── WRAPS edge creation (#637) ────────────────────────────────────────
+
+    // Create WRAPS edges from middleware names to Route nodes.
+    // Resolve middleware names to Function/Method nodes by name in the graph.
+    const nameToFnNodes = new Map<string, string[]>();
+    for (const fn of graph.iterNodes()) {
+      if (fn.label !== 'Function' && fn.label !== 'Method') continue;
+      const fnName = fn.properties.name as string | undefined;
+      if (!fnName) continue;
+      const ids = nameToFnNodes.get(fnName);
+      if (ids) ids.push(fn.id);
+      else nameToFnNodes.set(fnName, [fn.id]);
+    }
+
+    for (const routeNode of graph.iterNodes()) {
+      if (routeNode.label !== 'Route') continue;
+      const mwNames = routeNode.properties.middleware as string[] | undefined;
+      if (!mwNames || mwNames.length === 0) continue;
+
+      for (const mwName of mwNames) {
+        // Try to resolve the middleware name to an existing Function/Method node
+        const fnIds = nameToFnNodes.get(mwName);
+        if (fnIds) {
+          for (const fnId of fnIds) {
+            const edgeId = `wraps:${fnId}:${routeNode.id}`;
+            if (graph.getRelationship(edgeId)) continue;
+            graph.addRelationship({
+              id: edgeId,
+              sourceId: fnId,
+              targetId: routeNode.id,
+              type: 'WRAPS',
+              confidence: 0.8,
+              reason: `Middleware '${mwName}' wraps route ${(routeNode.properties.name as string) ?? routeNode.id}`,
+            });
+          }
+        } else {
+          // No matching Function/Method node — create a synthetic CodeElement node
+          const mwId = `middleware:${mwName}:${routeNode.properties.filePath ?? 'unknown'}`;
+          if (!graph.getNode(mwId)) {
+            graph.addNode({
+              id: mwId,
+              label: 'CodeElement',
+              properties: {
+                name: mwName,
+                filePath: (routeNode.properties.filePath as string) ?? '',
+                kind: 'middleware',
+              },
+            });
+          }
+          const edgeId = `wraps:${mwId}:${routeNode.id}`;
+          if (!graph.getRelationship(edgeId)) {
+            graph.addRelationship({
+              id: edgeId,
+              sourceId: mwId,
+              targetId: routeNode.id,
+              type: 'WRAPS',
+              confidence: 0.7,
+              reason: `Middleware '${mwName}' wraps route ${(routeNode.properties.name as string) ?? routeNode.id}`,
+            });
+          }
+        }
+      }
+    }
+
     // ── FETCHES edge creation (#428) ──────────────────────────────────────
 
     // Build a registry: route path → route node IDs
@@ -739,6 +839,7 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
     // ── Aggregate response shape and middleware counts (#426, #427) ──────────
     let responseShapeCount = 0;
     let middlewareCount = 0;
+    let wrapsCount = 0;
     for (const node of graph.iterNodes()) {
       if (node.label !== 'Route') continue;
       const rk = node.properties.responseKeys as string[] | undefined;
@@ -747,7 +848,10 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       if ((rk && rk.length > 0) || (ek && ek.length > 0)) responseShapeCount++;
       if (mw && mw.length > 0) middlewareCount++;
     }
+    for (const _rel of graph.iterRelationshipsByType('WRAPS')) {
+      wrapsCount++;
+    }
 
-    return { routeCount, frameworks: Array.from(frameworks), fetchesCount, responseShapeCount, middlewareCount };
+    return { routeCount, frameworks: Array.from(frameworks), fetchesCount, responseShapeCount, middlewareCount, wrapsCount };
   },
 };
