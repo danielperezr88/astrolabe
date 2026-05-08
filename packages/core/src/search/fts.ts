@@ -114,6 +114,7 @@ export function createFtsSearch(dbOrPath: Database.Database | string, _store?: S
   const ownsConnection = typeof dbOrPath === 'string';
   if (ownsConnection) {
     db.pragma('journal_mode = WAL');
+    db.pragma('busy_timeout = 5000');
   }
   // Don't set journal_mode on a shared connection — the owner controls it.
 

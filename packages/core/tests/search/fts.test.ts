@@ -254,4 +254,44 @@ describe('FtsSearch lazy initialization', () => {
       fts.close();
     }
   });
+
+  // #643 Pitfall 1: Verify FTS5 indexes survive DB close/reopen
+  it('queries work after close/reopen (FTS5 persistence)', () => {
+    const dbPath = join(testDir, 'fts-persist.db');
+    const graph = createKnowledgeGraph();
+    graph.addNode(makeNode({ id: 'fn:a:alpha', label: 'Function', properties: { name: 'alphaExport', filePath: 'src/alpha.ts', keywords: ['core', 'export'] } }));
+    graph.addNode(makeNode({ id: 'fn:b:beta', label: 'Function', properties: { name: 'betaUtil', filePath: 'src/beta.ts', keywords: ['util'] } }));
+
+    // Round 1: create, save, index, close
+    {
+      const store = createSqliteStore(dbPath);
+      const fts = createFtsSearch(dbPath);
+      store.saveGraph(graph);
+      fts.indexGraph(store);
+
+      const r1 = fts.search('alpha');
+      expect(r1.length).toBeGreaterThanOrEqual(1);
+      expect(r1[0].nodeId).toBe('fn:a:alpha');
+
+      fts.close();
+      store.close();
+    }
+
+    // Verify SQLite file still exists on disk
+    expect(require('node:fs').existsSync(dbPath)).toBe(true);
+
+    // Round 2: reopen, search again without re-indexing
+    {
+      const store2 = createSqliteStore(dbPath);
+      const fts2 = createFtsSearch(dbPath);
+      // No indexGraph() call — expect persisted index to work
+
+      const r2 = fts2.search('alpha');
+      expect(r2.length).toBeGreaterThanOrEqual(1);
+      expect(r2[0].nodeId).toBe('fn:a:alpha');
+
+      fts2.close();
+      store2.close();
+    }
+  });
 });
