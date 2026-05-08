@@ -21,6 +21,25 @@ export { AstCache };
 // ── Types ──────────────────────────────────────────────────────────────────
 
 /**
+ * File change set for incremental indexing (#632).
+ *
+ * Propagated through the pipeline context so phases can selectively
+ * re-execute only what's affected by changed files.
+ */
+export interface IncrementalInfo {
+  /** Files with changed content (SHA256 differs from last analysis). */
+  changedPaths: Set<string>;
+  /** New files added since last analysis. */
+  addedPaths: Set<string>;
+  /** Files removed since last analysis. */
+  deletedPaths: Set<string>;
+  /** Files whose content is unchanged. */
+  unchangedPaths: Set<string>;
+  /** Whether this is an incremental run (false = full analysis). */
+  isIncremental: boolean;
+}
+
+/**
  * Shared context passed through all pipeline phases.
  * Phases read from and write to this context as they execute.
  */
@@ -35,6 +54,12 @@ export interface PhaseContext {
   onProgress: (phase: string, percent: number, message: string) => void;
   /** When the pipeline started (epoch ms). */
   pipelineStart: number;
+  /**
+   * Incremental indexing info — set when running in incremental mode (#632).
+   * Phases use this to skip re-processing unchanged files and to only
+   * recompute indexes for symbols affected by changed files.
+   */
+  incremental?: IncrementalInfo;
 }
 
 /**
@@ -52,6 +77,16 @@ export interface PhaseDefinition<TOutput = unknown> {
    * via `context.state.get('output:<phaseName>')`.
    */
   execute: (context: PhaseContext) => Promise<TOutput> | TOutput;
+  /**
+   * Optional pre-execution check for incremental indexing (#632).
+   *
+   * Return `true` to skip this phase entirely (all inputs unchanged).
+   * Called BEFORE `execute`. If skipped, a `null` output is stored so
+   * downstream phases depending on this phase know it was skipped.
+   *
+   * Default: never skip (return false).
+   */
+  shouldSkip?: (context: PhaseContext) => boolean;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -83,7 +118,8 @@ export async function runPipeline(
   const sorted = topologicalSort(phases);
   const results: unknown[] = [];
   const isDebug = !!process.env.ASTROLABE_DEBUG;
-  const pipelineTimer = isDebug ? new PhaseTimer('pipeline') : null;
+  const profile = context.state.get('profile') === true || isDebug;
+  const pipelineTimer = profile ? new PhaseTimer('pipeline') : null;
   if (pipelineTimer) pipelineTimer.start();
 
   // Create AST tree cache and store in context for phase access.
@@ -92,8 +128,21 @@ export async function runPipeline(
   treeCache.clear();
   context.state.set(AST_TREE_CACHE_KEY, treeCache);
 
+  // #632: Track skipped phases for downstream visibility
+  const skippedPhases = new Set<string>();
+
   try {
     for (const phase of sorted) {
+      // #632: Check if phase can be skipped (all inputs unchanged)
+      if (phase.shouldSkip?.(context)) {
+        context.state.set(`output:${phase.name}`, null);
+        skippedPhases.add(phase.name);
+        if (pipelineTimer) pipelineTimer.mark(`${phase.name} (skipped)`);
+        context.onProgress(phase.name, 100, `${phase.name} skipped (incremental — no changes)`);
+        results.push(null);
+        continue;
+      }
+
       const start = Date.now();
       context.onProgress(phase.name, 0, `Starting ${phase.name}...`);
 
@@ -142,6 +191,7 @@ export function createPhaseContext(
   repoPath: string,
   graph: KnowledgeGraph,
   onProgress: PhaseContext['onProgress'],
+  incremental?: IncrementalInfo,
 ): PhaseContext {
   return {
     repoPath,
@@ -149,6 +199,7 @@ export function createPhaseContext(
     state: new Map(),
     onProgress,
     pipelineStart: Date.now(),
+    incremental,
   };
 }
 
