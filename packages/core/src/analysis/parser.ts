@@ -305,12 +305,29 @@ function extractSymbols(
       }
     }
 
-    const id = symbolId(label, filePath, name, startLine, { parameterCount: paramCount });
-    // Dedup by filePath|name|startLine|paramCount (exclude label) so the same node
-    // matched by multiple patterns produces only one entry.
+    // #635: Extract parameter types early for overload disambiguation
+    const paramTypes = (label === 'Method' || label === 'Function' || label === 'Constructor')
+      ? extractParameterTypes(outerNode.node, languageName)
+      : [];
+
+    // #635: Detect C++ const-qualified methods
+    let isConst = false;
+    if ((languageName === 'cpp' || languageName === 'c') && (label === 'Method' || label === 'Function')) {
+      for (let i = 0; i < outerNode.node.childCount; i++) {
+        const child = outerNode.node.child(i);
+        if (child && child.type === 'const') {
+          isConst = true;
+          break;
+        }
+      }
+    }
+
+    const id = symbolId(label, filePath, name, startLine, { parameterCount: paramCount, parameterTypes: paramTypes, isConst });
+    // Dedup by filePath|name|startLine|paramCount|paramTypes so overloaded methods
+    // with the same name but different parameter types are not collapsed.
     // Use label priority: more specific labels (Method, Constructor) beat
     // less specific ones (Function) to fix Rust impl method dedup (#178).
-    const dedupKey = `${filePath}|${name}|${startLine}|${paramCount ?? 0}`;
+    const dedupKey = `${filePath}|${name}|${startLine}|${paramCount ?? 0}|${paramTypes.join(',')}`;
     const existing = seen.get(dedupKey);
 
     if (shouldReplaceDedup(existing, { id, filePath, name, label, startLine, endLine, isExported: exported })) {
@@ -367,6 +384,17 @@ function extractSymbols(
               entry.properties[key] = value;
             }
           }
+        }
+      }
+    }
+
+    // #635: Store paramCount in node properties for downstream consumers
+    if (paramCount != null) {
+      const entry = seen.get(dedupKey);
+      if (entry) {
+        if (!entry.properties) entry.properties = {};
+        if (entry.properties.paramCount === undefined) {
+          entry.properties.paramCount = paramCount;
         }
       }
     }
@@ -501,6 +529,79 @@ function findChildByType(node: any, type: string): any {
     if (child && child.type === type) return child;
   }
   return null;
+}
+
+/**
+ * #635: Extract ONLY the parameter type strings from a tree-sitter AST node
+ * for overload disambiguation. Returns an empty array when no typed params are found.
+ * This is a lightweight version of extractSymbolMetadata() that runs BEFORE symbolId()
+ * so that parameterTypes can be threaded into the ID construction.
+ */
+function extractParameterTypes(node: any, languageName: string): string[] {
+  const funcNode = findFunctionNode(node);
+  const params = findParamsNode(funcNode);
+  if (!params) return [];
+
+  switch (languageName) {
+    case 'typescript':
+    case 'tsx':
+    case 'javascript': {
+      const types = extractParamTypesTs(params);
+      return types ?? [];
+    }
+    case 'python': {
+      const types = extractParamTypesPython(params);
+      return types ?? [];
+    }
+    case 'java': {
+      const types = extractParamTypesJava(params);
+      return types ?? [];
+    }
+    case 'csharp': {
+      const types = extractParamTypesCSharp(params);
+      return types ?? [];
+    }
+    // C/C++: parameter types come from type descriptors in parameter_list
+    case 'cpp':
+    case 'c': {
+      const types = extractParamTypesCpp(params);
+      return types ?? [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
+ * #635: Extract parameter type strings from C/C++ parameter lists.
+ * C/C++ parameters use `parameter_declaration` nodes with an optional `type` child.
+ * Also handles `optional_parameter_declaration` (C++ default arguments).
+ */
+function extractParamTypesCpp(paramsNode: any): string[] | undefined {
+  const types: string[] = [];
+  let hasAny = false;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const param = paramsNode.namedChild(i);
+    if (!param) { types.push(''); continue; }
+    // parameter_declaration or optional_parameter_declaration
+    const typeDecl = param.childForFieldName
+      ? param.childForFieldName('type')
+      : null;
+    if (typeDecl) {
+      types.push(typeDecl.text);
+      hasAny = true;
+    } else {
+      // Fallback: first named child is often the type in C/C++
+      const firstNamed = param.namedChildCount > 0 ? param.namedChild(0) : null;
+      if (firstNamed && firstNamed.type !== 'identifier') {
+        types.push(firstNamed.text);
+        hasAny = true;
+      } else {
+        types.push('');
+      }
+    }
+  }
+  return hasAny ? types : undefined;
 }
 
 /**

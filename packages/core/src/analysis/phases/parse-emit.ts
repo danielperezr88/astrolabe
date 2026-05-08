@@ -214,10 +214,16 @@ function emitSymbol(
   sym: ParsedSymbol,
   relPath: string,
 ): void {
-  // Extract the :L<line> suffix from the parser's ID for uniqueness
+  // Extract the overload suffix (#N~types) and const marker from the full symbol ID
+  // so the graph node preserves them.  Format: label:filePath:name[#N~types][\\][:L<line>]
+  const overloadMatch = sym.id.match(/(#\d+(?:~[^:\\]+)?)/);
+  const overloadSuffix = overloadMatch ? overloadMatch[1] : '';
   const lineSuffix = sym.id.includes(':L') ? sym.id.substring(sym.id.lastIndexOf(':L')) : '';
+  // Const marker (backslash) sits between the overload suffix and :L line suffix
+  const basePart = sym.id.includes(':L') ? sym.id.substring(0, sym.id.lastIndexOf(':L')) : sym.id;
+  const constSuffix = basePart.endsWith('\\') ? '\\' : '';
 
-  const nodeId = `${sym.label}:${relPath}:${sym.name}${lineSuffix}`;
+  const nodeId = `${sym.label}:${relPath}:${sym.name}${overloadSuffix}${constSuffix}${lineSuffix}`;
   const node: GraphNode = {
     id: nodeId,
     label: sym.label,
