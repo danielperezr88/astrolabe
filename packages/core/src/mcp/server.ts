@@ -25,6 +25,7 @@ import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
+import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1785,6 +1786,54 @@ Requires ASTROLABE_API_KEY or OPENAI_API_KEY environment variable to be set for 
       }
     },
   },
+
+  'astrolabe.generate_diagram': {
+    name: 'astrolabe.generate_diagram',
+    description: `Generate Mermaid architecture diagrams from the knowledge graph.
+
+DIAGRAM TYPES:
+- community: Cluster subgraphs showing module boundaries, member symbols, and coupling edges
+- process: Execution flow diagrams from entry points through step-by-step call traces
+- dependency: Directed graph of CALLS, IMPORTS, EXTENDS, IMPLEMENTS, USES relationships
+- class_hierarchy: Inheritance tree showing EXTENDS/IMPLEMENTS between classes and interfaces`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        diagram_type: { type: 'string', enum: ['community', 'process', 'dependency', 'class_hierarchy'], description: 'Type of diagram to generate' },
+        repo: { type: 'string', description: 'Repository name' },
+        cluster_id: { type: 'string', description: 'Filter community diagram to a specific cluster (by id or name)' },
+        process_id: { type: 'string', description: 'Filter process diagram to a specific process (by id or name)' },
+        format: { type: 'string', enum: ['mermaid', 'markdown'], description: 'Output format. "mermaid" returns raw diagram code. "markdown" wraps in documentation.', default: 'mermaid' },
+        max_nodes: { type: 'number', description: 'Maximum nodes to include (default: 200 for community, 100 for others)' },
+        min_confidence: { type: 'number', description: 'Minimum edge confidence threshold (default: 0.5)' },
+      },
+      required: ['diagram_type'],
+    },
+    handler: async (params) => {
+      const diagramType = requireString(params, 'diagram_type') as DiagramType;
+      const format = (params.format as string) ?? 'mermaid';
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      const opts: DiagramOptions = {
+        type: diagramType,
+        clusterId: params.cluster_id as string | undefined,
+        processId: params.process_id as string | undefined,
+        maxNodes: params.max_nodes as number | undefined,
+        minConfidence: params.min_confidence as number | undefined,
+      };
+
+      if (format === 'markdown') {
+        const repoName = (params.repo as string) ?? ctx.entry.name;
+        const doc = generateMarkdownDoc(graph, opts, repoName);
+        return { content: [{ type: 'text', text: doc }] };
+      }
+
+      const result = generateDiagram(graph, opts);
+      const statsLine = `// ${result.stats.nodeCount} nodes, ${result.stats.edgeCount} edges`;
+      return { content: [{ type: 'text', text: result.diagram + '\n\n' + statsLine }] };
+    },
+  },
 };
 
 // ── Resources ──────────────────────────────────────────────────────────────
@@ -2193,6 +2242,19 @@ Summarize your findings:
     const repo = args.repoPath ?? '';
     const format = args.format ?? 'mermaid';
     const repoLabel = repo ? ` "${repo}"` : '';
+    const repoArg = repo ? `, repo: "${repo}"` : '';
+    const mermaidStep = format === 'mermaid'
+      ? `**Step 5 — Generate Mermaid Diagram**
+Call: \`astrolabe.generate_diagram({diagram_type: "community"${repoArg}})\`
+This produces a Mermaid graph with communities as subgraphs, member symbols as nodes,
+and CALLS/IMPORTS/EXTENDS/IMPLEMENTS relationships as edges.
+
+For process flows, call: \`astrolabe.generate_diagram({diagram_type: "process"${repoArg}})\`
+For dependency graphs, call: \`astrolabe.generate_diagram({diagram_type: "dependency"${repoArg}})\`
+For class hierarchies, call: \`astrolabe.generate_diagram({diagram_type: "class_hierarchy"${repoArg}})\``
+      : `**Step 5 — Generate Markdown Documentation**
+Call: \`astrolabe.generate_diagram({diagram_type: "community", format: "markdown"${repoArg}})\`
+This produces a Markdown document with architecture overview, per-cluster details, and stats.`;
     return [
       {
         role: 'user',
@@ -2218,18 +2280,7 @@ Read resource: \`astrolabe://repo/{name}/schema\` for available node/edge types.
 Read resource: \`astrolabe://repo/{name}/processes\` for execution flows.
 For important processes, read: \`astrolabe://repo/{name}/process/{processName}\` for step-by-step traces.
 
-**Step 5 — Generate ${format === 'mermaid' ? 'Mermaid Diagram' : 'Markdown Documentation'}**
-${format === 'mermaid'
-    ? `Create a Mermaid architecture diagram showing:
-- Modules/clusters as subgraphs
-- Key symbols (functions, classes, routes) as nodes
-- CALLS, IMPORTS, EXTENDS relationships as directed edges
-- Data flow between processes`
-    : `Create a structured Markdown document with:
-- Architecture overview section
-- Per-cluster documentation (purpose, entry points, key dependencies)
-- Cross-cluster dependency summary
-- Process flow descriptions`}
+${mermaidStep}
 
 **Step 6 — Document Each Cluster**
 For each cluster found in Step 3, describe:

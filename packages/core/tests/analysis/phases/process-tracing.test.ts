@@ -25,6 +25,18 @@ function accessesRel(sourceId: string, targetId: string) {
   return { id: `acc:${sourceId}:${targetId}`, sourceId, targetId, type: 'ACCESSES' as const, confidence: 0.8, reason: 'test' };
 }
 
+function wrapsRel(sourceId: string, targetId: string) {
+  return { id: `wraps:${sourceId}:${targetId}`, sourceId, targetId, type: 'WRAPS' as const, confidence: 0.8, reason: 'test' };
+}
+
+function fetchesRel(sourceId: string, targetId: string) {
+  return { id: `fetch:${sourceId}:${targetId}`, sourceId, targetId, type: 'FETCHES' as const, confidence: 0.8, reason: 'test' };
+}
+
+function routeNode(id: string, name: string): GraphNode {
+  return { id, label: 'Route', properties: { name, method: 'get', path: '/api/test' } };
+}
+
 function comm(id: string, name: string): GraphNode {
   return { id, label: 'Community', properties: { name, symbolCount: 1 } };
 }
@@ -273,8 +285,8 @@ describe('Process Tracing Phase', () => {
   it('classifies as cross_community when trace spans three or more communities', async () => {
     const graph = createKnowledgeGraph();
     graph.addNode(fn('fn:entry', 'main', 'src/main.ts'));
-    graph.addNode(fn('fn:svc', 'service', 'src/svc/index.ts', false));
-    graph.addNode(fn('fn:db', 'database', 'src/db/index.ts', false));
+    graph.addNode(fn('fn:svc', 'service', 'src/svc/service.ts', false));
+    graph.addNode(fn('fn:db', 'database', 'src/db/store.ts', false));
     graph.addRelationship(callsRel('fn:entry', 'fn:svc'));
     graph.addRelationship(callsRel('fn:svc', 'fn:db'));
 
@@ -314,5 +326,144 @@ describe('Process Tracing Phase', () => {
     expect(procNodes.length).toBe(1);
     // Only one community seen → intra_community
     expect(procNodes[0]?.properties.processType).toBe('intra_community');
+  });
+
+  // ── New scoring dimensions ──────────────────────────────────────────────────
+
+  it('scores file name heuristic: main.ts scores higher than helpers.ts', async () => {
+    const graph = createKnowledgeGraph();
+    // Both named 'start' so name scoring is equal — only file name and depth differ
+    graph.addNode(fn('fn:inMain', 'start', 'src/main.ts', true));
+    graph.addNode(fn('fn:inUtils', 'start', 'src/utils/helpers.ts', true));
+    // Add a call edge to make call graph non-empty; fn:inMain calls a worker
+    graph.addNode(fn('fn:worker', 'worker', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:inMain', 'fn:worker'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const mainNode = graph.getNode('fn:inMain');
+    const utilsNode = graph.getNode('fn:inUtils');
+
+    // Both qualify (name:main-group gives 0.6 base), but main.ts should score higher
+    expect(mainNode?.properties.entryPointScore).toBeDefined();
+    expect(utilsNode?.properties.entryPointScore).toBeDefined();
+    expect(mainNode!.properties.entryPointScore as number).toBeGreaterThan(utilsNode!.properties.entryPointScore as number);
+    // Verify the entry-file-name reason is present only on main.ts node
+    expect(mainNode?.properties.entryPointReason).toContain('entry-file-name');
+    expect(utilsNode?.properties.entryPointReason).not.toContain('entry-file-name');
+  });
+
+  it('scores depth from root: shallow path scores higher than deeply nested', async () => {
+    const graph = createKnowledgeGraph();
+    // Both named 'start' so name scoring is equal — only depth differs
+    graph.addNode(fn('fn:shallow', 'start', 'src/app.ts', true));
+    graph.addNode(fn('fn:deep', 'start', 'src/deep/nested/module.ts', true));
+    graph.addRelationship(callsRel('fn:shallow', 'fn:deep'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const shallowNode = graph.getNode('fn:shallow');
+    const deepNode = graph.getNode('fn:deep');
+
+    expect(shallowNode?.properties.entryPointScore).toBeDefined();
+    expect(deepNode?.properties.entryPointScore).toBeDefined();
+    expect(shallowNode!.properties.entryPointScore as number).toBeGreaterThan(deepNode!.properties.entryPointScore as number);
+    // Verify depth reason strings
+    expect(shallowNode?.properties.entryPointReason).toContain('depth:');
+    expect(deepNode?.properties.entryPointReason).toContain('depth:');
+  });
+
+  it('scores WRAPS edge source as middleware entry point (+0.5)', async () => {
+    const graph = createKnowledgeGraph();
+    // Middleware function that wraps a route
+    graph.addNode(fn('fn:auth', 'authMiddleware', 'src/middleware/auth.ts', true));
+    graph.addNode(routeNode('route:api', 'apiRoute'));
+    graph.addRelationship(wrapsRel('fn:auth', 'route:api'));
+    // Give it a callee so a Process is created
+    graph.addNode(fn('fn:inner', 'innerHandler', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:auth', 'fn:inner'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const authNode = graph.getNode('fn:auth');
+    expect(authNode?.properties.entryPointScore).toBeDefined();
+    expect(authNode!.properties.entryPointScore).toBeGreaterThanOrEqual(0.5);
+    expect(authNode?.properties.entryPointReason).toContain('middleware');
+  });
+
+  it('scores FETCHES edge source as data-fetcher entry point (+0.5)', async () => {
+    const graph = createKnowledgeGraph();
+    // Function that fetches from an external source
+    graph.addNode(fn('fn:fetch', 'fetchUserData', 'src/api/client.ts', true));
+    graph.addNode(fn('fn:target', 'externalApi', 'src/external/api.ts', false));
+    graph.addRelationship(fetchesRel('fn:fetch', 'fn:target'));
+    // Give it a callee so a Process is created
+    graph.addNode(fn('fn:inner', 'parseData', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:fetch', 'fn:inner'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const fetchNode = graph.getNode('fn:fetch');
+    expect(fetchNode?.properties.entryPointScore).toBeDefined();
+    expect(fetchNode!.properties.entryPointScore).toBeGreaterThanOrEqual(0.5);
+    expect(fetchNode?.properties.entryPointReason).toContain('data-fetcher');
+  });
+
+  it('produces descriptive entryPointReason listing contributing factors', async () => {
+    const graph = createKnowledgeGraph();
+    // handlerRequest: name +0.5, handler-directory +0.3, exported +0.3, no-callers +0.3
+    graph.addNode(fn('fn:handleReq', 'handleRequest', 'src/routes/api.ts', true));
+    graph.addNode(fn('fn:worker', 'worker', 'src/test.ts', false));
+    graph.addRelationship(callsRel('fn:handleReq', 'fn:worker'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+
+    const handleNode = graph.getNode('fn:handleReq');
+    expect(handleNode?.properties.entryPointReason).toBeDefined();
+    const reason = handleNode!.properties.entryPointReason as string;
+    // Should list specific factors, not a generic score string
+    expect(reason).toContain('name:handler-group');
+    expect(reason).toContain('handler-directory');
+    expect(reason).toContain('exported');
+    expect(reason).toContain('no-callers');
+    // Should NOT contain the old generic format
+    expect(reason).not.toContain('Multi-factor score');
+  });
+
+  it('combines multiple scoring factors for high-confidence entry points', async () => {
+    const graph = createKnowledgeGraph();
+    // main in src/main.ts, exported, no callers: name:main-group +0.6, entry-file-name +0.4,
+    // depth +0.3 (depth 1), exported +0.3, no-callers +0.3 = 1.9
+    graph.addNode(fn('fn:main', 'main', 'src/main.ts', true));
+    graph.addNode(fn('fn:work', 'doWork', 'src/work.ts', false));
+    graph.addRelationship(callsRel('fn:main', 'fn:work'));
+
+    const context = createPhaseContext('/test', graph, () => {});
+    context.state.set('output:resolution', {});
+    await runPipeline([processTracingPhase], context);
+    const out = getPhaseOutput<ProcessTracingOutput>(context, 'process-tracing');
+
+    const mainNode = graph.getNode('fn:main');
+    expect(mainNode?.properties.entryPointScore).toBeDefined();
+    expect(mainNode!.properties.entryPointScore).toBeCloseTo(1.9, 1);
+    // Verify it is the top entry point (a Process was created from it)
+    expect(out.processCount).toBeGreaterThanOrEqual(1);
+    // Verify all expected reasons are present
+    const reason = mainNode!.properties.entryPointReason as string;
+    expect(reason).toContain('name:main-group');
+    expect(reason).toContain('entry-file-name');
+    expect(reason).toContain('exported');
+    expect(reason).toContain('no-callers');
+    expect(reason).toContain('depth:');
   });
 });
