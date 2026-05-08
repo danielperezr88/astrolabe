@@ -732,5 +732,177 @@ class UserViewSet(viewsets.ModelViewSet):
 
       rmSync(repo, { recursive: true, force: true });
     });
+
+    // ── #634: New framework detection tests ──────────────────────────────────
+
+    it('detects Fastify routes', async () => {
+      const repo = makeRepo({
+        'routes/api.ts': `
+          import Fastify from 'fastify';
+          const fastify = Fastify();
+          fastify.get('/api/users', async () => ({ users: [] }));
+          fastify.post('/api/users', async () => ({ created: true }));
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:routes/api.ts',
+        label: 'File',
+        properties: { name: 'api.ts', filePath: 'routes/api.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(2);
+      expect(output.frameworks).toContain('fastify');
+
+      const routeNodes = graph.findNodesByLabel('Route');
+      const fastifyRoutes = routeNodes.filter(n => n.properties.framework === 'fastify');
+      expect(fastifyRoutes.length).toBeGreaterThanOrEqual(2);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Koa-router routes', async () => {
+      const repo = makeRepo({
+        'routes/index.ts': `
+          const Router = require('koa-router');
+          const router = new Router();
+          router.get('/api/products', listProducts);
+          router.post('/api/products', createProduct);
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:routes/index.ts',
+        label: 'File',
+        properties: { name: 'index.ts', filePath: 'routes/index.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(2);
+      expect(output.frameworks).toContain('koa');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects GraphQL resolvers', async () => {
+      const repo = makeRepo({
+        'resolvers/user.ts': `
+          const resolvers = {
+            Query: {
+              getUser: (root, args) => db.users.find(args.id),
+            },
+            Mutation: {
+              updateUser: (root, args) => db.users.update(args),
+            },
+          };
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:resolvers/user.ts',
+        label: 'File',
+        properties: { name: 'user.ts', filePath: 'resolvers/user.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.routeCount).toBeGreaterThanOrEqual(2);
+      expect(output.frameworks).toContain('graphql');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Next.js App Router API routes', async () => {
+      const repo = makeRepo({
+        'app/api/users/route.ts': `
+          export async function GET(request: Request) {
+            return Response.json({ users: [] });
+          }
+          export async function POST(request: Request) {
+            return Response.json({ created: true });
+          }
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:app/api/users/route.ts',
+        label: 'File',
+        properties: { name: 'route.ts', filePath: 'app/api/users/route.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.frameworks).toContain('nextjs-app');
+      const routeNodes = graph.findNodesByLabel('Route');
+      const nextjsRoutes = routeNodes.filter(n => n.properties.framework === 'nextjs-app');
+      expect(nextjsRoutes.length).toBeGreaterThanOrEqual(1);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Next.js App Router page routes', async () => {
+      const repo = makeRepo({
+        'app/users/[id]/page.tsx': `
+          export default function UserPage({ params }: { params: { id: string } }) {
+            return <div>User {params.id}</div>;
+          }
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:app/users/[id]/page.tsx',
+        label: 'File',
+        properties: { name: 'page.tsx', filePath: 'app/users/[id]/page.tsx' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.frameworks).toContain('nextjs-app');
+      const routeNodes = graph.findNodesByLabel('Route');
+      const pageRoute = routeNodes.find(n => n.properties.framework === 'nextjs-app');
+      expect(pageRoute).toBeDefined();
+      expect(pageRoute?.properties.path).toBe('/users/:id');
+      expect(pageRoute?.properties.method).toBe('GET');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it('detects Expo Router routes', async () => {
+      const repo = makeRepo({
+        'app/about.tsx': `
+          import { View, Text } from 'react-native';
+          import { expo-router } from 'expo-router';
+
+          export default function About() {
+            return <View><Text>About page</Text></View>;
+          }
+        `,
+      });
+
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:app/about.tsx',
+        label: 'File',
+        properties: { name: 'about.tsx', filePath: 'app/about.tsx' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([routesPhase], context))[0] as RoutesOutput;
+
+      expect(output.frameworks).toContain('expo');
+      const routeNodes = graph.findNodesByLabel('Route');
+      const expoRoute = routeNodes.find(n => n.properties.framework === 'expo');
+      expect(expoRoute).toBeDefined();
+      expect(expoRoute?.properties.path).toBe('/about');
+
+      rmSync(repo, { recursive: true, force: true });
+    });
   });
 });
