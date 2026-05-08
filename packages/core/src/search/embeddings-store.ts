@@ -346,19 +346,24 @@ export function createEmbeddingProvider(
     return new TransformersEmbeddingProvider();
   }
 
-  // Auto: check if transformers is actually installed (#380)
-  if (providerType === 'auto') {
-    try {
-      _require.resolve('@huggingface/transformers');
-      return new TransformersEmbeddingProvider();
-    } catch {
-      // Not installed, fall through to TF-IDF
+  // #643 Pitfall 5: TF-IDF is the default (bundled, works offline).
+  // Transformers.js is opt-in via explicit providerType or
+  // ASTROLABE_PROVIDER=transformers.
+  if (providerType === 'auto' || providerType === 'tfidf') {
+    if (tfidfIndex) {
+      return createTfIdfEmbeddingProvider(tfidfIndex);
     }
-  }
-
-  // TF-IDF fallback
-  if (tfidfIndex) {
-    return createTfIdfEmbeddingProvider(tfidfIndex);
+    if (providerType === 'tfidf') {
+      // Explicitly requested but no index available — fall through to dummy
+    } else {
+      // Auto mode: no TF-IDF index available — try transformers as fallback
+      try {
+        _require.resolve('@huggingface/transformers');
+        return new TransformersEmbeddingProvider();
+      } catch {
+        // Not installed, fall through to dummy
+      }
+    }
   }
 
   // Absolute fallback: dummy 384D provider

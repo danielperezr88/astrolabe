@@ -80,19 +80,22 @@ interface RepoContext {
   store: SqliteStore;
   fts: FtsSearch;
   entry: RegistryEntry;
+  /** Database lock — prevents concurrent CLI writes while MCP server is active. */
+  lock: { release(): void } | null;
   /** Cached knowledge graph — invalidate with invalidateGraph() on changes (#176). */
   graph?: import('../core/types.js').KnowledgeGraph;
   loadGraph(): import('../core/types.js').KnowledgeGraph;
   invalidateGraph(): void;
 }
 
-function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry): RepoContext {
+function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry, lock: { release(): void } | null): RepoContext {
   let lastMtime = 0;
 
   return {
     store,
     fts,
     entry,
+    lock,
     graph: undefined,
     loadGraph() {
       // #240: Check DB file mtime to detect stale cache after external re-analysis
@@ -212,7 +215,7 @@ class LocalBackend {
     // Open connection
     const store = createSqliteStore(entry.dbPath);
     const fts = createFtsSearch(entry.dbPath);
-    ctx = createRepoContext(store, fts, entry);
+    ctx = createRepoContext(store, fts, entry, null);
     this.repos.set(name, ctx);
     this.lastAccess.set(name, Date.now());
     return ctx;
@@ -568,12 +571,28 @@ class LocalBackend {
       depthGroups[key].items.push(item);
     }
 
+    // #643 Pitfall 4: When affected is empty, check if the target had edges
+    // that were filtered out (by confidence or direction). If edges exist
+    // but couldn't be traced → UNKNOWN risk, not safe.
+    let untraceable = false;
+    if (affected.length === 0) {
+      // Count unfiltered edges for the target (excluding STEP_IN_PROCESS)
+      let totalEdges = 0;
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS') continue;
+        if (direction === 'upstream' && rel.targetId === targetNode.id) totalEdges++;
+        if (direction === 'downstream' && rel.sourceId === targetNode.id) totalEdges++;
+      }
+      untraceable = totalEdges > 0; // edges exist but didn't pass confidence filter
+    }
+
     return {
       target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
       direction,
       affected_count: affected.length,
       truncated, // #248: true if result cap reached
       depth_groups: depthGroups,
+      risk: untraceable ? 'UNKNOWN' : undefined,
     };
   }
 
@@ -638,11 +657,18 @@ class LocalBackend {
 
     const crossCommunityCount = affectedProcesses.filter((p) => p.processType === 'cross_community').length;
 
+    // #643 Pitfall 4: When changed symbols exist but no processes are affected,
+    // report UNKNOWN instead of LOW. Symbol tracing may be incomplete.
+    const riskLevel = affectedProcesses.length > 3 ? 'high'
+      : affectedProcesses.length > 0 ? 'medium'
+      : changedNodeIds.size > 0 ? 'unknown'
+      : 'low';
+
     return {
       changed_files: diffFiles,
       changed_count: diffFiles.length,
       affected_count: affectedProcesses.length,
-      risk_level: affectedProcesses.length > 3 ? 'high' : affectedProcesses.length > 0 ? 'medium' : 'low',
+      risk_level: riskLevel,
       changed_symbols: changedSymbols,
       affected_processes: affectedProcesses.map((p) => p.name),
       cross_community_affected: crossCommunityCount,

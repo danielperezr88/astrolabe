@@ -9,8 +9,8 @@ on:
   push:
     branches: [main]
 
-# Prevent infinite loop: the check job detects version-bump commits
-# (messages starting with "chore: release v") and skips the pipeline.
+# Prevent infinite loop: the check job skips the pipeline for commits
+# authored by github-actions[bot] (CHANGELOG edits, version bumps).
 concurrency:
   group: release-${{ github.sha }}
   cancel-in-progress: false
@@ -34,10 +34,10 @@ jobs:
     steps:
       - id: check
         run: |
-          MSG="${{ github.event.head_commit.message }}"
-          if echo "$MSG" | head -1 | grep -qE "chore: release v|docs: update CHANGELOG for v"; then
+          AUTHOR="${{ github.event.head_commit.author.username }}"
+          if [ "$AUTHOR" = "github-actions[bot]" ]; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping — version bump or CHANGELOG commit."
+            echo "Skipping — automated commit (author: github-actions[bot])."
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Proceeding with release."
@@ -171,6 +171,14 @@ jobs:
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
 
+      # ── App token for branch protection bypass ──────────────────────────
+      - name: Generate GitHub App token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.RELEASE_APP_ID }}
+          private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       # ── Publish to npm ────────────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
@@ -224,7 +232,8 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet && echo "No CHANGELOG changes" || {
             git commit -m "docs: update CHANGELOG for ${TAG}"
-            echo "CHANGELOG updated locally — main is branch-protected; push manually via PR."
+            git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git" HEAD:main
+            echo "CHANGELOG.md updated and pushed to main"
           }
 
       # ── GitHub release ──────────────────────────────────────────────────
