@@ -240,12 +240,34 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
     const routes: ApiImpactResult['routes'] = [];
     const matchedRoutes = handlerToRoutes.get(targetId) ?? [];
     const consumers = calleeToCallers.get(targetId) ?? [];
+
+    // #643 Pitfall 4: When a handler has routes but no consumers,
+    // check if the symbol participates in any CALLS edges at all.
+    // If it does, the call graph is incomplete → UNKNOWN, not safe.
+    let routeRisk: string;
+    if (consumers.length > 0) {
+      routeRisk = 'BREAKING: has consumers';
+    } else {
+      // Check if this target is involved in any CALLS relationship
+      let hasCallsEdges = false;
+      if (consumers.length === 0) {
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type !== 'CALLS') continue;
+          if (rel.sourceId === targetId || rel.targetId === targetId) {
+            hasCallsEdges = true;
+            break;
+          }
+        }
+      }
+      routeRisk = hasCallsEdges ? 'UNKNOWN: untraceable callers' : 'safe to change';
+    }
+
     for (const r of matchedRoutes) {
       routes.push({
         method: r.method,
         path: r.path,
         consumers,
-        risk: consumers.length > 0 ? 'BREAKING: has consumers' : 'safe to change',
+        risk: routeRisk,
       });
     }
 

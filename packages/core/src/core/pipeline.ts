@@ -82,7 +82,7 @@ export async function runPipeline(
 ): Promise<unknown[]> {
   const sorted = topologicalSort(phases);
   const results: unknown[] = [];
-  const isDebug = !!process.env.ASTROLABE_DEBUG;
+  const isDebug = !!process.env.ASTROLABE_DEBUG || !!context.state.get('profile');
   const pipelineTimer = isDebug ? new PhaseTimer('pipeline') : null;
   if (pipelineTimer) pipelineTimer.start();
 

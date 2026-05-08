@@ -82,7 +82,9 @@ Alternatively, open `packages/vscode` in VS Code and press F5 (Extension Develop
 | `astrolabe augment <pattern>` | Enrich search results with graph context |
 | `astrolabe list` | List all symbols in the graph (`--label` to filter) |
 
-`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--skip-agents-md`, `--skills`, `--max-file-size`
+`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--skip-agents-md`, `--skills`, `--max-file-size`, `--profile`
+
+> **Concurrency note**: Running `astrolabe analyze` while the MCP server (`serve-mcp`) is active on the same repo will be blocked to prevent SQLite WAL corruption. Stop the MCP server first, or analyze a different repository.
 
 ### Server & Integration
 
