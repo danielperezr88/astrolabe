@@ -101,6 +101,36 @@ export interface WikiResult {
   gistUrl?: string;
 }
 
+// ── Token budget for LLM calls (#645) ────────────────────────────────────────
+
+/** Rough estimate: ~4 chars per token for English text. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Context window sizes for common models (input tokens). */
+const MODEL_TOKEN_LIMITS: Record<string, number> = {
+  'gpt-4': 8192,
+  'gpt-4-turbo': 128_000,
+  'gpt-4o': 128_000,
+  'gpt-4o-mini': 128_000,
+  'gpt-3.5-turbo': 16_384,
+  'gpt-3.5-turbo-16k': 16_384,
+};
+
+/** Default input token budget when model is unknown. */
+const DEFAULT_INPUT_BUDGET = 8000;
+
+function getInputBudget(model: string): number {
+  // Exact match
+  if (MODEL_TOKEN_LIMITS[model]) return MODEL_TOKEN_LIMITS[model];
+  // Prefix match (handles dated snapshots like gpt-4-0613)
+  for (const [key, limit] of Object.entries(MODEL_TOKEN_LIMITS)) {
+    if (model.startsWith(key)) return limit;
+  }
+  return DEFAULT_INPUT_BUDGET;
+}
+
 function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
   // #355: Only use OpenAI-compatible keys (OPENAI_API_KEY or explicit --api-key)
   const apiKey = opts.apiKey || process.env.OPENAI_API_KEY || '';
@@ -108,6 +138,21 @@ function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise
 
   const url = opts.baseUrl || 'https://api.openai.com/v1/chat/completions';
   const model = opts.model || 'gpt-4o-mini';
+
+  // #645: Truncate prompt to fit model's input token budget.
+  // Reserve 500 tokens for the completion (max_tokens) + system overhead.
+  const budget = getInputBudget(model) - 500;
+  let safePrompt = prompt;
+  if (estimateTokens(prompt) > budget) {
+    const charBudget = budget * 4;
+    safePrompt = prompt.slice(0, charBudget) + '\n\n[content truncated to fit token budget]';
+    log.warn('LLM prompt exceeds token budget', {
+      moduleName,
+      model,
+      estimatedTokens: estimateTokens(prompt),
+      budget,
+    });
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000); // #356: 30s timeout
@@ -120,7 +165,7 @@ function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: safePrompt }],
       max_tokens: 500,
       temperature: 0.3,
     }),

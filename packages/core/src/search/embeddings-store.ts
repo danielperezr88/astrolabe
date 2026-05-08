@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { TfIdfIndex } from './embeddings.js';
+import { withRetrySync } from '../persist/sqlite.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -435,7 +436,11 @@ export class EmbeddingStore {
    * Store an embedding vector for a node.
    */
   upsert(nodeId: string, contentHash: string, vector: Float32Array): void {
-    this.insertStmt.run(nodeId, contentHash, Buffer.from(vector.buffer), vector.length, Date.now());
+    // #645: Retry on SQLITE_BUSY — concurrent wiki embedding + search queries
+    // may contend on the embeddings table during multi-phase pipeline runs.
+    withRetrySync(() => {
+      this.insertStmt.run(nodeId, contentHash, Buffer.from(vector.buffer), vector.length, Date.now());
+    });
   }
 
   /**
@@ -571,7 +576,9 @@ export class EmbeddingStore {
    * re-embedding the entire graph with the new provider.
    */
   clearAll(): void {
-    this.clearAllStmt.run();
+    withRetrySync(() => {
+      this.clearAllStmt.run();
+    });
   }
 
   close(): void {
