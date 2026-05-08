@@ -20,6 +20,7 @@ import { rubyLanguage } from './ruby.js';
 import { swiftLanguage } from './swift.js';
 import { cLanguage } from './c.js';
 import { cppLanguage } from './cpp.js';
+import { protobufLanguage } from './protobuf.js';
 
 /**
  * All registered language definitions.
@@ -40,6 +41,7 @@ const allLanguages: LanguageDefinition[] = [
   swiftLanguage,
   cLanguage,
   cppLanguage,
+  protobufLanguage,
 ];
 
 /**
