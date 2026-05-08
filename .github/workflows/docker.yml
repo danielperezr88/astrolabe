@@ -28,3 +28,21 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ── SBOM validation: generate SBOM from source to validate Syft ───
+      - name: Generate SBOM (Syft) — source scan
+        uses: anchore/sbom-action@v0
+        with:
+          path: ./
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Verify SBOM is non-empty
+        run: |
+          if [ -s sbom.spdx.json ]; then
+            echo "SBOM generated successfully ($(wc -c < sbom.spdx.json) bytes)"
+            echo "Packages found: $(jq '.packages | length' sbom.spdx.json)"
+          else
+            echo "SBOM is empty — generation failed"
+            exit 1
+          fi
