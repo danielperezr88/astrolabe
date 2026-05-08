@@ -17,6 +17,7 @@ export interface RouteMapEntry {
   handlerName: string;
   consumers: Array<{ id: string; name: string; filePath: string }>;
   isOrphaned: boolean;
+  middleware: string[];
 }
 
 export interface ToolMapEntry {
@@ -30,7 +31,7 @@ export interface ToolMapEntry {
 
 export interface ApiImpactResult {
   symbol: string;
-  routes: Array<{ method: string; path: string; consumers: string[]; risk: string }>;
+  routes: Array<{ method: string; path: string; consumers: string[]; risk: string; middleware: string[] }>;
   tools: Array<{ type: string; name: string }>;
   shapeDrift: Array<{ field: string; severity: string }>;
 }
@@ -38,7 +39,7 @@ export interface ApiImpactResult {
 // ── route_map ──────────────────────────────────────────────────────────────
 
 export function routeMap(graph: KnowledgeGraph): RouteMapEntry[] {
-  const routeNodes: Map<string, { method: string; path: string; handlerId: string; handlerName: string }> = new Map();
+  const routeNodes: Map<string, { method: string; path: string; handlerId: string; handlerName: string; middleware: string[] }> = new Map();
 
   // Collect Route nodes
   for (const node of graph.iterNodes()) {
@@ -48,6 +49,7 @@ export function routeMap(graph: KnowledgeGraph): RouteMapEntry[] {
       path: (node.properties.path as string) ?? '?',
       handlerId: node.id,
       handlerName: (node.properties.name as string) ?? node.id,
+      middleware: (node.properties.middleware as string[]) ?? [],
     });
   }
 
@@ -108,6 +110,7 @@ export function routeMap(graph: KnowledgeGraph): RouteMapEntry[] {
       handlerName: route.handlerName,
       consumers: consumerList,
       isOrphaned: consumerList.length === 0,
+      middleware: route.middleware,
     });
   }
 
@@ -195,8 +198,8 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
   // #411: Pre-build indices ONCE — O(R) instead of O(T×N×R×C)
   const targetIdSet = new Set(targetIds);
 
-  // handler → routes it handles
-  const handlerToRoutes = new Map<string, Array<{ method: string; path: string }>>();
+  // handler → routes it handles (with middleware)
+  const handlerToRoutes = new Map<string, Array<{ method: string; path: string; middleware: string[] }>>();
   for (const hr of graph.iterRelationshipsByType('HANDLES_ROUTE')) {
     if (!targetIdSet.has(hr.sourceId)) continue;
     const routeNode = graph.getNode(hr.targetId);
@@ -206,6 +209,7 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
     arr.push({
       method: (routeNode.properties.method as string) ?? '?',
       path: (routeNode.properties.path as string) ?? '?',
+      middleware: (routeNode.properties.middleware as string[]) ?? [],
     });
   }
 
@@ -268,6 +272,7 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
         path: r.path,
         consumers,
         risk: routeRisk,
+        middleware: r.middleware,
       });
     }
 

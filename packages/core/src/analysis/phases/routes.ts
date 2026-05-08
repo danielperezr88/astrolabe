@@ -1,11 +1,13 @@
 /**
- * Pipeline Phase: Route Detection
- *
- * Reads actual source files to detect API route definitions across common
- * web frameworks. Creates Route nodes with HANDLES_ROUTE edges (#137).
- * Also creates FETCHES edges from Function/Method nodes that make HTTP
- * client calls to registered Route nodes (#428).
- */
+  * Pipeline Phase: Route Detection
+  *
+  * Reads actual source files to detect API route definitions across common
+  * web frameworks. Creates Route nodes with HANDLES_ROUTE edges (#137).
+  * Also creates FETCHES edges from Function/Method nodes that make HTTP
+  * client calls to registered Route nodes (#428).
+  * Extended with Fastify, Hapi, Koa, GraphQL resolver, Next.js App/Pages
+  * Router, and Expo file-based route detection (#634).
+  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -17,6 +19,7 @@ export interface RoutesOutput {
   fetchesCount: number;
   responseShapeCount: number;
   middlewareCount: number;
+  wrapsCount: number;
 }
 
 // ── HTTP client detection patterns ─────────────────────────────────────────
@@ -101,6 +104,16 @@ const FRAMEWORK_PATTERNS: Array<{ name: string; regex: RegExp; extract: (m: RegE
   { name: 'pug-template', regex: /^[\s]*form\s*\([^)]*action\s*=\s*['"]([^'"]+)['"][^)]*(?:method\s*=\s*['"](\w+)["'])?/gm, extract: (m) => ({ method: m[2]?.toUpperCase() || 'GET', path: m[1] }) },
   // Template: Blade Form::open helper
   { name: 'blade-template', regex: /\{\{\s*Form::open\s*\(\s*\[\s*['"]url['"]\s*=>\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: 'POST', path: m[1] }) },
+  // Fastify route definitions (#634)
+  { name: 'fastify', regex: /\bfastify\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }) },
+  // Hapi route definitions (#634)
+  { name: 'hapi', regex: /(?:server|route)\s*\.\s*route\s*\(\s*\{[^}]*method\s*:\s*['"](\w+)['"][^}]*path\s*:\s*['"]([^'"]+)['"]/gs, extract: (m) => ({ method: m[1].toUpperCase(), path: m[2] }) },
+  // Koa-router route definitions (#634)
+  { name: 'koa', regex: /\b(router|koa)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/g, extract: (m) => ({ method: m[2].toUpperCase(), path: m[3] }) },
+  // GraphQL resolver definitions (#634)
+  { name: 'graphql', regex: /(?:Query|Mutation)\s*:\s*\{[^}]*?(\w+)\s*[:(]/gs, extract: (m) => ({ method: 'GRAPHQL', path: m[1] }) },
+  // Next.js Pages Router — default export function Page/Handler (#634)
+  { name: 'nextjs-pages', regex: /export\s+default\s+(?:async\s+)?(?:function|const)\s+\w*(?:Page|Handler)/g, extract: (_m) => ({ method: 'GET', path: '[inferred]' }) },
 ];
 
 // ── NestJS controller prefix detection ─────────────────────────────────────
@@ -278,6 +291,10 @@ const BUILTIN_IDENTS = new Set(['require', 'import', 'Promise', 'setTimeout', 's
  *
  * 1. Express: `app.get(path, mw1, mw2, handler)` — identifier args are middleware
  * 2. Higher-order: `withAuth(handler)`, `withRateLimit(handler)`
+ * 3. Express/Koa: `app.use(middleware)`, `router.use(middleware)` (#637)
+ * 4. FastAPI: `Depends(middleware)` (#637)
+ * 5. Django: `@login_required`, `@permission_required(...)`, etc. (#637)
+ * 6. Laravel: `->middleware('name')` (#637)
  */
 export function extractMiddlewareNames(code: string): string[] {
   const middleware: string[] = [];
@@ -308,6 +325,37 @@ export function extractMiddlewareNames(code: string): string[] {
     if (name && !BUILTIN_IDENTS.has(name) && !PARAM_IDENTS.has(name)) {
       if (!middleware.includes(name)) middleware.push(name);
     }
+  }
+
+  // Express/Koa app.use() / router.use() — middleware registration (#637)
+  const usePattern = /\b(?:app|router|koa)\.use\s*\(\s*([$\w]+)/g;
+  while ((match = usePattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !PARAM_IDENTS.has(name) && !BUILTIN_IDENTS.has(name)) {
+      if (!middleware.includes(name)) middleware.push(name);
+    }
+  }
+
+  // FastAPI Depends() injection (#637)
+  const dependsPattern = /Depends\s*\(\s*([$\w]+)/g;
+  while ((match = dependsPattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !middleware.includes(name)) middleware.push(name);
+  }
+
+  // Django view decorators (#637): @login_required, @permission_required, @csrf_exempt, etc.
+  const djangoDecoratorPattern = /@(login_required|permission_required|csrf_exempt|csrf_protect|require_http_methods|require_GET|require_POST|require_safe|staff_member_required|user_passes_test)/g;
+  while ((match = djangoDecoratorPattern.exec(code)) !== null) {
+    const name = match[1];
+    if (name && !middleware.includes(name)) middleware.push(name);
+  }
+
+  // Laravel middleware() chain (#637): ->middleware('auth'), ->middleware('throttle:60')
+  const laravelMiddlewarePattern = /->middleware\s*\(\s*['"]([^'"]+)['"]/g;
+  while ((match = laravelMiddlewarePattern.exec(code)) !== null) {
+    // Laravel middleware names may have colon-separated params like 'throttle:60'
+    const name = match[1]!.split(':')[0]!;
+    if (!middleware.includes(name)) middleware.push(name);
   }
 
   return middleware;
@@ -367,6 +415,81 @@ function splitTopLevelArgs(text: string): string[] {
   return args;
 }
 
+// ── Next.js App Router file-path → route conversion (#634) ────────────────────
+
+/**
+ * Convert a Next.js App Router file path to a route path.
+ *
+ * Rules:
+ * - `app/api/users/route.ts` → `/api/users` (API route)
+ * - `app/users/[id]/page.tsx` → `/users/:id` (page route with param)
+ * - `app/(dashboard)/settings/page.tsx` → `/settings` (route groups omitted)
+ * - `app/page.tsx` → `/` (root page)
+ * - Strip `route.ts/js` and `page.tsx/ts/jsx/js` suffixes
+ * - Replace `[param]` with `:param`
+ * - Remove route groups `(...)` and their directory segment
+ *
+ * Returns `null` if the path is not a Next.js App Router file.
+ */
+function nextjsFilePathToRoute(fp: string): string | null {
+  const normalized = fp.replace(/\\/g, '/');
+  const appIdx = normalized.indexOf('/app/');
+  if (appIdx < 0 && !normalized.startsWith('app/')) return null;
+  const afterApp = appIdx >= 0 ? normalized.slice(appIdx + 5) : normalized.slice(4);
+  if (!afterApp) return null;
+
+  const isApiRoute = /\/route\.(ts|js)$/.test(afterApp) || afterApp.endsWith('route.ts') || afterApp.endsWith('route.js');
+  const isPage = /\/page\.(tsx|ts|jsx|js)$/.test(afterApp) || /^(.*)\/page\.(tsx|ts|jsx|js)$/.test(afterApp);
+  if (!isApiRoute && !isPage) return null;
+
+  let routePath = afterApp;
+  routePath = routePath.replace(/\/route\.(ts|js)$/, '');
+  routePath = routePath.replace(/\/page\.(tsx|ts|jsx|js)$/, '');
+  routePath = routePath.replace(/\/\([^)]+\)/g, '');
+  routePath = routePath.replace(/\[([^\]]+)\]/g, ':$1');
+  if (!routePath.startsWith('/')) routePath = '/' + routePath;
+  routePath = routePath.replace(/\/+/g, '/');
+  if (routePath === '/') return routePath;
+  if (routePath.length > 1 && routePath.endsWith('/')) routePath = routePath.slice(0, -1);
+
+  return routePath;
+}
+
+// ── Expo Router file-path → route conversion (#634) ──────────────────────────
+
+/**
+ * Convert an Expo Router file path to a route path.
+ *
+ * Rules:
+ * - `app/index.tsx` → `/`
+ * - `app/about.tsx` → `/about`
+ * - `app/users/[id].tsx` → `/users/:id`
+ * - Strip file extension
+ * - Replace `[param]` with `:param`
+ * - `index` file names map to the parent directory path
+ *
+ * Returns `null` if the path is not an Expo Router file.
+ */
+function expoFilePathToRoute(fp: string): string | null {
+  const normalized = fp.replace(/\\/g, '/');
+  const appIdx = normalized.indexOf('/app/');
+  if (appIdx < 0 && !normalized.startsWith('app/')) return null;
+  const afterApp = appIdx >= 0 ? normalized.slice(appIdx + 5) : normalized.slice(4);
+  if (!afterApp) return null;
+
+  if (!/\.(tsx?|jsx?)$/.test(afterApp)) return null;
+
+  let routePath = afterApp;
+  routePath = routePath.replace(/\.(tsx?|jsx?)$/, '');
+  if (routePath === 'index') return '/';
+  routePath = routePath.replace(/\/index$/, '');
+  routePath = routePath.replace(/\[([^\]]+)\]/g, ':$1');
+  if (!routePath.startsWith('/')) routePath = '/' + routePath;
+  if (routePath.length > 1 && routePath.endsWith('/')) routePath = routePath.slice(0, -1);
+
+  return routePath;
+}
+
 export const routesPhase: PhaseDefinition<RoutesOutput> = {
   name: 'routes',
   dependencies: ['parse-emit'],
@@ -385,8 +508,8 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       if (!fp) continue;
       if (changedPaths && !changedPaths.has(fp)) continue;
 
-      // Scan related directories and common entry point files (#198)
-      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp) && !TEMPLATE_EXTENSIONS.test(fp)) continue;
+      // Scan related directories and common entry point files (#198, #634)
+      if (!/routes?[\/\\]/.test(fp) && !/api[\/\\]/.test(fp) && !/controller/i.test(fp) && !/handler/i.test(fp) && !/route\.(ts|js|py|php)$/i.test(fp) && !/\b(app|main|server|index)\.(ts|js|py|php)$/i.test(fp) && !TEMPLATE_EXTENSIONS.test(fp) && !/(?:^|[\/\\])app[\/\\]/.test(fp) && !/(?:^|[\/\\])pages[\/\\]/.test(fp) && !/resolv/i.test(fp) && !/schema\.(ts|js|graphql|gql)$/i.test(fp)) continue;
 
       try {
         const content = await readFile(join(context.repoPath, fp), 'utf-8');
@@ -436,7 +559,149 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
             frameworks.add(fw.name);
           }
         }
+
+        // ── Next.js App Router file-based route detection (#634) ──────────────
+        const nextjsAppPath = nextjsFilePathToRoute(fp);
+        if (nextjsAppPath !== null) {
+          const normalizedFp = fp.replace(/\\/g, '/');
+          const isApiRoute = /\/route\.(ts|js)$/.test(normalizedFp);
+          const isPageRoute = /\/page\.(tsx|ts|jsx|js)$/.test(normalizedFp);
+
+          if (isApiRoute) {
+            const methodExports = /export\s+(?:async\s+)?(?:function\s+|const\s+)(GET|POST|PUT|DELETE|PATCH)\b/g;
+            let methodMatch: RegExpExecArray | null;
+            while ((methodMatch = methodExports.exec(content)) !== null) {
+              const method = methodMatch[1]!;
+              const routeId = `route:${fp}:nextjs-app:${method}:${nextjsAppPath}`;
+              if (!graph.getNode(routeId)) {
+                graph.addNode({
+                  id: routeId, label: 'Route',
+                  properties: {
+                    name: `${method} ${nextjsAppPath}`, filePath: fp, method, path: nextjsAppPath, framework: 'nextjs-app',
+                    responseKeys, errorKeys, middleware,
+                    hasMiddleware: hasMiddleware || undefined,
+                  },
+                });
+                graph.addRelationship({
+                  id: `route:file:${routeId}:${node.id}`, sourceId: node.id, targetId: routeId,
+                  type: 'HANDLES_ROUTE', confidence: 0.7,
+                  reason: `Next.js App Router API route in ${fp}`,
+                });
+                routeCount++;
+                frameworks.add('nextjs-app');
+              }
+            }
+          } else if (isPageRoute) {
+            const routeId = `route:${fp}:nextjs-app:GET:${nextjsAppPath}`;
+            if (!graph.getNode(routeId)) {
+              graph.addNode({
+                id: routeId, label: 'Route',
+                properties: {
+                  name: `GET ${nextjsAppPath}`, filePath: fp, method: 'GET', path: nextjsAppPath, framework: 'nextjs-app',
+                  responseKeys, errorKeys, middleware,
+                  hasMiddleware: hasMiddleware || undefined,
+                },
+              });
+              graph.addRelationship({
+                id: `route:file:${routeId}:${node.id}`, sourceId: node.id, targetId: routeId,
+                type: 'HANDLES_ROUTE', confidence: 0.7,
+                reason: `Next.js App Router page route in ${fp}`,
+              });
+              routeCount++;
+              frameworks.add('nextjs-app');
+            }
+          }
+        }
+
+        // ── Expo Router file-based route detection (#634) ─────────────────────
+        if (/\bexpo-router\b/.test(content)) {
+          const expoPath = expoFilePathToRoute(fp);
+          if (expoPath !== null) {
+            const routeId = `route:${fp}:expo:GET:${expoPath}`;
+            if (!graph.getNode(routeId)) {
+              graph.addNode({
+                id: routeId, label: 'Route',
+                properties: {
+                  name: `GET ${expoPath}`, filePath: fp, method: 'GET', path: expoPath, framework: 'expo',
+                  responseKeys, errorKeys, middleware,
+                  hasMiddleware: hasMiddleware || undefined,
+                },
+              });
+              graph.addRelationship({
+                id: `route:file:${routeId}:${node.id}`, sourceId: node.id, targetId: routeId,
+                type: 'HANDLES_ROUTE', confidence: 0.7,
+                reason: `Expo Router route in ${fp}`,
+              });
+              routeCount++;
+              frameworks.add('expo');
+            }
+          }
+        }
       } catch { /* skip unreadable */ }
+    }
+
+    // ── WRAPS edge creation (#637) ────────────────────────────────────────
+
+    // Create WRAPS edges from middleware names to Route nodes.
+    // Resolve middleware names to Function/Method nodes by name in the graph.
+    const nameToFnNodes = new Map<string, string[]>();
+    for (const fn of graph.iterNodes()) {
+      if (fn.label !== 'Function' && fn.label !== 'Method') continue;
+      const fnName = fn.properties.name as string | undefined;
+      if (!fnName) continue;
+      const ids = nameToFnNodes.get(fnName);
+      if (ids) ids.push(fn.id);
+      else nameToFnNodes.set(fnName, [fn.id]);
+    }
+
+    for (const routeNode of graph.iterNodes()) {
+      if (routeNode.label !== 'Route') continue;
+      const mwNames = routeNode.properties.middleware as string[] | undefined;
+      if (!mwNames || mwNames.length === 0) continue;
+
+      for (const mwName of mwNames) {
+        // Try to resolve the middleware name to an existing Function/Method node
+        const fnIds = nameToFnNodes.get(mwName);
+        if (fnIds) {
+          for (const fnId of fnIds) {
+            const edgeId = `wraps:${fnId}:${routeNode.id}`;
+            if (graph.getRelationship(edgeId)) continue;
+            graph.addRelationship({
+              id: edgeId,
+              sourceId: fnId,
+              targetId: routeNode.id,
+              type: 'WRAPS',
+              confidence: 0.8,
+              reason: `Middleware '${mwName}' wraps route ${(routeNode.properties.name as string) ?? routeNode.id}`,
+            });
+          }
+        } else {
+          // No matching Function/Method node — create a synthetic CodeElement node
+          const mwId = `middleware:${mwName}:${routeNode.properties.filePath ?? 'unknown'}`;
+          if (!graph.getNode(mwId)) {
+            graph.addNode({
+              id: mwId,
+              label: 'CodeElement',
+              properties: {
+                name: mwName,
+                filePath: (routeNode.properties.filePath as string) ?? '',
+                kind: 'middleware',
+              },
+            });
+          }
+          const edgeId = `wraps:${mwId}:${routeNode.id}`;
+          if (!graph.getRelationship(edgeId)) {
+            graph.addRelationship({
+              id: edgeId,
+              sourceId: mwId,
+              targetId: routeNode.id,
+              type: 'WRAPS',
+              confidence: 0.7,
+              reason: `Middleware '${mwName}' wraps route ${(routeNode.properties.name as string) ?? routeNode.id}`,
+            });
+          }
+        }
+      }
     }
 
     // ── FETCHES edge creation (#428) ──────────────────────────────────────
@@ -574,6 +839,7 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
     // ── Aggregate response shape and middleware counts (#426, #427) ──────────
     let responseShapeCount = 0;
     let middlewareCount = 0;
+    let wrapsCount = 0;
     for (const node of graph.iterNodes()) {
       if (node.label !== 'Route') continue;
       const rk = node.properties.responseKeys as string[] | undefined;
@@ -582,7 +848,10 @@ export const routesPhase: PhaseDefinition<RoutesOutput> = {
       if ((rk && rk.length > 0) || (ek && ek.length > 0)) responseShapeCount++;
       if (mw && mw.length > 0) middlewareCount++;
     }
+    for (const _rel of graph.iterRelationshipsByType('WRAPS')) {
+      wrapsCount++;
+    }
 
-    return { routeCount, frameworks: Array.from(frameworks), fetchesCount, responseShapeCount, middlewareCount };
+    return { routeCount, frameworks: Array.from(frameworks), fetchesCount, responseShapeCount, middlewareCount, wrapsCount };
   },
 };
