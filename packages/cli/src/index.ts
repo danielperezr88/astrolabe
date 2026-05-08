@@ -28,7 +28,7 @@ import {
   generateWiki,
   startEvalServer,
 } from '@astrolabe-dev/core';
-import type { ScanOutput } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo } from '@astrolabe-dev/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -127,11 +127,21 @@ program
           }
         }
 
+        // #632: Build incremental info for phase-level skip decisions
+        const incrementalInfo: IncrementalInfo = {
+          changedPaths: new Set(diff.changed),
+          addedPaths: new Set(diff.added),
+          deletedPaths: new Set(diff.deleted),
+          unchangedPaths: new Set(diff.unchanged),
+          isIncremental: true,
+        };
+
         // Run remaining phases with file filter
-        const ctx = createPhaseContext(repoPath, graph, onProgress);
+        const ctx = createPhaseContext(repoPath, graph, onProgress, incrementalInfo);
         ctx.state.set('output:scan', scanOutput);
         ctx.state.set('skipWorkers', opts.skipWorkers ?? false);
         ctx.state.set('profile', opts.profile ?? false);
+        // Deprecated: kept for backward compat with phases still using changedPaths pattern
         ctx.state.set('incremental:changedPaths', new Set([...diff.changed, ...diff.added]));
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,

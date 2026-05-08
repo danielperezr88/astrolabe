@@ -100,4 +100,100 @@ describe('Pipeline', () => {
       expect(ran).toBe(true);
     });
   });
+
+  describe('incremental indexing (#632)', () => {
+    it('skips phases with shouldSkip returning true', async () => {
+      const graph = createKnowledgeGraph();
+      const inc = {
+        changedPaths: new Set<string>(),
+        addedPaths: new Set<string>(),
+        deletedPaths: new Set<string>(),
+        unchangedPaths: new Set(['unchanged.ts']),
+        isIncremental: true,
+      };
+      const context = createPhaseContext('/test', graph, () => {}, inc);
+      const order: string[] = [];
+
+      const phaseA: PhaseDefinition = {
+        name: 'A',
+        dependencies: [],
+        shouldSkip: () => true, // always skip
+        execute: async () => { order.push('A'); },
+      };
+      const phaseB: PhaseDefinition = {
+        name: 'B',
+        dependencies: ['A'],
+        execute: async () => { order.push('B'); },
+      };
+
+      await runPipeline([phaseA, phaseB], context);
+
+      expect(order).toEqual(['B']); // A skipped
+      // Skipped phases store null output
+      expect(context.state.get('output:A')).toBeNull();
+      // Phase B ran and stored its output (even if undefined)
+      expect(context.state.has('output:B')).toBe(true);
+    });
+
+    it('does not skip when shouldSkip returns false', async () => {
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext('/test', graph, () => {});
+      const order: string[] = [];
+
+      const phaseA: PhaseDefinition = {
+        name: 'A',
+        dependencies: [],
+        shouldSkip: () => false, // explicitly do not skip
+        execute: async () => { order.push('A'); },
+      };
+
+      await runPipeline([phaseA], context);
+
+      expect(order).toEqual(['A']);
+    });
+
+    it('does not skip in full-analysis mode (no incremental context)', async () => {
+      const graph = createKnowledgeGraph();
+      const context = createPhaseContext('/test', graph, () => {}); // no incremental info
+      const order: string[] = [];
+
+      const phaseA: PhaseDefinition = {
+        name: 'A',
+        dependencies: [],
+        shouldSkip: (ctx) => !!ctx.incremental?.isIncremental, // only skip if incremental
+        execute: async () => { order.push('A'); },
+      };
+
+      await runPipeline([phaseA], context);
+
+      expect(order).toEqual(['A']); // not skipped — no incremental context
+    });
+
+    it('passes IncrementalInfo to phases for selective execution', async () => {
+      const graph = createKnowledgeGraph();
+      const inc = {
+        changedPaths: new Set(['a.ts', 'b.ts']),
+        addedPaths: new Set(['c.ts']),
+        deletedPaths: new Set(['d.ts']),
+        unchangedPaths: new Set(['x.ts', 'y.ts']),
+        isIncremental: true,
+      };
+      const context = createPhaseContext('/test', graph, () => {}, inc);
+      const captured: string[] = [];
+
+      const phaseA: PhaseDefinition = {
+        name: 'A',
+        dependencies: [],
+        execute: (ctx) => {
+          if (ctx.incremental) {
+            captured.push(...ctx.incremental.changedPaths);
+          }
+        },
+      };
+
+      await runPipeline([phaseA], context);
+
+      expect(captured.sort()).toEqual(['a.ts', 'b.ts']);
+    });
+  });
 });

@@ -179,11 +179,64 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
   name: 'mro',
   dependencies: ['resolution'],
 
+  // #632: Skip if incremental and no Class nodes exist in changed files
+  shouldSkip(context: PhaseContext): boolean {
+    const inc = context.incremental;
+    if (!inc?.isIncremental) return false;
+    // MRO only matters if classes changed. Unchanged files' Class nodes
+    // already have MRO from the previous full analysis.
+    const affected = new Set([...inc.changedPaths, ...inc.addedPaths]);
+    for (const node of context.graph.iterNodes()) {
+      if (node.label === 'Class') {
+        const fp = node.properties.filePath as string | undefined;
+        if (fp && affected.has(fp)) return false; // at least one class changed
+      }
+    }
+    return true; // no classes in changed files → skip
+  },
+
   execute(context: PhaseContext): MroOutput {
-    const { graph } = context;
+    const { graph, incremental } = context;
 
     const parentMap = buildParentMap(graph);
     const classNodes = findClassNodes(graph);
+
+    // #632: In incremental mode, only recompute MRO for classes in changed/added files
+    // (or whose superclass was recomputed). Classes from unchanged files retain
+    // their MRO from the previous full analysis (loaded from DB).
+    const affectedFiles = incremental?.isIncremental
+      ? new Set([...incremental.changedPaths, ...incremental.addedPaths])
+      : null;
+
+    // Collect class IDs that need MRO recomputation
+    let recomputeIds: Set<string> | null = null;
+    if (affectedFiles) {
+      recomputeIds = new Set<string>();
+      // First pass: mark classes in affected files
+      for (const cls of classNodes) {
+        const fp = cls.properties.filePath as string | undefined;
+        if (fp && affectedFiles.has(fp)) {
+          recomputeIds.add(cls.id);
+        }
+      }
+      // Second pass: include classes whose superclass was recomputed
+      // (inheritance chain propagation)
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const cls of classNodes) {
+          if (recomputeIds.has(cls.id)) continue;
+          const parentIds = parentMap.get(cls.id) ?? [];
+          for (const pid of parentIds) {
+            if (recomputeIds.has(pid)) {
+              recomputeIds.add(cls.id);
+              changed = true;
+              break;
+            }
+          }
+        }
+      }
+    }
 
     // Build method index: Map<filePath, methodNode[]> for O(1) lookup (#68)
     const methodsByFile = new Map<string, GraphNode[]>();
@@ -204,6 +257,9 @@ export const mroPhase: PhaseDefinition<MroOutput> = {
 
     // Compute MRO for each class
     for (const cls of classNodes) {
+      // #632: Skip classes that don't need recomputation
+      if (recomputeIds && !recomputeIds.has(cls.id)) continue;
+
       const parentIds = parentMap.get(cls.id) ?? [];
       extendsEdgeCount += parentIds.length;
 

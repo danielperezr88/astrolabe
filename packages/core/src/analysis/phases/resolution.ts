@@ -166,8 +166,15 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
   name: 'resolution',
   dependencies: ['parse-emit'],
 
+  // #632: Skip if incremental and no files changed (no new imports possible)
+  shouldSkip(context: PhaseContext): boolean {
+    const inc = context.incremental;
+    if (!inc?.isIncremental) return false;
+    return inc.changedPaths.size + inc.addedPaths.size === 0;
+  },
+
   execute(context: PhaseContext): ResolutionOutput {
-    const { graph } = context;
+    const { graph, incremental } = context;
 
     const symbolIndex = buildSymbolIndex(graph);
     const importNodes: GraphNode[] = [];
@@ -179,8 +186,18 @@ export const resolutionPhase: PhaseDefinition<ResolutionOutput> = {
     const edgeCounts: Record<string, number> = {};
     let bindingCount = 0;
 
+    // #632: In incremental mode, only process imports from changed/added files.
+    // Unchanged files' imports were resolved in the previous run — their USES
+    // edges are already in the graph (loaded from DB). We still need the full
+    // symbolIndex so that import nodes from changed files can resolve targets
+    // in unchanged files.
+    const affectedFiles = incremental?.isIncremental
+      ? new Set([...incremental.changedPaths, ...incremental.addedPaths])
+      : null;
+
     for (const impNode of importNodes) {
       const importerFile = impNode.properties.filePath as string;
+      if (affectedFiles && importerFile && !affectedFiles.has(importerFile)) continue;
       const sourceModule = impNode.properties.name as string;
       if (!importerFile || !sourceModule) continue;
 
