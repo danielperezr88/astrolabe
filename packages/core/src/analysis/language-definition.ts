@@ -258,7 +258,7 @@ export function symbolId(
   filePath: string,
   name: string,
   startLine?: number,
-  overload?: { parameterCount?: number; parameterTypes?: string[] },
+  overload?: { parameterCount?: number; parameterTypes?: string[]; isConst?: boolean },
 ): string {
   let base = `${label}:${filePath}:${name}`;
   if (overload?.parameterCount != null && overload.parameterCount > 0) {
@@ -267,6 +267,9 @@ export function symbolId(
       const hash = overload.parameterTypes.map((t) => t.replace(/[^a-zA-Z0-9<>,_[\]]/g, '')).join(',');
       base += `~${hash}`;
     }
+  }
+  if (overload?.isConst) {
+    base += '\\';
   }
   return startLine != null ? `${base}:L${startLine}` : base;
 }
