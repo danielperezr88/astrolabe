@@ -1,8 +1,9 @@
 /**
  * Pipeline Phase: Tool/Handler Detection
  *
- * Reads actual source files to detect MCP tools, tRPC routers, gRPC services,
- * and CLI commands by scanning file contents (#138).
+ * Reads actual source files to detect MCP tools/resources, tRPC routers,
+ * GraphQL resolvers, gRPC services, CLI commands, Fastify decorators,
+ * and Slack commands by scanning file contents (#138, #634).
  */
 
 import { readFile } from 'node:fs/promises';
@@ -16,7 +17,11 @@ export interface ToolsOutput { toolCount: number; toolTypes: string[]; }
 
 const PATTERNS: Array<{ type: string; regex: RegExp; nameGroup: number; protoOnly?: boolean }> = [
   { type: 'mcp', regex: /server\.tool\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
+  { type: 'mcp-resource', regex: /server\.resource\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
   { type: 'trpc', regex: /\.(query|mutation|procedure)\s*\(\s*['"]([^'"]+)['"]?/g, nameGroup: 2 },
+  { type: 'graphql-resolver', regex: /(?:Query|Mutation)\s*:\s*\{[^}]*?(\w+)\s*[:(]/gs, nameGroup: 1 },
+  { type: 'fastify-plugin', regex: /fastify\.decorate\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
+  { type: 'slack-command', regex: /app\.command\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
   { type: 'cli', regex: /\.command\s*\(\s*['"]([^'"]+)['"]/g, nameGroup: 1 },
   { type: 'grpc', regex: /\brpc\s+(\w+)\s*\(/g, nameGroup: 1, protoOnly: true },
 ];
