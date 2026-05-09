@@ -8,20 +8,24 @@ on:
 
 jobs:
   # ── Security: dependency review on PRs ───────────────────────────────────
-  # TODO: Remove continue-on-error once Dependency Graph is enabled in
-  # Settings > Code security and analysis > Dependency graph
+  # TODO: Remove continue-on-error fallback once Dependency Graph is enabled
+  # in Settings > Code security and analysis > Dependency graph
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Review dependencies for vulnerabilities
+        id: dep-review
+        continue-on-error: true
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
           deny-licenses: GPL-3.0, AGPL-3.0
+      - name: Skip if dependency graph not enabled
+        if: steps.dep-review.outcome == 'failure'
+        run: echo "Dependency Review skipped — enable Dependency Graph in repo Settings > Code security"
 
   # ── Security: npm audit ──────────────────────────────────────────────────
   npm-audit:
