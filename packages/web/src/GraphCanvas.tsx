@@ -358,13 +358,7 @@ export function GraphCanvas({
         depthRef.current = nextDepth;
         setDepth(nextDepth);
       } else {
-        focusIdRef.current = d.id;
-        depthRef.current = 1;
-        setFocusId(d.id);
-        setDepth(1);
-        const found = nodeMap.get(d.id) ?? null;
-        setSelectedNode(found);
-        if (found && onNodeSelect) onNodeSelect(found);
+        selectNode(d.id, depthRef.current);
       }
     });
 
@@ -381,11 +375,7 @@ export function GraphCanvas({
 
     // ── Click SVG background: deselect ─────────────────────────────────
     svg.on('click', () => {
-      focusIdRef.current = null;
-      depthRef.current = 1;
-      setFocusId(null);
-      setDepth(1);
-      setSelectedNode(null);
+      selectNode(null);
     });
 
     // ── Force simulation ───────────────────────────────────────────────
@@ -438,11 +428,7 @@ export function GraphCanvas({
 
   // ── Helper to reset selection ────────────────────────────────────────
   function resetSelection() {
-    focusIdRef.current = null;
-    depthRef.current = 1;
-    setFocusId(null);
-    setDepth(1);
-    setSelectedNode(null);
+    selectNode(null);
   }
 
   // ── Incoming / outgoing edges for sidebar ────────────────────────────
