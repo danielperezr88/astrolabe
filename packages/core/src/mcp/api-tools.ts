@@ -227,10 +227,14 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
     });
   }
 
-  // callee → callers (CALLS relationships)
+  // callee → callers (CALLS relationships) + pre-index: which nodes
+  // participate in ANY CALLS edge (for untraceable detection — #694)
   const calleeToCallers = new Map<string, string[]>();
+  const nodesWithCallsEdges = new Set<string>();
   for (const rel of graph.iterRelationships()) {
     if (rel.type !== 'CALLS') continue;
+    nodesWithCallsEdges.add(rel.sourceId);
+    nodesWithCallsEdges.add(rel.targetId);
     const caller = graph.getNode(rel.sourceId);
     if (!caller) continue;
     let arr = calleeToCallers.get(rel.targetId);
@@ -252,18 +256,7 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
     if (consumers.length > 0) {
       routeRisk = 'BREAKING: has consumers';
     } else {
-      // Check if this target is involved in any CALLS relationship
-      let hasCallsEdges = false;
-      if (consumers.length === 0) {
-        for (const rel of graph.iterRelationships()) {
-          if (rel.type !== 'CALLS') continue;
-          if (rel.sourceId === targetId || rel.targetId === targetId) {
-            hasCallsEdges = true;
-            break;
-          }
-        }
-      }
-      routeRisk = hasCallsEdges ? 'UNKNOWN: untraceable callers' : 'safe to change';
+      routeRisk = nodesWithCallsEdges.has(targetId) ? 'UNKNOWN: untraceable callers' : 'safe to change';
     }
 
     for (const r of matchedRoutes) {
