@@ -492,10 +492,21 @@ class LocalBackend {
     if (!targetNode) return { error: `Target "${target}" not found.` };
 
     // Pre-build adjacency index: Map<nodeId, { neighborId, type, confidence }[]> (#119)
+    // Also track unfiltered edge counts per node for untraceable detection (#695):
+    // edges that exist but were filtered by confidence → UNKNOWN risk, not safe.
     const adj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
+    const edgePresence = new Map<string, { upstream: number; downstream: number }>();
     for (const rel of graph.iterRelationships()) {
       // #290: Exclude synthetic STEP_IN_PROCESS edges — being in same process ≠ dependency
       if (rel.type === 'STEP_IN_PROCESS') continue;
+      // Track unfiltered edge counts before confidence filter
+      const srcP = edgePresence.get(rel.sourceId) ?? { upstream: 0, downstream: 0 };
+      const tgtP = edgePresence.get(rel.targetId) ?? { upstream: 0, downstream: 0 };
+      srcP.downstream++;
+      tgtP.upstream++;
+      edgePresence.set(rel.sourceId, srcP);
+      edgePresence.set(rel.targetId, tgtP);
+      // Confidence filter for actual traversal
       if (rel.confidence < minConfidence) continue;
       // Upstream: target <- source (who calls me)
       if (direction === 'upstream') {
@@ -575,17 +586,12 @@ class LocalBackend {
     // #643 Pitfall 4: When affected is empty, check if the target had edges
     // that were filtered out (by confidence or direction). If edges exist
     // but couldn't be traced → UNKNOWN risk, not safe.
-    let untraceable = false;
-    if (affected.length === 0) {
-      // Count unfiltered edges for the target (excluding STEP_IN_PROCESS)
-      let totalEdges = 0;
-      for (const rel of graph.iterRelationships()) {
-        if (rel.type === 'STEP_IN_PROCESS') continue;
-        if (direction === 'upstream' && rel.targetId === targetNode.id) totalEdges++;
-        if (direction === 'downstream' && rel.sourceId === targetNode.id) totalEdges++;
-      }
-      untraceable = totalEdges > 0; // edges exist but didn't pass confidence filter
-    }
+    // Uses pre-built edgePresence map from adjacency pass (#695): O(1) lookup
+    // instead of a second O(E) scan.
+    const presence = affected.length === 0 ? edgePresence.get(targetNode.id) : undefined;
+    const untraceable = presence
+      ? (direction === 'upstream' ? presence.upstream : presence.downstream) > 0
+      : false;
 
     return {
       target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
