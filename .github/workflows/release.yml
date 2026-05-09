@@ -2,12 +2,24 @@
 # Calculates the stable version from the latest RC, builds Docker image
 # with stable + latest tags, publishes to GHCR, signs with Cosign,
 # creates a GitHub release with auto-generated release notes.
+#
+# Supports dry-run mode via workflow_dispatch for pipeline validation
+# without shipping (#623). Includes idempotency check to prevent
+# duplicate npm publications and retroactively create GitHub releases
+# for versions that already exist on npm (#624).
 
 name: Release
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — skip publish, push, and release steps (validate pipeline only)'
+        required: false
+        type: boolean
+        default: false
 
 # Prevent infinite loop: the check job skips the pipeline for commits
 # authored by github-actions[bot] (CHANGELOG edits, version bumps).
@@ -31,15 +43,27 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
+      dry_run: ${{ steps.check.outputs.dry_run }}
     steps:
       - id: check
         run: |
-          AUTHOR="${{ github.event.head_commit.author.username }}"
-          if [ "$AUTHOR" = "github-actions[bot]" ]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping — automated commit (author: github-actions[bot])."
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          echo "dry_run=${DRY_RUN:-false}" >> "$GITHUB_OUTPUT"
+
+          # Skip automated commits on push, but allow all workflow_dispatch runs
+          if [ "${{ github.event_name }}" = "push" ]; then
+            AUTHOR="${{ github.event.head_commit.author.username }}"
+            if [ "$AUTHOR" = "github-actions[bot]" ]; then
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "Skipping — automated commit (author: github-actions[bot])."
+              exit 0
+            fi
+          fi
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — will validate pipeline without shipping."
           else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "Proceeding with release."
           fi
 
@@ -70,7 +94,7 @@ jobs:
   release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: integration-test
+    needs: [check, integration-test]
     if: needs.check.outputs.should_release == 'true'
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -87,6 +111,44 @@ jobs:
           VERSION=$(node scripts/next-version.mjs --release)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Stable version: $VERSION"
+
+      # ── Idempotency check (#624) ─────────────────────────────────────────
+      # Check if this version already exists on npm. If so:
+      #   - If GH release exists → skip entirely (safe re-run)
+      #   - If GH release missing → create it retroactively, skip npm publish
+      - name: Idempotency check
+        id: idempotency
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          # Check npm registry
+          NPM_VERSION=$(npm view @astrolabe-dev/cli version 2>/dev/null || echo "")
+          echo "npm_latest=${NPM_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ "$NPM_VERSION" = "$VERSION" ]; then
+            echo "⚠️  Version $VERSION already exists on npm."
+            # Check if GitHub release exists
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "✅ GitHub release $TAG also exists — skipping everything (safe re-run)."
+              echo "skip_npm=true" >> "$GITHUB_OUTPUT"
+              echo "skip_release=true" >> "$GITHUB_OUTPUT"
+              echo "skip_changelog=true" >> "$GITHUB_OUTPUT"
+              echo "skip_tag=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "⚠️  GitHub release $TAG does NOT exist — will create it retroactively."
+              echo "skip_npm=true" >> "$GITHUB_OUTPUT"
+              echo "skip_release=false" >> "$GITHUB_OUTPUT"
+              echo "skip_changelog=true" >> "$GITHUB_OUTPUT"
+              echo "skip_tag=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "✅ Version $VERSION not on npm — proceeding with full release."
+            echo "skip_npm=false" >> "$GITHUB_OUTPUT"
+            echo "skip_release=false" >> "$GITHUB_OUTPUT"
+            echo "skip_changelog=false" >> "$GITHUB_OUTPUT"
+            echo "skip_tag=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # ── Docker build + push ─────────────────────────────────────────────
       - name: Set up Docker Buildx
@@ -111,11 +173,11 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=v${{ steps.version.outputs.version }}
             type=sha,prefix=
 
-      - name: Build and push Docker image
+      - name: Build${{ needs.check.outputs.dry_run != 'true' && ' and push' || '' }} Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ needs.check.outputs.dry_run != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -138,9 +200,11 @@ jobs:
 
       # ── Sign the image ──────────────────────────────────────────────────
       - name: Install Cosign
+        if: needs.check.outputs.dry_run != 'true'
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image with GitHub OIDC
+        if: needs.check.outputs.dry_run != 'true'
         run: |
           cosign sign --yes \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
@@ -149,6 +213,7 @@ jobs:
 
       # ── SBOM + Provenance ───────────────────────────────────────────────
       - name: Generate SBOM (Syft)
+        if: needs.check.outputs.dry_run != 'true'
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
@@ -156,6 +221,7 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Attest SBOM with Cosign
+        if: needs.check.outputs.dry_run != 'true'
         run: |
           cosign attest --yes --predicate sbom.spdx.json --type spdxjson \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
@@ -163,6 +229,7 @@ jobs:
           COSIGN_EXPERIMENTAL: '1'
 
       - name: Sign SBOM artifact
+        if: needs.check.outputs.dry_run != 'true'
         run: |
           cosign sign-blob --yes --bundle sbom.bundle \
             --output-signature sbom.spdx.json.sig \
@@ -172,6 +239,7 @@ jobs:
           COSIGN_EXPERIMENTAL: '1'
 
       - name: Upload SBOM as release artifact
+        if: needs.check.outputs.dry_run != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ steps.version.outputs.version }}
@@ -183,6 +251,7 @@ jobs:
 
       # ── Push stable Git tag ─────────────────────────────────────────────
       - name: Push stable tag
+        if: needs.check.outputs.dry_run != 'true' && steps.idempotency.outputs.skip_tag != 'true'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           # Skip if tag already exists (e.g. re-run)
@@ -232,14 +301,25 @@ jobs:
           npm run build --workspace packages/cli
 
       - name: Publish @astrolabe-dev/cli to npm
+        if: needs.check.outputs.dry_run != 'true' && steps.idempotency.outputs.skip_npm != 'true'
         run: |
           echo "//registry.npmjs.org/:_authToken=$NODE_AUTH_TOKEN" > .npmrc
           npm publish --workspace packages/cli --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Dry run — skip npm publish
+        if: needs.check.outputs.dry_run == 'true' || steps.idempotency.outputs.skip_npm == 'true'
+        run: |
+          if [ "${{ needs.check.outputs.dry_run }}" = "true" ]; then
+            echo "🔲 DRY RUN: Would publish @astrolabe-dev/cli@${{ steps.version.outputs.version }} to npm"
+          else
+            echo "⏭️  SKIPPED: @astrolabe-dev/cli@${{ steps.version.outputs.version }} already exists on npm (idempotency check)"
+          fi
+
       # ── Update CHANGELOG.md ───────────────────────────────────────────────
       - name: Update CHANGELOG.md
+        if: needs.check.outputs.dry_run != 'true' && steps.idempotency.outputs.skip_changelog != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -270,6 +350,15 @@ jobs:
             echo "CHANGELOG.md updated and pushed to main"
           }
 
+      - name: Dry run — skip CHANGELOG push
+        if: needs.check.outputs.dry_run == 'true' || steps.idempotency.outputs.skip_changelog == 'true'
+        run: |
+          if [ "${{ needs.check.outputs.dry_run }}" = "true" ]; then
+            echo "🔲 DRY RUN: Would update CHANGELOG.md for v${{ steps.version.outputs.version }}"
+          else
+            echo "⏭️  SKIPPED: CHANGELOG already up to date (idempotency check)"
+          fi
+
       # ── GitHub release ──────────────────────────────────────────────────
       - name: Generate release notes
         id: notes
@@ -282,6 +371,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
+        if: needs.check.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -319,6 +409,36 @@ jobs:
               --title "Release ${TAG}" \
               --notes-file "$NOTES_FILE"
           fi
+
+      - name: Dry run — skip GitHub release
+        if: needs.check.outputs.dry_run == 'true'
+        run: |
+          echo "🔲 DRY RUN: Would create GitHub release for v${{ steps.version.outputs.version }}"
+          echo "🔲 DRY RUN: Release notes preview:"
+          echo "${{ steps.notes.outputs.notes }}"
+
+  # ── Dry run summary ──────────────────────────────────────────────────
+  dry-run-summary:
+    name: Dry Run Summary
+    runs-on: ubuntu-latest
+    needs: [check, integration-test, release]
+    if: needs.check.outputs.dry_run == 'true' && always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## 🔲 Dry Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pipeline validated successfully without shipping." >> "$GITHUB_STEP_SUMMARY"
+          echo "All build and test steps passed." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Steps skipped:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker push (image was built only)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- npm publish" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Git tag push" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CHANGELOG.md push" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub release creation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker image signing" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SBOM generation" >> "$GITHUB_STEP_SUMMARY"
 
   # ── Notify on failure ──────────────────────────────────────────────────
   notify-failure:
