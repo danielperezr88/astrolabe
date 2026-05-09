@@ -7,6 +7,8 @@
  */
 import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { platform } from 'node:os';
+import { execSync } from 'node:child_process';
 
 const LOCK_FILE_NAME = 'astrolabe.lock';
 
@@ -16,8 +18,24 @@ export interface DbLock {
 
 function isProcessAlive(pid: number): boolean {
   try {
-    // Signal 0 is a no-op that checks if the process exists
+    // Signal 0 is a no-op that checks if the process exists.
+    // On Unix this correctly returns ESRCH for nonexistent PIDs.
+    // On Windows, process.kill(pid, 0) always returns true for any
+    // running PID regardless of process identity (#696), so we
+    // additionally verify via tasklist.
     process.kill(pid, 0);
+
+    if (platform() === 'win32') {
+      // tasklist /FI "PID eq NNN" returns the header line plus one
+      // data line if the PID exists — filter out to check.
+      const output = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+        encoding: 'utf-8',
+        windowsHide: true,
+        timeout: 3000
+      }).trim();
+      return output.length > 0 && !output.startsWith('INFO:');
+    }
+
     return true;
   } catch {
     return false;
