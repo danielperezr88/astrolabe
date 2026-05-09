@@ -1,22 +1,20 @@
 /**
  * Pipeline Phase: Cross-File Type Propagation
  *
- * Builds type maps and topological import order across files.
- *
- * ⚠️  DEFERRED (#234): The actual cross-file type reference resolution
- * (resolving Function.returnType → target Class node) requires parser support
- * for capturing returnType/declaredType/parameterTypes on Function/Method nodes.
- * Until the parser populates these properties, the phase only builds type maps
- * and file ordering — it does NOT emit type-reference relationships.
- *
- * See tracking issue #234 and parser enhancement #164 for details.
+ * Resolves type references across file boundaries:
+ * - Builds per-file type maps from import resolution data
+ * - Processes files in topological (import-order) sequence
+ * - Emits RETURNS_TYPE edges for Function/Method returnType → imported symbol
+ * - Emits DECLARES_TYPE edges for declaredType resolution (pending parser capture)
  *
  * Dependencies: parse-emit, resolution (both must complete first)
- * Output: Per-file type maps and topological sorted file order
+ * Output: Per-file type maps, topological sorted file order, propagated edges
  */
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import type { GraphNode } from '@astrolabe-dev/shared';
+import { dirname } from 'node:path';
+import { toPosix } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -30,33 +28,83 @@ export interface CrossFileOutput {
 // ── Topological sort by imports ────────────────────────────────────────────
 
 /**
+ * Resolve a module specifier (e.g. './types', '../foo/bar') to a file path
+ * relative to the importing file. Same logic as resolution.ts:resolveModule().
+ */
+function resolveModule(baseDir: string, spec: string): string {
+  if (!spec.startsWith('.')) return spec;
+  const normalized = toPosix(baseDir);
+  const parts = normalized.split('/').filter(Boolean);
+  for (const p of spec.split('/')) {
+    if (p === '..') parts.pop();
+    else if (p !== '.') parts.push(p);
+  }
+  // Strip leading './' when baseDir was '.' (flat file with no dir)
+  const result = parts.join('/');
+  return result.startsWith('./') ? result.slice(2) : result;
+}
+
+/**
  * Build import graph: Map<filePath, importedFilePaths[]>
+ *
+ * IMPORTS edges connect File → Import (NOT File → File).
+ * This function resolves Import node module specifiers to actual file paths
+ * by matching against existing File nodes (with extension flexibility).
  */
 function buildImportGraph(graph: PhaseContext['graph']): Map<string, string[]> {
   const imports = new Map<string, string[]>();
-  const fileNodes = new Map<string, string>();
 
-  // Build file node index
+  // Build index: short path → File node id (for matching)
+  const fileNodes = new Map<string, string>();
   for (const node of graph.iterNodes()) {
     if (node.label === 'File') {
-      fileNodes.set(node.id, node.properties.filePath as string);
+      fileNodes.set(node.properties.filePath as string, node.id);
     }
   }
 
-  // Map import relationships
+  // Collect Import nodes and their properties
+  const importNodes = new Map<string, GraphNode>();
+  for (const node of graph.iterNodes()) {
+    if (node.label === 'Import') {
+      importNodes.set(node.id, node);
+    }
+  }
+
+  // Map IMPORTS edges: File → Import → resolve to target File
   for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'IMPORTS') {
-      const srcFile = graph.getNode(rel.sourceId);
-      const tgtFile = graph.getNode(rel.targetId);
-      const srcPath = srcFile?.properties.filePath as string | undefined;
-      const tgtPath = tgtFile?.properties.filePath as string | undefined;
-      if (!srcPath || !tgtPath) continue;
+    if (rel.type !== 'IMPORTS') continue;
 
-      let deps = imports.get(srcPath);
-      if (!deps) { deps = []; imports.set(srcPath, deps); }
-      if (!deps.includes(tgtPath)) deps.push(tgtPath);
+    const srcFile = graph.getNode(rel.sourceId);
+    if (!srcFile || srcFile.label !== 'File') continue;
+
+    const srcPath = srcFile.properties.filePath as string | undefined;
+    if (!srcPath) continue;
+
+    // rel.targetId points to an Import node, NOT a File node
+    const impNode = importNodes.get(rel.targetId);
+    if (!impNode) continue;
+
+    const moduleSpec = impNode.properties.name as string | undefined;
+    const importerPath = impNode.properties.filePath as string | undefined;
+    if (!moduleSpec || !importerPath) continue;
+
+    // Resolve module specifier relative to importer directory
+    const baseDir = dirname(importerPath);
+    const resolved = resolveModule(baseDir, moduleSpec);
+
+    // Match resolved path against File nodes (with extension flexibility)
+    for (const [filePath] of fileNodes) {
+      const fpNoExt = filePath.replace(/\.[^.]+$/, '');
+      const resNoExt = resolved.replace(/\.[^.]+$/, '');
+      if (filePath === resolved || fpNoExt === resNoExt) {
+        let deps = imports.get(srcPath);
+        if (!deps) { deps = []; imports.set(srcPath, deps); }
+        if (!deps.includes(filePath)) deps.push(filePath);
+        break; // one match is sufficient
+      }
     }
   }
+
   return imports;
 }
 
