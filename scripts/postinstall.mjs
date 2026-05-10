@@ -140,8 +140,12 @@ async function main() {
 
   // Step 2: Tree-sitter WASM grammar verification (non-blocking)
   console.log('');
-  const { default: verifyGrammars } = await import('./build-grammars.mjs');
-  await verifyGrammars();
+  try {
+    const { default: verifyGrammars } = await import('./build-grammars.mjs');
+    await verifyGrammars();
+  } catch {
+    console.log('[astrolabe] Grammar verification skipped (build-grammars.mjs not available).');
+  }
 }
 
 main();
