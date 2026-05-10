@@ -5,6 +5,9 @@
  * provide API-level analysis beyond basic symbol queries.
  */
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import type { KnowledgeGraph } from '../core/types.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -300,25 +303,6 @@ export async function apiImpact(graph: KnowledgeGraph, symbolName: string, repoP
 
 // ── Consumer field access extraction ────────────────────────────────────────
 
-// Lazy imports for file I/O (only loaded when repoPath is provided)
-let _readFileFn: ((path: string, encoding: string) => Promise<string>) | undefined;
-let _joinPathFn: ((...parts: string[]) => string) | undefined;
-
-function getReadFile(): (path: string, encoding: string) => Promise<string> {
-  if (!_readFileFn) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _readFileFn = require('node:fs/promises').readFile;
-  }
-  return _readFileFn!;
-}
-function getJoinPath(): (...parts: string[]) => string {
-  if (!_joinPathFn) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _joinPathFn = require('node:path').join;
-  }
-  return _joinPathFn!;
-}
-
 /**
  * Variable names commonly used to hold HTTP response data after fetch/axios calls.
  * We scan for member access on these identifiers to detect what fields consumers read.
@@ -448,13 +432,10 @@ export async function shapeCheck(
       consumersByFile.set(fn.filePath, fns);
     }
 
-    const readFile = getReadFile();
-    const joinPath = getJoinPath();
-
     for (const [fp, fns] of consumersByFile) {
       let content: string;
       try {
-        content = await readFile(joinPath(repoPath, fp), 'utf-8');
+        content = await readFile(join(repoPath, fp), 'utf-8');
       } catch {
         continue;
       }
