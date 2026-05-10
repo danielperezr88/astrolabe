@@ -1,4 +1,7 @@
 export { startMcpServer } from './server.js';
+export type { McpServerOptions } from './server.js';
+export { StreamableHttpTransport } from './http-transport.js';
+export type { StreamableHttpTransportOptions } from './http-transport.js';
 export { loadRegistry, saveRegistry, removeRepo, getGitRemote, findEntryWithSiblingWarning } from './registry.js';
 export type { RegistryEntry } from './registry.js';
 export {
