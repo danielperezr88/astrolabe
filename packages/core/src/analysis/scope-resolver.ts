@@ -512,29 +512,38 @@ export const SCOPE_RESOLVERS = new Map<SupportedLanguage, ScopeResolver>([
 
 // ── Index builder ──────────────────────────────────────────────────────────
 
-function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
+function buildScopeIndex(graph: KnowledgeGraph, incremental?: { changedPaths: Set<string>; addedPaths: Set<string> }): ScopeResolutionIndex {
   const index: ScopeResolutionIndex = {
     classScopes: new Map(),
     moduleScopes: new Map(),
     typeBindings: new Map(),
   };
 
+  // #632: In incremental mode, only index affected files. Unchanged files'
+  // scope data is already correct from the previous full analysis.
+  const affected = incremental
+    ? new Set([...incremental.changedPaths, ...incremental.addedPaths])
+    : null;
+
   // #420: Build per-file node index ONCE — O(N) instead of O(N²)
   const nodesByFile = new Map<string, GraphNode[]>();
   for (const node of graph.iterNodes()) {
     const fp = node.properties.filePath as string;
-    if (fp) {
-      let arr = nodesByFile.get(fp);
-      if (!arr) { arr = []; nodesByFile.set(fp, arr); }
-      arr.push(node);
-    }
+    if (!fp) continue;
+    // #632: Skip nodes from unchanged files
+    if (affected && !affected.has(fp)) continue;
+    let arr = nodesByFile.get(fp);
+    if (!arr) { arr = []; nodesByFile.set(fp, arr); }
+    arr.push(node);
   }
 
-  // Build module scopes (one per file)
+  // Build module scopes (one per file) — only for affected files
   for (const node of graph.iterNodes()) {
     if (node.label !== 'File') continue;
     const fp = (node.properties.filePath as string) ?? '';
     if (!fp) continue;
+    // #632: Skip unchanged files
+    if (affected && !affected.has(fp)) continue;
 
     if (!index.moduleScopes.has(fp)) {
       index.moduleScopes.set(fp, {
@@ -558,6 +567,8 @@ function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
     const alias = (node.properties.alias as string) ?? (node.properties.name as string) ?? '';
     const target = (node.properties.target as string) ?? (node.properties.importSource as string) ?? '';
     if (!fp || !alias || !target) continue;
+    // #632: Only index imports from affected files
+    if (affected && !affected.has(fp)) continue;
 
     let scope = index.moduleScopes.get(fp);
     if (!scope) {
@@ -573,6 +584,8 @@ function buildScopeIndex(graph: KnowledgeGraph): ScopeResolutionIndex {
       const name = (node.properties.name as string) ?? '';
       const fp = (node.properties.filePath as string) ?? '';
       if (!name || !fp) continue;
+      // #632: Only index type bindings from affected files
+      if (affected && !affected.has(fp)) continue;
       index.typeBindings.set(`${fp}:${name}`, {
         symbolName: name,
         filePath: fp,
@@ -596,9 +609,21 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
   name: 'scope-resolution',
   dependencies: ['resolution'],
 
+  // #632: Skip if incremental and no files changed
+  shouldSkip(context: PhaseContext): boolean {
+    const inc = context.incremental;
+    if (!inc?.isIncremental) return false;
+    return inc.changedPaths.size + inc.addedPaths.size === 0;
+  },
+
   execute(context: PhaseContext): ScopeResolutionOutput {
-    const { graph } = context;
-    const index = buildScopeIndex(graph);
+    const { graph, incremental } = context;
+    const index = buildScopeIndex(
+      graph,
+      incremental?.isIncremental
+        ? { changedPaths: incremental.changedPaths, addedPaths: incremental.addedPaths }
+        : undefined,
+    );
     let edgeCount = 0;
     let resolverCount = 0;
 

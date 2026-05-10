@@ -42,11 +42,27 @@ function resolveConfidence(exactMatch: boolean, isVariadic: boolean): number {
 
 export function resolveCalls(
   graph: KnowledgeGraph,
+  incremental?: { changedPaths: Set<string>; addedPaths: Set<string> },
 ): CallResolutionOutput {
   // #364: Work from existing CALLS edges — enhance with classification and confidence
   const edges: Array<{ id: string; sourceId: string; targetId: string; type: string }> = [];
+  // #632: In incremental mode, only process CALLS edges involving changed-file symbols.
+  // Edges between unchanged files are already classified from the previous run.
+  const affected = incremental
+    ? new Set([...incremental.changedPaths, ...incremental.addedPaths])
+    : null;
+
   for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'CALLS') edges.push(rel);
+    if (rel.type !== 'CALLS') continue;
+    // #632: Skip edges between unchanged files
+    if (affected) {
+      const sourceNode = graph.getNode(rel.sourceId);
+      const targetNode = graph.getNode(rel.targetId);
+      const srcFp = sourceNode?.properties.filePath as string | undefined;
+      const tgtFp = targetNode?.properties.filePath as string | undefined;
+      if (srcFp && tgtFp && !affected.has(srcFp) && !affected.has(tgtFp)) continue;
+    }
+    edges.push(rel);
   }
 
   let exactMatches = 0;
@@ -113,7 +129,19 @@ export const callResolutionPhase: PhaseDefinition<CallResolutionOutput> = {
   name: 'call-resolution',
   dependencies: ['resolution'],
 
+  // #632: Skip if incremental and no changed files (CALLS edges unchanged)
+  shouldSkip(context: PhaseContext): boolean {
+    const inc = context.incremental;
+    if (!inc?.isIncremental) return false;
+    return inc.changedPaths.size + inc.addedPaths.size === 0;
+  },
+
   execute(context: PhaseContext): CallResolutionOutput {
-    return resolveCalls(context.graph);
+    return resolveCalls(
+      context.graph,
+      context.incremental?.isIncremental
+        ? { changedPaths: context.incremental.changedPaths, addedPaths: context.incremental.addedPaths }
+        : undefined,
+    );
   },
 };

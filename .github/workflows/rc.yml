@@ -1,12 +1,22 @@
 # Release Candidate Pipeline — fires on every push to staging.
 # Calculates the next RC version, builds Docker image, publishes to GHCR,
 # creates a GitHub pre-release with auto-generated notes.
+#
+# Supports dry-run mode via workflow_dispatch for pipeline validation
+# without shipping (#623).
 
 name: Release Candidate
 
 on:
   push:
     branches: [staging]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — skip publish, push, and release steps (validate pipeline only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write       # push RC tags + create pre-release
@@ -18,10 +28,28 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # ── Check trigger + dry-run flag ────────────────────────────────────────
+  check:
+    name: Check trigger
+    runs-on: ubuntu-latest
+    outputs:
+      dry_run: ${{ steps.check.outputs.dry_run }}
+    steps:
+      - id: check
+        run: |
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          echo "dry_run=${DRY_RUN:-false}" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — will validate pipeline without shipping."
+          else
+            echo "Proceeding with RC release."
+          fi
+
   # ── Gate: tests must pass before we build an RC ─────────────────────────
   test:
     name: Tests (RC gate)
     runs-on: ubuntu-latest
+    needs: check
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,7 +71,7 @@ jobs:
   release-candidate:
     name: Build RC
     runs-on: ubuntu-latest
-    needs: test
+    needs: [check, test]
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -80,11 +108,11 @@ jobs:
             type=raw,value=rc
             type=sha,prefix=
 
-      - name: Build and push Docker image
+      - name: Build${{ needs.check.outputs.dry_run != 'true' && ' and push' || '' }} Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ needs.check.outputs.dry_run != 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -94,6 +122,7 @@ jobs:
 
       # ── Security: scan Docker image ──────────────────────────────────────
       - name: Scan image with Trivy
+        if: needs.check.outputs.dry_run != 'true'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}'
@@ -103,21 +132,67 @@ jobs:
 
       # ── Sign the image ──────────────────────────────────────────────────
       - name: Install Cosign
+        if: needs.check.outputs.dry_run != 'true'
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image with GitHub OIDC
+        if: needs.check.outputs.dry_run != 'true'
         run: |
           cosign sign --yes \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
         env:
           COSIGN_EXPERIMENTAL: '1'
 
+      # ── SBOM + Provenance ───────────────────────────────────────────────
+      - name: Generate SBOM (Syft)
+        if: needs.check.outputs.dry_run != 'true'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attest SBOM with Cosign
+        if: needs.check.outputs.dry_run != 'true'
+        run: |
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+
+      - name: Sign SBOM artifact
+        if: needs.check.outputs.dry_run != 'true'
+        run: |
+          cosign sign-blob --yes --bundle sbom.bundle \
+            --output-signature sbom.spdx.json.sig \
+            --output-certificate sbom.spdx.json.cert \
+            sbom.spdx.json
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+
+      - name: Upload SBOM as release artifact
+        if: needs.check.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-rc-${{ steps.version.outputs.version }}
+          path: |
+            sbom.spdx.json
+            sbom.spdx.json.sig
+            sbom.spdx.json.cert
+          retention-days: 90
+
       # ── Push RC Git tag ─────────────────────────────────────────────────
       - name: Push RC tag
+        if: needs.check.outputs.dry_run != 'true'
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           git tag "$TAG"
           git push origin "$TAG"
+
+      - name: Dry run — skip RC tag push
+        if: needs.check.outputs.dry_run == 'true'
+        run: |
+          echo "🔲 DRY RUN: Would push RC tag v${{ steps.version.outputs.version }}"
 
       # ── GitHub pre-release ──────────────────────────────────────────────
       - name: Generate release notes
@@ -131,6 +206,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub pre-release
+        if: needs.check.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -155,11 +231,39 @@ jobs:
           NOTESEOF
           )"
 
+      - name: Dry run — skip GitHub pre-release
+        if: needs.check.outputs.dry_run == 'true'
+        run: |
+          echo "🔲 DRY RUN: Would create GitHub pre-release for v${{ steps.version.outputs.version }}"
+          echo "🔲 DRY RUN: Release notes preview:"
+          echo "${{ steps.notes.outputs.notes }}"
+
+  # ── Dry run summary ──────────────────────────────────────────────────
+  dry-run-summary:
+    name: Dry Run Summary
+    runs-on: ubuntu-latest
+    needs: [check, test, release-candidate]
+    if: needs.check.outputs.dry_run == 'true' && always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## 🔲 Dry Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "RC pipeline validated successfully without shipping." >> "$GITHUB_STEP_SUMMARY"
+          echo "All build and test steps passed." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Steps skipped:" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker push (image was built only)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker image signing" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SBOM generation" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Git tag push" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub pre-release creation" >> "$GITHUB_STEP_SUMMARY"
+
   # ── Notify on failure ──────────────────────────────────────────────────
   notify-failure:
     name: Notify on Failure
     runs-on: ubuntu-latest
-    needs: [test, release-candidate]
+    needs: [check, test, release-candidate]
     if: failure() && always()
     permissions:
       issues: write

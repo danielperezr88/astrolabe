@@ -32,6 +32,27 @@ docker pull ghcr.io/danielperezr88/astrolabe
 docker run -p 4747:4747 -v $(pwd):/workspace ghcr.io/danielperezr88/astrolabe
 ```
 
+### Verify image signatures
+
+Astrolabe Docker images are signed with [Cosign](https://github.com/sigstore/cosign) (keyless, via GitHub OIDC) and include SPDX SBOM attestations.
+
+```bash
+# Install Cosign (if not already installed)
+# macOS: brew install cosign
+# Linux: go install github.com/sigstore/cosign/v2/cmd/cosign@latest
+
+COSIGN_EXPERIMENTAL=1 cosign verify \
+  --certificate-identity "https://github.com/danielperezr88/astrolabe/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/danielperezr88/astrolabe:latest
+
+# Verify SBOM attestation
+COSIGN_EXPERIMENTAL=1 cosign verify-attestation --type spdxjson \
+  --certificate-identity "https://github.com/danielperezr88/astrolabe/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/danielperezr88/astrolabe:latest
+```
+
 ### CLI (npm)
 
 ```bash
@@ -82,7 +103,9 @@ Alternatively, open `packages/vscode` in VS Code and press F5 (Extension Develop
 | `astrolabe augment <pattern>` | Enrich search results with graph context |
 | `astrolabe list` | List all symbols in the graph (`--label` to filter) |
 
-`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--skip-agents-md`, `--skills`, `--max-file-size`
+`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--skip-agents-md`, `--skills`, `--max-file-size`, `--profile`
+
+> **Concurrency note**: Running `astrolabe analyze` while the MCP server (`serve-mcp`) is active on the same repo will be blocked to prevent SQLite WAL corruption. Stop the MCP server first, or analyze a different repository.
 
 ### Server & Integration
 

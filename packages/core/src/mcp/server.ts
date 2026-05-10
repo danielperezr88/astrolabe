@@ -25,6 +25,7 @@ import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
+import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -80,19 +81,22 @@ interface RepoContext {
   store: SqliteStore;
   fts: FtsSearch;
   entry: RegistryEntry;
+  /** Database lock — prevents concurrent CLI writes while MCP server is active. */
+  lock: { release(): void } | null;
   /** Cached knowledge graph — invalidate with invalidateGraph() on changes (#176). */
   graph?: import('../core/types.js').KnowledgeGraph;
   loadGraph(): import('../core/types.js').KnowledgeGraph;
   invalidateGraph(): void;
 }
 
-function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry): RepoContext {
+function createRepoContext(store: SqliteStore, fts: FtsSearch, entry: RegistryEntry, lock: { release(): void } | null): RepoContext {
   let lastMtime = 0;
 
   return {
     store,
     fts,
     entry,
+    lock,
     graph: undefined,
     loadGraph() {
       // #240: Check DB file mtime to detect stale cache after external re-analysis
@@ -212,7 +216,7 @@ class LocalBackend {
     // Open connection
     const store = createSqliteStore(entry.dbPath);
     const fts = createFtsSearch(entry.dbPath);
-    ctx = createRepoContext(store, fts, entry);
+    ctx = createRepoContext(store, fts, entry, null);
     this.repos.set(name, ctx);
     this.lastAccess.set(name, Date.now());
     return ctx;
@@ -488,10 +492,21 @@ class LocalBackend {
     if (!targetNode) return { error: `Target "${target}" not found.` };
 
     // Pre-build adjacency index: Map<nodeId, { neighborId, type, confidence }[]> (#119)
+    // Also track unfiltered edge counts per node for untraceable detection (#695):
+    // edges that exist but were filtered by confidence → UNKNOWN risk, not safe.
     const adj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
+    const edgePresence = new Map<string, { upstream: number; downstream: number }>();
     for (const rel of graph.iterRelationships()) {
       // #290: Exclude synthetic STEP_IN_PROCESS edges — being in same process ≠ dependency
       if (rel.type === 'STEP_IN_PROCESS') continue;
+      // Track unfiltered edge counts before confidence filter
+      const srcP = edgePresence.get(rel.sourceId) ?? { upstream: 0, downstream: 0 };
+      const tgtP = edgePresence.get(rel.targetId) ?? { upstream: 0, downstream: 0 };
+      srcP.downstream++;
+      tgtP.upstream++;
+      edgePresence.set(rel.sourceId, srcP);
+      edgePresence.set(rel.targetId, tgtP);
+      // Confidence filter for actual traversal
       if (rel.confidence < minConfidence) continue;
       // Upstream: target <- source (who calls me)
       if (direction === 'upstream') {
@@ -568,12 +583,23 @@ class LocalBackend {
       depthGroups[key].items.push(item);
     }
 
+    // #643 Pitfall 4: When affected is empty, check if the target had edges
+    // that were filtered out (by confidence or direction). If edges exist
+    // but couldn't be traced → UNKNOWN risk, not safe.
+    // Uses pre-built edgePresence map from adjacency pass (#695): O(1) lookup
+    // instead of a second O(E) scan.
+    const presence = affected.length === 0 ? edgePresence.get(targetNode.id) : undefined;
+    const untraceable = presence
+      ? (direction === 'upstream' ? presence.upstream : presence.downstream) > 0
+      : false;
+
     return {
       target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
       direction,
       affected_count: affected.length,
       truncated, // #248: true if result cap reached
       depth_groups: depthGroups,
+      risk: untraceable ? 'UNKNOWN' : undefined,
     };
   }
 
@@ -638,11 +664,18 @@ class LocalBackend {
 
     const crossCommunityCount = affectedProcesses.filter((p) => p.processType === 'cross_community').length;
 
+    // #643 Pitfall 4: When changed symbols exist but no processes are affected,
+    // report UNKNOWN instead of LOW. Symbol tracing may be incomplete.
+    const riskLevel = affectedProcesses.length > 3 ? 'high'
+      : affectedProcesses.length > 0 ? 'medium'
+      : changedNodeIds.size > 0 ? 'unknown'
+      : 'low';
+
     return {
       changed_files: diffFiles,
       changed_count: diffFiles.length,
       affected_count: affectedProcesses.length,
-      risk_level: affectedProcesses.length > 3 ? 'high' : affectedProcesses.length > 0 ? 'medium' : 'low',
+      risk_level: riskLevel,
       changed_symbols: changedSymbols,
       affected_processes: affectedProcesses.map((p) => p.name),
       cross_community_affected: crossCommunityCount,
@@ -1324,7 +1357,7 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       const name = requireString(params, 'name');
       const ctx = backend.getRepo(params.repo as string);
       const graph = ctx.loadGraph();
-      const impact = apiImpact(graph, name);
+      const impact = await apiImpact(graph, name, ctx.entry.path);
       if (impact.length === 0) return { content: [{ type: 'text', text: `Symbol "${name}" not found.` }] };
       const lines: string[] = [];
       for (const imp of impact) {
@@ -1339,6 +1372,10 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
         if (imp.tools.length > 0) {
           lines.push('Tools:');
           for (const t of imp.tools) lines.push(`  ${t.type}: ${t.name}`);
+        }
+        if (imp.shapeDrift.length > 0) {
+          lines.push('Shape Drift:');
+          for (const sd of imp.shapeDrift) lines.push(`  ${sd.severity}: ${sd.field}`);
         }
       }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -1360,9 +1397,9 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       const path = requireString(params, 'path');
       const ctx = backend.getRepo(params.repo as string);
       const graph = ctx.loadGraph();
-      const mismatches = shapeCheck(graph, path);
+      const mismatches = await shapeCheck(graph, path, ctx.entry.path);
       if (mismatches.length === 0) return { content: [{ type: 'text', text: `No shape mismatches detected for route "${path}".` }] };
-      const lines = mismatches.map((m) => `  ${m.severity.toUpperCase()}: ${m.field}`);
+      const lines = mismatches.map((m) => `  ${m.severity.toUpperCase()}: ${m.field} — ${m.reason}`);
       return { content: [{ type: 'text', text: `Shape Check for "${path}" (${mismatches.length} issues):\n${lines.join('\n')}` }] };
     },
   },
@@ -1757,6 +1794,54 @@ Requires ASTROLABE_API_KEY or OPENAI_API_KEY environment variable to be set for 
         }
         throw err;
       }
+    },
+  },
+
+  'astrolabe.generate_diagram': {
+    name: 'astrolabe.generate_diagram',
+    description: `Generate Mermaid architecture diagrams from the knowledge graph.
+
+DIAGRAM TYPES:
+- community: Cluster subgraphs showing module boundaries, member symbols, and coupling edges
+- process: Execution flow diagrams from entry points through step-by-step call traces
+- dependency: Directed graph of CALLS, IMPORTS, EXTENDS, IMPLEMENTS, USES relationships
+- class_hierarchy: Inheritance tree showing EXTENDS/IMPLEMENTS between classes and interfaces`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        diagram_type: { type: 'string', enum: ['community', 'process', 'dependency', 'class_hierarchy'], description: 'Type of diagram to generate' },
+        repo: { type: 'string', description: 'Repository name' },
+        cluster_id: { type: 'string', description: 'Filter community diagram to a specific cluster (by id or name)' },
+        process_id: { type: 'string', description: 'Filter process diagram to a specific process (by id or name)' },
+        format: { type: 'string', enum: ['mermaid', 'markdown'], description: 'Output format. "mermaid" returns raw diagram code. "markdown" wraps in documentation.', default: 'mermaid' },
+        max_nodes: { type: 'number', description: 'Maximum nodes to include (default: 200 for community, 100 for others)' },
+        min_confidence: { type: 'number', description: 'Minimum edge confidence threshold (default: 0.5)' },
+      },
+      required: ['diagram_type'],
+    },
+    handler: async (params) => {
+      const diagramType = requireString(params, 'diagram_type') as DiagramType;
+      const format = (params.format as string) ?? 'mermaid';
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      const opts: DiagramOptions = {
+        type: diagramType,
+        clusterId: params.cluster_id as string | undefined,
+        processId: params.process_id as string | undefined,
+        maxNodes: params.max_nodes as number | undefined,
+        minConfidence: params.min_confidence as number | undefined,
+      };
+
+      if (format === 'markdown') {
+        const repoName = (params.repo as string) ?? ctx.entry.name;
+        const doc = generateMarkdownDoc(graph, opts, repoName);
+        return { content: [{ type: 'text', text: doc }] };
+      }
+
+      const result = generateDiagram(graph, opts);
+      const statsLine = `// ${result.stats.nodeCount} nodes, ${result.stats.edgeCount} edges`;
+      return { content: [{ type: 'text', text: result.diagram + '\n\n' + statsLine }] };
     },
   },
 };
@@ -2167,6 +2252,19 @@ Summarize your findings:
     const repo = args.repoPath ?? '';
     const format = args.format ?? 'mermaid';
     const repoLabel = repo ? ` "${repo}"` : '';
+    const repoArg = repo ? `, repo: "${repo}"` : '';
+    const mermaidStep = format === 'mermaid'
+      ? `**Step 5 — Generate Mermaid Diagram**
+Call: \`astrolabe.generate_diagram({diagram_type: "community"${repoArg}})\`
+This produces a Mermaid graph with communities as subgraphs, member symbols as nodes,
+and CALLS/IMPORTS/EXTENDS/IMPLEMENTS relationships as edges.
+
+For process flows, call: \`astrolabe.generate_diagram({diagram_type: "process"${repoArg}})\`
+For dependency graphs, call: \`astrolabe.generate_diagram({diagram_type: "dependency"${repoArg}})\`
+For class hierarchies, call: \`astrolabe.generate_diagram({diagram_type: "class_hierarchy"${repoArg}})\``
+      : `**Step 5 — Generate Markdown Documentation**
+Call: \`astrolabe.generate_diagram({diagram_type: "community", format: "markdown"${repoArg}})\`
+This produces a Markdown document with architecture overview, per-cluster details, and stats.`;
     return [
       {
         role: 'user',
@@ -2192,18 +2290,7 @@ Read resource: \`astrolabe://repo/{name}/schema\` for available node/edge types.
 Read resource: \`astrolabe://repo/{name}/processes\` for execution flows.
 For important processes, read: \`astrolabe://repo/{name}/process/{processName}\` for step-by-step traces.
 
-**Step 5 — Generate ${format === 'mermaid' ? 'Mermaid Diagram' : 'Markdown Documentation'}**
-${format === 'mermaid'
-    ? `Create a Mermaid architecture diagram showing:
-- Modules/clusters as subgraphs
-- Key symbols (functions, classes, routes) as nodes
-- CALLS, IMPORTS, EXTENDS relationships as directed edges
-- Data flow between processes`
-    : `Create a structured Markdown document with:
-- Architecture overview section
-- Per-cluster documentation (purpose, entry points, key dependencies)
-- Cross-cluster dependency summary
-- Process flow descriptions`}
+${mermaidStep}
 
 **Step 6 — Document Each Cluster**
 For each cluster found in Step 3, describe:

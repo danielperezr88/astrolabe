@@ -32,6 +32,31 @@ const DEFAULT_LLM_CONFIG: LLMConfig = {
   temperature: 0,
 };
 
+// ── Token Budget (#645) ──────────────────────────────────────────────────────
+
+/** Rough estimate: ~4 chars per token for English text. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Context window sizes for common models (input tokens). */
+const MODEL_INPUT_LIMITS: Record<string, number> = {
+  'gpt-4': 8192,
+  'gpt-4-turbo': 128_000,
+  'gpt-4o': 128_000,
+  'gpt-4o-mini': 128_000,
+  'gpt-3.5-turbo': 16_384,
+  'gpt-3.5-turbo-16k': 16_384,
+};
+
+function getInputLimit(model: string): number {
+  if (MODEL_INPUT_LIMITS[model]) return MODEL_INPUT_LIMITS[model];
+  for (const [key, limit] of Object.entries(MODEL_INPUT_LIMITS)) {
+    if (model.startsWith(key)) return limit;
+  }
+  return 8000;
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -191,15 +216,41 @@ export async function chat(
     // Retrieve relevant context from knowledge graph
     const { sources, context: retrievalContext } = retrieveContext(session.fts, query);
 
-    // Build augmented messages
-    const augmentedMessages: ChatMessage[] = [
+    // #645: Truncate conversation history to fit model's input token budget.
+    // System prompts + retrieval context are always kept. User/assistant
+    // messages are dropped oldest-first until total fits within the budget.
+    const model = options?.llm?.model ?? DEFAULT_LLM_CONFIG.model;
+    const completionBudget = options?.llm?.maxTokens ?? DEFAULT_LLM_CONFIG.maxTokens;
+    const inputLimit = getInputLimit(model) - completionBudget;
+    const systemTokens = estimateTokens(SYSTEM_PROMPT) + estimateTokens(`Retrieved code context:\n${retrievalContext}`);
+    let truncatedMessages: ChatMessage[] = [];
+    let runningTokens = systemTokens;
+    // Walk history newest-to-oldest, keeping messages that fit
+    const reversedMessages = [...messages].reverse();
+    for (const msg of reversedMessages) {
+      const t = estimateTokens(msg.content);
+      if (runningTokens + t <= inputLimit) {
+        runningTokens += t;
+        truncatedMessages.unshift(msg);
+      } else {
+        break; // budget exhausted — drop remaining older messages
+      }
+    }
+
+    const truncatedAugmented: ChatMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'system', content: `Retrieved code context:\n${retrievalContext}` },
-      ...messages,
     ];
+    if (truncatedMessages.length < messages.length) {
+      truncatedAugmented.push({
+        role: 'system',
+        content: `[${messages.length - truncatedMessages.length} older messages truncated to fit context window]`,
+      });
+    }
+    truncatedAugmented.push(...truncatedMessages);
 
     // Call LLM
-    const response = await callLLM(augmentedMessages, options?.llm);
+    const response = await callLLM(truncatedAugmented, options?.llm);
 
     return {
       content: response.content,

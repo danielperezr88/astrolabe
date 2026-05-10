@@ -226,7 +226,21 @@ function installSkillFilesToEditors(repoPath: string): void {
   }
 }
 
-// ── Community Skills (#267) ─────────────────────────────────────────────────
+// ── Community Skills (#267, #631) ────────────────────────────────────────────
+
+/** Rich per-community data for skill file generation (#631). */
+interface CommunityData {
+  name: string;
+  id: string;
+  cohesion: number;
+  symbolCount: number;
+  members: Array<{ id: string; label: string; name: string; filePath: string }>;
+  entryPoints: Array<{ name: string; label: string; filePath: string }>;
+  keySymbols: Array<{ name: string; connections: number }>;
+  keyFiles: Array<{ path: string; symbolCount: number }>;
+  processes: Array<{ name: string; type: string; steps: number }>;
+  crossCommunityLinks: Array<{ direction: 'inbound' | 'outbound'; target: string; symbol: string; edgeType: string }>;
+}
 
 function generateCommunitySkills(repoPath: string, opts: GenerateOptions): number {
   // #466: Only clean auto-generated files, preserve user customizations
@@ -239,52 +253,275 @@ function generateCommunitySkills(repoPath: string, opts: GenerateOptions): numbe
   mkdirSync(generatedDir, { recursive: true });
 
   const graph = opts.graph!;
-  const communities = new Map<string, string[]>();
 
-  // #336: Pre-build MEMBER_OF index for O(1) lookup (was O(S×R))
-  const memberOf = new Map<string, string>();
-  for (const rel of graph.iterRelationships()) {
-    if (rel.type === 'MEMBER_OF') {
-      const target = graph.getNode(rel.targetId);
-      if (target) memberOf.set(rel.sourceId, (target.properties.name as string) ?? target.id);
-    }
-  }
+  // ── Build indexes for O(1) lookup ──
 
-  // Collect communities and their symbols
+  // memberId → communityData (#631)
+  const communityNodes = new Map<string, CommunityData>();
   for (const node of graph.iterNodes()) {
     if (node.label === 'Community') {
       const name = (node.properties.name as string) ?? node.id;
-      if (!communities.has(name)) communities.set(name, []);
-    } else if (['Function', 'Class', 'Method', 'Interface'].includes(node.label)) {
-      const symbolName = (node.properties.name as string) ?? node.id;
-      const cName = memberOf.get(node.id);
-      if (cName) {
-        if (!communities.has(cName)) communities.set(cName, []);
-        communities.get(cName)!.push(symbolName);
+      communityNodes.set(node.id, {
+        name,
+        id: node.id,
+        cohesion: (node.properties.cohesion as number) ?? 0,
+        symbolCount: (node.properties.symbolCount as number) ?? 0,
+        members: [],
+        entryPoints: [],
+        keySymbols: [],
+        keyFiles: [],
+        processes: [],
+        crossCommunityLinks: [],
+      });
+    }
+  }
+
+  // memberId → communityId (#336)
+  const memberToCommunity = new Map<string, string>();
+  // communityId → memberIds
+  const communityMemberIds = new Map<string, Set<string>>();
+
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type === 'MEMBER_OF') {
+      memberToCommunity.set(rel.sourceId, rel.targetId);
+      if (!communityMemberIds.has(rel.targetId)) communityMemberIds.set(rel.targetId, new Set());
+      communityMemberIds.get(rel.targetId)!.add(rel.sourceId);
+    }
+  }
+
+  // Collect members per community with metadata (#631)
+  for (const node of graph.iterNodes()) {
+    if (!['Function', 'Class', 'Method', 'Interface'].includes(node.label)) continue;
+    const cId = memberToCommunity.get(node.id);
+    if (!cId) continue;
+    const cd = communityNodes.get(cId);
+    if (!cd) continue;
+    cd.members.push({
+      id: node.id,
+      label: node.label,
+      name: (node.properties.name as string) ?? node.id,
+      filePath: (node.properties.filePath as string) ?? '?',
+    });
+  }
+
+  // ── Enrich with entry points (#631) ──
+
+  for (const rel of graph.iterRelationshipsByType('ENTRY_POINT_OF')) {
+    const cId = memberToCommunity.get(rel.sourceId);
+    if (!cId) continue;
+    const cd = communityNodes.get(cId);
+    if (!cd) continue;
+    const sym = graph.getNode(rel.sourceId);
+    if (sym) {
+      cd.entryPoints.push({
+        name: (sym.properties.name as string) ?? sym.id,
+        label: sym.label,
+        filePath: (sym.properties.filePath as string) ?? '?',
+      });
+    }
+  }
+
+  // ── Key symbols: members with most intra-cluster connections (#631) ──
+
+  for (const [cId, mIds] of communityMemberIds) {
+    const cd = communityNodes.get(cId);
+    if (!cd) continue;
+    const connCount = new Map<string, number>();
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF' || rel.type === 'STEP_IN_PROCESS') continue;
+      if (mIds.has(rel.sourceId) && mIds.has(rel.targetId)) {
+        connCount.set(rel.sourceId, (connCount.get(rel.sourceId) ?? 0) + 1);
+        connCount.set(rel.targetId, (connCount.get(rel.targetId) ?? 0) + 1);
+      }
+    }
+    cd.keySymbols = Array.from(connCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([id, count]) => {
+        const sym = graph.getNode(id);
+        return { name: sym?.properties.name ?? id ?? id, connections: count };
+      });
+  }
+
+  // ── Key files: aggregate filePaths from members (#631) ──
+
+  for (const cd of communityNodes.values()) {
+    const fileMap = new Map<string, number>();
+    for (const m of cd.members) {
+      if (m.filePath && m.filePath !== '?') {
+        fileMap.set(m.filePath, (fileMap.get(m.filePath) ?? 0) + 1);
+      }
+    }
+    cd.keyFiles = Array.from(fileMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([path, symbolCount]) => ({ path, symbolCount }));
+  }
+
+  // ── Processes that include community members (#631) ──
+
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Process') continue;
+    const processName = (node.properties.name as string) ?? node.id;
+    const processType = (node.properties.processType as string) ?? 'intra';
+    const stepCount = (node.properties.stepCount as number) ?? 0;
+    // Check if any STEP_IN_PROCESS involves community members
+    for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+      if (rel.targetId === node.id) {
+        const cId = memberToCommunity.get(rel.sourceId);
+        if (!cId) continue;
+        const cd = communityNodes.get(cId);
+        if (cd && !cd.processes.some((p) => p.name === processName)) {
+          cd.processes.push({ name: processName, type: processType, steps: stepCount });
+        }
       }
     }
   }
 
-  // Generate a SKILL.md per community
+  // ── Cross-community connections (#631) ──
+
+  const couplingTypes = new Set(['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'FETCHES']);
+  for (const rel of graph.iterRelationships()) {
+    if (!couplingTypes.has(rel.type)) continue;
+    const srcCommunity = memberToCommunity.get(rel.sourceId);
+    const tgtCommunity = memberToCommunity.get(rel.targetId);
+    if (!srcCommunity || !tgtCommunity || srcCommunity === tgtCommunity) continue;
+
+    const srcSym = graph.getNode(rel.sourceId);
+    const srcCd = communityNodes.get(srcCommunity);
+    const tgtCd = communityNodes.get(tgtCommunity);
+    if (!srcSym || !srcCd || !tgtCd) continue;
+
+    // Outbound: this community calls another
+    srcCd.crossCommunityLinks.push({
+      direction: 'outbound',
+      target: tgtCd.name,
+      symbol: (srcSym.properties.name as string) ?? srcSym.id,
+      edgeType: rel.type,
+    });
+
+    // Inbound: another community calls into this one
+    const tgtSym = graph.getNode(rel.targetId);
+    if (tgtSym) {
+      tgtCd.crossCommunityLinks.push({
+        direction: 'inbound',
+        target: srcCd.name,
+        symbol: (tgtSym.properties.name as string) ?? tgtSym.id,
+        edgeType: rel.type,
+      });
+    }
+  }
+
+  // ── Generate rich SKILL.md per community (#631) ──
+
   let count = 0;
-  for (const [name, symbols] of communities) {
-    const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const content = [
-      `# ${name} — Module Skill\n`,
-      `**Generated by Astrolabe** | **Repo**: \`${opts.repoName}\`\n`,
-      `\n## Key Symbols (${symbols.length})\n`,
-      symbols.map((s) => `- \`${s}\``).join('\n') || '- _(none)_',
-      `\n## Entry Points\n`,
-      `_detected entry points for this community_`,
-      `\n## How to Navigate\n`,
-      `Use these MCP tools:`,
+  for (const cd of communityNodes.values()) {
+    if (cd.members.length === 0) continue;
+
+    const safeName = cd.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    const lines: string[] = [
+      `# ${cd.name} — Module Skill`,
+      ``,
+      `**Generated by Astrolabe** | **Repo**: \`${opts.repoName}\` | **Cohesion**: ${cd.cohesion.toFixed(2)}`,
+      ``,
+      `## Overview`,
+      ``,
+      `The **${cd.name}** module contains ${cd.members.length} symbols across ${cd.keyFiles.length} file${cd.keyFiles.length === 1 ? '' : 's'}.`,
+      cd.cohesion > 0.5 ? `High internal cohesion (${cd.cohesion.toFixed(2)}) — symbols are tightly coupled.` : cd.cohesion > 0.2 ? `Moderate cohesion (${cd.cohesion.toFixed(2)}) — some symbols are loosely related.` : `Low cohesion (${cd.cohesion.toFixed(2)}) — symbols may belong to different concerns.`,
+    ];
+
+    // ── Key Files ──
+    if (cd.keyFiles.length > 0) {
+      lines.push('', '## Key Files', '');
+      for (const f of cd.keyFiles) {
+        lines.push(`- \`${f.path}\` (${f.symbolCount} symbol${f.symbolCount === 1 ? '' : 's'})`);
+      }
+    }
+
+    // ── Entry Points ──
+    lines.push('', '## Entry Points', '');
+    if (cd.entryPoints.length > 0) {
+      for (const ep of cd.entryPoints) {
+        lines.push(`- **${ep.name}** (${ep.label}) — \`${ep.filePath}\``);
+      }
+    } else {
+      lines.push('_No entry points detected for this community._');
+    }
+
+    // ── Key Symbols ──
+    if (cd.keySymbols.length > 0) {
+      lines.push('', '## Key Symbols', '');
+      for (const ks of cd.keySymbols) {
+        lines.push(`- \`${ks.name}\` (${ks.connections} connections)`);
+      }
+    }
+
+    // ── Processes ──
+    if (cd.processes.length > 0) {
+      lines.push('', '## Execution Flows', '');
+      for (const proc of cd.processes.slice(0, 10)) {
+        lines.push(`- **${proc.name}** (${proc.type}, ${proc.steps} steps)`);
+      }
+      if (cd.processes.length > 10) {
+        lines.push(`- _…and ${cd.processes.length - 10} more_`);
+      }
+    }
+
+    // ── Cross-Community Connections ──
+    if (cd.crossCommunityLinks.length > 0) {
+      lines.push('', '## Cross-Community Connections', '');
+      // Deduplicate: show unique target communities with link count
+      const outbound = cd.crossCommunityLinks.filter((l) => l.direction === 'outbound');
+      const inbound = cd.crossCommunityLinks.filter((l) => l.direction === 'inbound');
+
+      if (outbound.length > 0) {
+        lines.push(`**Depends on**:`);
+        const byTarget = new Map<string, { count: number; types: Set<string> }>();
+        for (const l of outbound) {
+          if (!byTarget.has(l.target)) byTarget.set(l.target, { count: 0, types: new Set() });
+          byTarget.get(l.target)!.count++;
+          byTarget.get(l.target)!.types.add(l.edgeType);
+        }
+        for (const [target, data] of byTarget) {
+          lines.push(`- \`${target}\` (${data.count} link${data.count === 1 ? '' : 's'} via ${Array.from(data.types).join(', ')})`);
+        }
+      }
+
+      if (inbound.length > 0) {
+        lines.push(`**Consumed by**:`);
+        const bySource = new Map<string, { count: number; types: Set<string> }>();
+        for (const l of inbound) {
+          if (!bySource.has(l.target)) bySource.set(l.target, { count: 0, types: new Set() });
+          bySource.get(l.target)!.count++;
+          bySource.get(l.target)!.types.add(l.edgeType);
+        }
+        for (const [source, data] of bySource) {
+          lines.push(`- \`${source}\` (${data.count} link${data.count === 1 ? '' : 's'} via ${Array.from(data.types).join(', ')})`);
+        }
+      }
+    }
+
+    // ── All Members ──
+    lines.push('', `## All Members (${cd.members.length})`, '');
+    for (const m of cd.members.slice(0, 30)) {
+      lines.push(`- ${m.label.padEnd(12)} \`${m.name}\` — \`${m.filePath}\``);
+    }
+    if (cd.members.length > 30) {
+      lines.push(`- _…and ${cd.members.length - 30} more_`);
+    }
+
+    // ── How to Navigate ──
+    lines.push('', '## How to Navigate', '',
+      'Use these MCP tools:',
       `- \`astrolabe.query {"query": "<symbol>"}\` — search symbols`,
       `- \`astrolabe.context {"name": "<symbol>"}\` — full 360° view`,
-      `- \`astrolabe.impact {"scope": "unstaged"}\` — pre-change impact`,
-    ].join('\n');
+      `- \`astrolabe.impact {"target": "<symbol>"}\` — blast radius analysis`,
+      `- \`astrolabe.detect_changes {"scope": "unstaged"}\` — pre-commit impact`,
+    );
 
     const skillPath = join(generatedDir, `${safeName}.md`);
-    atomicWrite(skillPath, content);
+    atomicWrite(skillPath, lines.join('\n'));
     count++;
   }
 

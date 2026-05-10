@@ -9,6 +9,8 @@
  * - MAX_BUFFER_SIZE = 10 MB cap to prevent OOM
  * - Content-Length validation before allocation
  * - Iterative (not recursive) message reading
+ * - INPUT_TIMEOUT_MS = 30s timeout for partial messages (#645)
+ * - Output write error handling (#645)
  */
 
 import { Writable } from 'node:stream';
@@ -17,6 +19,9 @@ import { Writable } from 'node:stream';
 
 /** Maximum message size in bytes to prevent OOM attacks. */
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB
+
+/** #645: Input timeout — close transport if no data received within this window. */
+const INPUT_TIMEOUT_MS = 30_000; // 30 seconds
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -41,18 +46,39 @@ export class McpTransport {
   private framing: Framing = 'unknown';
   private output: Writable;
   private closed = false;
+  private inputTimeout: ReturnType<typeof setTimeout> | null = null;
+  private onError: ((err: Error) => void) | null = null;
 
   constructor(input: NodeJS.ReadableStream, output: NodeJS.WritableStream) {
     this.output = output as Writable;
     this.setupInput(input);
   }
 
+  private resetInputTimeout(): void {
+    if (this.inputTimeout) clearTimeout(this.inputTimeout);
+    // #645: Close transport if no data arrives within INPUT_TIMEOUT_MS
+    // Prevents indefinite hangs from partial messages or broken pipes
+    this.inputTimeout = setTimeout(() => {
+      if (!this.closed) {
+        const err = new Error('Input timeout: no data received in 30s');
+        this.onError?.(err);
+        this.closed = true;
+      }
+    }, INPUT_TIMEOUT_MS);
+  }
+
   private setupInput(input: NodeJS.ReadableStream): void {
     let chunks: Buffer[] = [];
     let totalSize = 0;
 
+    // #645: Start input timeout — cleared on each data chunk
+    this.resetInputTimeout();
+
     input.on('data', (chunk: Buffer) => {
       if (this.closed) return;
+
+      // #645: Reset timeout on each data chunk — connection is alive
+      this.resetInputTimeout();
 
       totalSize += chunk.length;
       if (totalSize > MAX_BUFFER_SIZE) {
@@ -99,10 +125,13 @@ export class McpTransport {
 
     input.on('end', () => {
       this.closed = true;
+      if (this.inputTimeout) clearTimeout(this.inputTimeout);
     });
 
-    input.on('error', () => {
+    input.on('error', (err) => {
       this.closed = true;
+      if (this.inputTimeout) clearTimeout(this.inputTimeout);
+      this.onError?.(err);
     });
   }
 
@@ -205,14 +234,21 @@ export class McpTransport {
 
   /**
    * Write data to output stream in the detected framing format.
+   * #645: Handle write errors — emit to error handler instead of silent failure.
    */
   private write(str: string): void {
-    if (this.framing === 'content-length' || this.framing === 'unknown') {
-      // Default to Content-Length for unknown framing
-      const len = Buffer.byteLength(str, 'utf-8');
-      this.output.write(`Content-Length: ${len}\r\n\r\n${str}`);
-    } else {
-      this.output.write(str + '\n');
+    try {
+      if (this.framing === 'content-length' || this.framing === 'unknown') {
+        // Default to Content-Length for unknown framing
+        const len = Buffer.byteLength(str, 'utf-8');
+        this.output.write(`Content-Length: ${len}\r\n\r\n${str}`);
+      } else {
+        this.output.write(str + '\n');
+      }
+    } catch (err) {
+      // #645: Don't silently drop writes on broken pipe / closed stdout
+      this.onError?.(err instanceof Error ? err : new Error(String(err)));
+      this.closed = true;
     }
   }
 
@@ -221,6 +257,10 @@ export class McpTransport {
    */
   close(): void {
     this.closed = true;
+    if (this.inputTimeout) {
+      clearTimeout(this.inputTimeout);
+      this.inputTimeout = null;
+    }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -229,7 +269,16 @@ export class McpTransport {
   /**
    * Set the message handler and start processing.
    */
-  on(_event: 'message', handler: (data: unknown) => void): void {
-    this.onMessage = handler;
+  on(event: 'message', handler: (data: unknown) => void): void;
+  /**
+   * #645: Set the error handler for transport failures.
+   */
+  on(event: 'error', handler: (err: Error) => void): void;
+  on(event: 'message' | 'error', handler: ((data: unknown) => void) | ((err: Error) => void)): void {
+    if (event === 'message') {
+      this.onMessage = handler as (data: unknown) => void;
+    } else if (event === 'error') {
+      this.onError = handler as (err: Error) => void;
+    }
   }
 }

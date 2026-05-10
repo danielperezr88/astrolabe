@@ -90,12 +90,18 @@ function buildCallers(callGraph: Map<string, string[]>): Map<string, string[]> {
  * Scores each function/method on multiple dimensions:
  * - Route/Tool handler: +0.9
  * - Name-based (main/start/init/run/handle): +0.5-0.6
+ * - File name heuristic (index/main/app/server/cli…): +0.4
+ * - Depth from root (shallower = more likely entry): +0.1–0.3
+ * - Framework-aware (WRAPS/FETCHES edges): +0.5
  * - File position (routes/handlers/commands dir): +0.3
  * - Call graph position (no callers, many callees): +0.3
  * - Export status: +0.3
  *
  * Returns node IDs sorted by score descending, filtered to > 0.5 threshold.
+ * Each qualifying node gets a descriptive `entryPointReason` listing contributing factors.
  */
+const ENTRY_FILE_NAMES = /^(index|main|app|server|cli|start|bootstrap|run)\.(ts|js|tsx|jsx|py|go|rs|java|rb|php|cs|swift|c|cpp|dart|kt)$/i;
+
 function findEntryPoints(
   graph: PhaseContext['graph'],
   callers: Map<string, string[]>,
@@ -106,47 +112,104 @@ function findEntryPoints(
   // Pre-collect route/tool target IDs for handler detection
   const routeTargets = new Set<string>();
   const toolTargets = new Set<string>();
+  // Pre-collect WRAPS sources (middleware functions that wrap routes)
+  const wrapsSources = new Set<string>();
+  // Pre-collect FETCHES sources (functions that fetch external data)
+  const fetchesSources = new Set<string>();
   for (const rel of graph.iterRelationships()) {
     if (rel.type === 'HANDLES_ROUTE') routeTargets.add(rel.targetId);
     if (rel.type === 'HANDLES_TOOL') toolTargets.add(rel.targetId);
+    if (rel.type === 'WRAPS') wrapsSources.add(rel.sourceId);
+    if (rel.type === 'FETCHES') fetchesSources.add(rel.sourceId);
   }
 
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Function' && node.label !== 'Method') continue;
 
     let score = 0;
+    const reasons: string[] = [];
     const name = (node.properties.name as string) ?? '';
     const fp = (node.properties.filePath as string) ?? '';
 
     // Route/Tool handler: +0.9
     if (routeTargets.has(node.id) || toolTargets.has(node.id)) {
       score += 0.9;
+      reasons.push('route/tool handler');
     }
 
     // Name-based scoring
-    if (/^(main|start|init|run)$/i.test(name)) score += 0.6;
-    else if (/^(handle|process|serve|execute)/i.test(name)) score += 0.5;
+    if (/^(main|start|init|run)$/i.test(name)) {
+      score += 0.6;
+      reasons.push('name:main-group');
+    } else if (/^(handle|process|serve|execute)/i.test(name)) {
+      score += 0.5;
+      reasons.push('name:handler-group');
+    }
+
+    // File name heuristic: basename matches known entry point patterns (+0.4)
+    const basename = fp.split('/').pop() ?? fp;
+    const entryFileMatch = ENTRY_FILE_NAMES.test(basename);
+    if (entryFileMatch) {
+      score += 0.4;
+      reasons.push('entry-file-name');
+    }
+
+    // Depth from root: shallower paths are more likely entry points (+0.1–0.3)
+    let depthScore = 0;
+    if (fp.includes('/')) {
+      const depth = fp.split('/').length - 1;
+      if (depth <= 1) depthScore = 0.3;
+      else if (depth <= 2) depthScore = 0.2;
+      else if (depth <= 3) depthScore = 0.1;
+    }
+    if (depthScore > 0) {
+      const depth = fp.includes('/') ? fp.split('/').length - 1 : 0;
+      score += depthScore;
+      reasons.push(`depth:${depth}`);
+    }
 
     // File position: in known handler directories
     if (/routes?\b/i.test(fp) || /api\b/i.test(fp) || /handler/i.test(fp) || /command/i.test(fp)) {
       score += 0.3;
+      reasons.push('handler-directory');
     }
 
     // Export status
-    if (node.properties.isExported) score += 0.3;
+    if (node.properties.isExported) {
+      score += 0.3;
+      reasons.push('exported');
+    }
 
     // Call graph position: no callers (only if call graph is non-empty) (#122)
     const incoming = callers.get(node.id);
-    if (callGraph.size > 0 && (!incoming || incoming.length === 0)) score += 0.3;
+    if (callGraph.size > 0 && (!incoming || incoming.length === 0)) {
+      score += 0.3;
+      reasons.push('no-callers');
+    }
 
     // Many outgoing calls (orchestrator pattern)
     const outgoing = callGraph.get(node.id);
-    if (outgoing && outgoing.length >= 3) score += 0.2;
+    if (outgoing && outgoing.length >= 3) {
+      score += 0.2;
+      reasons.push('orchestrator');
+    }
+
+    // Framework-aware: WRAPS edge source (middleware) (+0.5)
+    if (wrapsSources.has(node.id)) {
+      score += 0.5;
+      reasons.push('middleware');
+    }
+
+    // Framework-aware: FETCHES edge source (data fetcher) (+0.5)
+    if (fetchesSources.has(node.id)) {
+      score += 0.5;
+      reasons.push('data-fetcher');
+    }
 
     if (score > 0.5) {
       candidates.push({ id: node.id, score });
       node.properties.entryPointScore = score;
-      node.properties.entryPointReason = `Multi-factor score: ${score.toFixed(2)}`;
+      node.properties.entryPointReason = reasons.length > 0 ? reasons.join('+') : 'unknown';
     }
   }
 
