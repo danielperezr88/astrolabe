@@ -274,9 +274,24 @@ jobs:
           npm pkg set version="$VERSION" -w packages/cli
           npm pkg set version="$VERSION" -w packages/vscode
 
-      # ── App token for branch protection bypass ──────────────────────────
+      # ── App token for branch protection bypass (optional) ──────────────────
+      # Check if GitHub App secrets are configured. If not, the CHANGELOG
+      # push to main falls back to GITHUB_TOKEN (which may fail on
+      # protected branches but the release itself will still complete).
+      - name: Check for GitHub App secrets
+        id: check-app
+        run: |
+          if [ -n "${{ secrets.RELEASE_APP_ID }}" ] && [ -n "${{ secrets.RELEASE_APP_PRIVATE_KEY }}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub App secrets found — will use app token for CHANGELOG push."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "GitHub App secrets not configured — CHANGELOG push will use GITHUB_TOKEN."
+          fi
+
       - name: Generate GitHub App token
         id: app-token
+        if: steps.check-app.outputs.available == 'true'
         uses: tibdex/github-app-token@v2
         with:
           app_id: ${{ secrets.RELEASE_APP_ID }}
@@ -346,7 +361,12 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet && echo "No CHANGELOG changes" || {
             git commit -m "docs: update CHANGELOG for ${TAG}"
-            git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git" HEAD:main
+            # Use app token if available, otherwise fall back to GITHUB_TOKEN
+            if [ "${{ steps.check-app.outputs.available }}" = "true" ]; then
+              git push "https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }}.git" HEAD:main
+            else
+              git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:main
+            fi
             echo "CHANGELOG.md updated and pushed to main"
           }
 
