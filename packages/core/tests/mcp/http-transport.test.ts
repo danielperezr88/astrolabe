@@ -227,10 +227,21 @@ describe('StreamableHttpTransport', () => {
     // Use a large string payload to exceed MAX_BODY_SIZE (10 * 1024 * 1024)
     const largePayload = { jsonrpc: '2.0', id: 'big', method: 'test', params: { data: 'x'.repeat(11 * 1024 * 1024) } };
 
-    const res = await makeRequest({
-      method: 'POST',
-      body: largePayload,
-    });
+    let res: RawResponse;
+    try {
+      res = await makeRequest({
+        method: 'POST',
+        body: largePayload,
+      });
+    } catch (err) {
+      // On some platforms (Windows Node 18), the server closes the connection
+      // before the client finishes writing the oversized body, causing
+      // ECONNRESET. This is valid — the server did reject the body.
+      if (err instanceof Error && /ECONNRESET|EPIPE|socket hang up/i.test(err.message)) {
+        return; // test passes — body was rejected
+      }
+      throw err;
+    }
 
     expect(res.status).toBe(413);
   });
