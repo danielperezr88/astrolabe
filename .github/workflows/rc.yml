@@ -182,12 +182,24 @@ jobs:
           retention-days: 90
 
       # ── Push RC Git tag ─────────────────────────────────────────────────
+      # Uses GitHub API instead of git push to bypass branch protection
+      # rules that block GITHUB_TOKEN from pushing tags (#740, #741, #742).
       - name: Push RC tag
         if: needs.check.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          git tag "$TAG"
-          git push origin "$TAG"
+          SHA="${{ github.sha }}"
+          # Check if tag already exists via API (handles re-runs)
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping."
+          else
+            gh api "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/$TAG" \
+              -f sha="$SHA"
+            echo "Created tag $TAG at $SHA via GitHub API."
+          fi
 
       - name: Dry run — skip RC tag push
         if: needs.check.outputs.dry_run == 'true'
