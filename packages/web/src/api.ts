@@ -76,7 +76,9 @@ export async function fetchRepos(): Promise<{ repos: RepoInfo[] }> {
 export async function fetchRepoContext(
   repoName: string,
 ): Promise<RepoContext> {
-  return request<RepoContext>(`/api/repos/${encodeURIComponent(repoName)}`);
+  return request<RepoContext>(
+    `/api/repo/${encodeURIComponent(repoName)}/context`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -85,12 +87,10 @@ export async function fetchRepoContext(
 
 export async function fetchClusters(
   repoName: string,
-  cluster?: string,
 ): Promise<ClustersResponse> {
-  const path = cluster
-    ? `/api/repos/${encodeURIComponent(repoName)}/clusters/${encodeURIComponent(cluster)}`
-    : `/api/repos/${encodeURIComponent(repoName)}/clusters`;
-  return request<ClustersResponse>(path);
+  return request<ClustersResponse>(
+    `/api/repo/${encodeURIComponent(repoName)}/clusters`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ export async function fetchGraph(
   repoName: string,
   cluster?: string,
 ): Promise<GraphResponse> {
-  let path = `/api/repos/${encodeURIComponent(repoName)}/graph`;
+  let path = `/api/repo/${encodeURIComponent(repoName)}/graph`;
   if (cluster) {
     path += `?cluster=${encodeURIComponent(cluster)}`;
   }
@@ -117,12 +117,10 @@ export async function fetchQuery(
   query: string,
   limit?: number,
 ): Promise<SearchResponse> {
-  const params = new URLSearchParams({ q: query });
-  if (limit !== undefined) {
-    params.set('limit', String(limit));
-  }
-  return request<SearchResponse>(
-    `/api/repos/${encodeURIComponent(repoName)}/query?${params.toString()}`,
+  return requestJson<SearchResponse>(
+    `/api/repo/${encodeURIComponent(repoName)}/query`,
+    'POST',
+    { query, ...(limit !== undefined ? { limit } : {}) },
   );
 }
 
@@ -134,9 +132,10 @@ export async function fetchImpact(
   repoName: string,
   name: string,
 ): Promise<ImpactResponse> {
-  const params = new URLSearchParams({ name });
-  return request<ImpactResponse>(
-    `/api/repos/${encodeURIComponent(repoName)}/impact?${params.toString()}`,
+  return requestJson<ImpactResponse>(
+    `/api/repo/${encodeURIComponent(repoName)}/impact`,
+    'POST',
+    { name },
   );
 }
 
@@ -154,7 +153,7 @@ export async function fetchGrep(
     params.set('limit', String(limit));
   }
   return request<GrepResponse>(
-    `/api/repos/${encodeURIComponent(repoName)}/grep?${params.toString()}`,
+    `/api/repo/${encodeURIComponent(repoName)}/grep?${params.toString()}`,
   );
 }
 
@@ -189,15 +188,16 @@ export async function startAnalysis(
 }
 
 export async function pollJob(jobId: string): Promise<AnalyzeJob> {
-  return request<AnalyzeJob>(`/api/jobs/${encodeURIComponent(jobId)}`);
+  return request<AnalyzeJob>(
+    `/api/analyze/${encodeURIComponent(jobId)}`,
+  );
 }
 
 export async function cancelJob(
   jobId: string,
 ): Promise<{ id: string; status: string }> {
-  return requestJson<{ id: string; status: string }>(
-    `/api/jobs/${encodeURIComponent(jobId)}/cancel`,
-    'POST',
-    undefined,
+  return request<{ id: string; status: string }>(
+    `/api/analyze/${encodeURIComponent(jobId)}`,
+    { method: 'DELETE' },
   );
 }
