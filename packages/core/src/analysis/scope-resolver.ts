@@ -21,6 +21,7 @@
 import type { KnowledgeGraph, GraphNode } from '../core/types.js';
 import type { PhaseDefinition, PhaseContext } from '../core/pipeline.js';
 import type { SupportedLanguage } from '@astrolabe-dev/shared';
+import { loadTsconfigAliases, resolveAliasImport, type TsconfigPaths } from './tsconfig-utils.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ export interface ScopeResolutionIndex {
   classScopes: Map<string, ClassScope>;
   moduleScopes: Map<string, ModuleScope>;
   typeBindings: Map<string, TypeBinding>;
+  /** Parsed tsconfig.json path aliases for TypeScript import resolution. */
+  tsconfigAliases: TsconfigPaths;
 }
 
 /** Emitted edges from scope resolution. */
@@ -274,12 +277,13 @@ const typescriptResolver: ScopeResolver = {
       // Strip extension if present
       resolved = resolved.replace(/\.(ts|tsx|js|jsx)$/, '');
     }
-    // Path aliases: @/ prefix → strip and resolve
-    else if (resolved.startsWith('@/')) {
-      resolved = resolved.replace(/^@\//, '');
-    }
-    // Bare specifier → strip extension
+    // Path aliases: resolve via tsconfig.json compilerOptions.paths (#729)
     else {
+      const aliasResolved = resolveAliasImport(resolved, index.tsconfigAliases);
+      if (aliasResolved !== resolved) {
+        resolved = aliasResolved;
+      }
+      // Bare specifier or alias-resolved path → strip extension
       resolved = resolved.replace(/\.(ts|tsx|js|jsx)$/, '');
     }
 
@@ -517,6 +521,7 @@ function buildScopeIndex(graph: KnowledgeGraph, incremental?: { changedPaths: Se
     classScopes: new Map(),
     moduleScopes: new Map(),
     typeBindings: new Map(),
+    tsconfigAliases: { aliases: [], baseUrl: null },
   };
 
   // #632: In incremental mode, only index affected files. Unchanged files'
@@ -624,6 +629,10 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
         ? { changedPaths: incremental.changedPaths, addedPaths: incremental.addedPaths }
         : undefined,
     );
+
+    // Load tsconfig path aliases for TypeScript import resolution (#729)
+    index.tsconfigAliases = loadTsconfigAliases(context.repoPath);
+
     let edgeCount = 0;
     let resolverCount = 0;
 
