@@ -28,7 +28,8 @@ import {
   generateWiki,
   startEvalServer,
 } from '@astrolabe-dev/core';
-import type { ScanOutput, IncrementalInfo } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
+import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -93,6 +94,9 @@ program
       let edgeCount = 0;
       let isIncremental = false; // #338: track for AGENTS.md generation
 
+      // #732: Capture pipeline context for --profile / benchmark output
+      let profileCtx: { state: Map<string, unknown> } | null = null;
+
       if (storedMeta && dbExists) {
         // ── Incremental mode ──
         isIncremental = true; // #338: track for AGENTS.md generation
@@ -154,6 +158,8 @@ program
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
         log.info('Incremental analysis complete', { nodes: nodeCount, edges: edgeCount });
+        // #732: Capture pipeline context for --profile / benchmark output
+        profileCtx = ctx;
       } else {
         // ── Full analysis (first run or missing meta/DB) ──
         graph = createKnowledgeGraph();
@@ -170,6 +176,27 @@ program
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
         log.info('Full analysis complete', { nodes: nodeCount, edges: edgeCount });
+        // #732: Capture pipeline context for --profile / benchmark output
+        profileCtx = context;
+      }
+
+      // #732: Emit structured profile/benchmark output to stderr
+      if (opts.profile && profileCtx) {
+        const timing = profileCtx.state.get(PIPELINE_TIMING_KEY) as PhaseTimerResult | undefined;
+        const mem = profileCtx.state.get(PIPELINE_MEMORY_KEY) as { before: NodeJS.MemoryUsage; after: NodeJS.MemoryUsage } | undefined;
+        const profileData = {
+          version: pkg.version,
+          timestamp: new Date().toISOString(),
+          phases: timing?.phases ?? {},
+          totalMs: timing?.totalMs ?? 0,
+          memory: mem ?? null,
+          nodeCount,
+          edgeCount,
+        };
+        // Emit structured JSON to stderr so piped/scripted consumers can capture it
+        console.error('---ASTROLABE_PROFILE_START---');
+        console.error(JSON.stringify(profileData, null, 2));
+        console.error('---ASTROLABE_PROFILE_END---');
       }
 
       // Save graph to SQLite

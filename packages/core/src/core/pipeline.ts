@@ -98,6 +98,20 @@ export interface PhaseDefinition<TOutput = unknown> {
 export const AST_TREE_CACHE_KEY = 'astTreeCache';
 
 /**
+ * Key used to store per-phase timing breakdown in `context.state`.
+ * Available after `runPipeline` completes when profiling is enabled.
+ * Value is a `PhaseTimerResult` (tool/pipeline timing breakdown).
+ */
+export const PIPELINE_TIMING_KEY = 'pipeline:timing';
+
+/**
+ * Key used to store memory usage snapshot in `context.state`.
+ * Available after `runPipeline` completes when profiling is enabled.
+ * Value is a `MemoryUsage` object (before/after heapUsed, rss, etc.).
+ */
+export const PIPELINE_MEMORY_KEY = 'pipeline:memory';
+
+/**
  * Run a set of pipeline phases in dependency order.
  *
  * Phases are executed in topological order based on their `dependencies`.
@@ -121,6 +135,9 @@ export async function runPipeline(
   const profile = context.state.get('profile') === true || isDebug;
   const pipelineTimer = profile ? new PhaseTimer('pipeline') : null;
   if (pipelineTimer) pipelineTimer.start();
+
+  // #732: Capture memory snapshot before pipeline execution
+  const memoryBefore = profile ? process.memoryUsage() : null;
 
   // Create AST tree cache and store in context for phase access.
   // The treeCache singleton (from parser.ts) is used so that parseFile()
@@ -163,7 +180,14 @@ export async function runPipeline(
     context.state.delete(AST_TREE_CACHE_KEY);
   }
 
-  if (pipelineTimer) pipelineTimer.stop();
+  if (pipelineTimer) {
+    const timingResult = pipelineTimer.stop();
+    // Store timing result in context.state for downstream consumers (CLI, etc.)
+    context.state.set(PIPELINE_TIMING_KEY, timingResult);
+    // #732: Store memory usage snapshot (before/after)
+    const memoryAfter = process.memoryUsage();
+    context.state.set(PIPELINE_MEMORY_KEY, { before: memoryBefore!, after: memoryAfter });
+  }
   return results;
 }
 
