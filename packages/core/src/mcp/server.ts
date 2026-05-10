@@ -1357,7 +1357,7 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       const name = requireString(params, 'name');
       const ctx = backend.getRepo(params.repo as string);
       const graph = ctx.loadGraph();
-      const impact = apiImpact(graph, name);
+      const impact = await apiImpact(graph, name, ctx.entry.path);
       if (impact.length === 0) return { content: [{ type: 'text', text: `Symbol "${name}" not found.` }] };
       const lines: string[] = [];
       for (const imp of impact) {
@@ -1372,6 +1372,10 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
         if (imp.tools.length > 0) {
           lines.push('Tools:');
           for (const t of imp.tools) lines.push(`  ${t.type}: ${t.name}`);
+        }
+        if (imp.shapeDrift.length > 0) {
+          lines.push('Shape Drift:');
+          for (const sd of imp.shapeDrift) lines.push(`  ${sd.severity}: ${sd.field}`);
         }
       }
       return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -1393,9 +1397,9 @@ Returns JSON with providers (method/path/handler), consumers (urlPattern/functio
       const path = requireString(params, 'path');
       const ctx = backend.getRepo(params.repo as string);
       const graph = ctx.loadGraph();
-      const mismatches = shapeCheck(graph, path);
+      const mismatches = await shapeCheck(graph, path, ctx.entry.path);
       if (mismatches.length === 0) return { content: [{ type: 'text', text: `No shape mismatches detected for route "${path}".` }] };
-      const lines = mismatches.map((m) => `  ${m.severity.toUpperCase()}: ${m.field}`);
+      const lines = mismatches.map((m) => `  ${m.severity.toUpperCase()}: ${m.field} — ${m.reason}`);
       return { content: [{ type: 'text', text: `Shape Check for "${path}" (${mismatches.length} issues):\n${lines.join('\n')}` }] };
     },
   },

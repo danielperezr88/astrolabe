@@ -5,6 +5,9 @@
  * provide API-level analysis beyond basic symbol queries.
  */
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import type { KnowledgeGraph } from '../core/types.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -185,7 +188,7 @@ export function toolMap(graph: KnowledgeGraph): ToolMapEntry[] {
 
 // ── api_impact ─────────────────────────────────────────────────────────────
 
-export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactResult[] {
+export async function apiImpact(graph: KnowledgeGraph, symbolName: string, repoPath?: string): Promise<ApiImpactResult[]> {
   // #335: Find ALL matching symbols, not just the first
   const targetIds: string[] = [];
   for (const node of graph.iterNodes()) {
@@ -275,21 +278,115 @@ export function apiImpact(graph: KnowledgeGraph, symbolName: string): ApiImpactR
       tools.push(t);
     }
 
+    // Collect shape drift from route response shape analysis
+    const shapeDrift: ApiImpactResult['shapeDrift'] = [];
+    for (const r of matchedRoutes) {
+      const mismatches = await shapeCheck(graph, r.path, repoPath);
+      for (const m of mismatches) {
+        shapeDrift.push({
+          field: `${r.method} ${r.path}: ${m.field}`,
+          severity: m.severity,
+        });
+      }
+    }
+
     results.push({
       symbol: `${symbolName} (${targetId})`,
       routes,
       tools,
-      shapeDrift: [],
+      shapeDrift,
     });
   }
 
   return results;
 }
 
+// ── Consumer field access extraction ────────────────────────────────────────
+
+/**
+ * Variable names commonly used to hold HTTP response data after fetch/axios calls.
+ * We scan for member access on these identifiers to detect what fields consumers read.
+ */
+const RESPONSE_VAR_NAMES = new Set([
+  'data', 'response', 'json', 'result', 'body', 'res', 'resp',
+  'apiResponse', 'responseData', 'r', 'd',
+]);
+
+/**
+ * Extract field names accessed on HTTP response variables in consumer code.
+ *
+ * Detects patterns like `data.field`, `response['field']`, `result?.field`,
+ * `data.field.subfield` (captures top-level: `field`), destructuring
+ * like `const { id, name } = data`, and `data?.field`.
+ *
+ * Returns deduplicated list of top-level field names.
+ */
+export function extractConsumerAccessedFields(code: string): string[] {
+  const fields = new Set<string>();
+
+  // Pattern 1: dot access or optional chaining on response vars — data.field, response?.field
+  const dotPattern = /([$\w]+)\?\.(\w+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = dotPattern.exec(code)) !== null) {
+    if (RESPONSE_VAR_NAMES.has(m[1]!)) {
+      fields.add(m[2]!);
+    }
+  }
+
+  // Pattern 2: plain dot access — data.field (not optional chaining)
+  // We need to avoid re-matching optional chaining, so use a lookbehind-free approach
+  // Match identifier.field where identifier is not preceded by ?.
+  const plainDotPattern = /([$\w]+)\.(\w+)/g;
+  while ((m = plainDotPattern.exec(code)) !== null) {
+    // Avoid optional chaining (already handled above)
+    if (code[m.index - 1] === '?') continue;
+    // Avoid matching numbers (e.g., 3.14)
+    if (/^\d/.test(m[1]!)) continue;
+    if (RESPONSE_VAR_NAMES.has(m[1]!)) {
+      fields.add(m[2]!);
+    }
+  }
+
+  // Pattern 3: bracket access — data['field'] or data["field"]
+  const bracketPattern = /([$\w]+)\s*\[(['"])([^'"]+)\2\]/g;
+  while ((m = bracketPattern.exec(code)) !== null) {
+    if (RESPONSE_VAR_NAMES.has(m[1]!)) {
+      fields.add(m[3]!);
+    }
+  }
+
+  // Pattern 4: destructuring — const { id, name } = data or const { id, name } = await data
+  const destructPattern = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:await\s+)?(\w+)/g;
+  while ((m = destructPattern.exec(code)) !== null) {
+    const varName = m[2];
+    if (!varName || !RESPONSE_VAR_NAMES.has(varName)) continue;
+    const fieldsText = m[1]!;
+    const parts = fieldsText.split(',');
+    for (const part of parts) {
+      const fieldName = part.trim().split(':')[0]?.trim();
+      if (fieldName && /^\w+$/.test(fieldName) && !RESPONSE_VAR_NAMES.has(fieldName)) {
+        fields.add(fieldName);
+      }
+    }
+  }
+
+  return Array.from(fields);
+}
+
 // ── shape_check ────────────────────────────────────────────────────────────
 
-export function shapeCheck(graph: KnowledgeGraph, routePath: string): Array<{ field: string; severity: string }> {
-  // Find the route
+export interface ShapeMismatch {
+  field: string;
+  severity: 'missing' | 'unused' | 'warning';
+  reason: string;
+}
+
+export async function shapeCheck(
+  graph: KnowledgeGraph,
+  routePath: string,
+  repoPath?: string,
+): Promise<ShapeMismatch[]> {
+  // Find the route node by path
   let routeNode = null;
   for (const node of graph.iterNodes()) {
     if (node.label === 'Route' && (node.properties.path as string) === routePath) {
@@ -299,41 +396,118 @@ export function shapeCheck(graph: KnowledgeGraph, routePath: string): Array<{ fi
   }
   if (!routeNode) return [];
 
-  const mismatches: Array<{ field: string; severity: string }> = [];
+  // Provider response keys: what the API actually returns
+  const providerKeys = (nodeProperties(routeNode, 'responseKeys') as string[]) ?? [];
+  const providerErrorKeys = (nodeProperties(routeNode, 'errorKeys') as string[]) ?? [];
+  const allProviderKeys = [...providerKeys, ...providerErrorKeys];
 
-  // Check consumers of this route
-  const handlesRel = graph.iterRelationshipsByType('HANDLES_ROUTE');
-  const handlerIds: string[] = []; // #413: collect all handlers, not just the last one
-  for (const hr of handlesRel) {
-    if (hr.targetId === routeNode!.id) {
-      handlerIds.push(hr.sourceId);
+  // Find consumers via FETCHES edges (source = consumer, target = route)
+  const consumerFns = new Map<string, { filePath: string; startLine: number; endLine: number; name: string }>();
+  for (const rel of graph.iterRelationships()) {
+    if (rel.type === 'FETCHES' && rel.targetId === routeNode.id) {
+      const consumer = graph.getNode(rel.sourceId);
+      if (consumer && (consumer.label === 'Function' || consumer.label === 'Method')) {
+        consumerFns.set(consumer.id, {
+          filePath: (consumer.properties.filePath as string) ?? '',
+          startLine: (consumer.properties.startLine as number) ?? 0,
+          endLine: (consumer.properties.endLine as number) ?? Infinity,
+          name: (consumer.properties.name as string) ?? consumer.id,
+        });
+      }
     }
   }
 
-  if (handlerIds.length === 0) return mismatches;
+  const mismatches: ShapeMismatch[] = [];
 
-  // Find callers of all handlers
-  for (const handlerId of handlerIds) {
-    for (const rel of graph.iterRelationships()) {
-      if (rel.type === 'CALLS' && rel.targetId === handlerId) {
-        const caller = graph.getNode(rel.sourceId);
-        if (!caller) continue;
+  // Extract consumer-accessed fields from source code
+  const allAccessedFields = new Set<string>();
+  const consumerFieldMap = new Map<string, Set<string>>();
 
-        // Check for USES edges from caller to types/imports that indicate field access
-        for (const rel2 of graph.iterRelationships()) {
-          if (rel2.type === 'USES' && rel2.sourceId === caller.id) {
-            const usedNode = graph.getNode(rel2.targetId);
-            if (usedNode && usedNode.label === 'Variable') {
-              mismatches.push({
-                field: (usedNode.properties.name as string) ?? usedNode.id,
-                severity: 'warning',
-              });
-            }
-          }
+  if (repoPath && consumerFns.size > 0) {
+    // Group consumers by file for batched reads
+    const consumersByFile = new Map<string, Array<{ filePath: string; startLine: number; endLine: number; name: string }>>();
+    for (const [, fn] of consumerFns) {
+      const fns = consumersByFile.get(fn.filePath) ?? [];
+      fns.push(fn);
+      consumersByFile.set(fn.filePath, fns);
+    }
+
+    for (const [fp, fns] of consumersByFile) {
+      let content: string;
+      try {
+        content = await readFile(join(repoPath, fp), 'utf-8');
+      } catch {
+        continue;
+      }
+      const lines = content.split('\n');
+
+      for (const fn of fns) {
+        const start = Math.max(0, fn.startLine - 1);
+        const end = fn.endLine === Infinity ? lines.length : Math.min(lines.length, fn.endLine);
+        const body = lines.slice(start, end).join('\n');
+        const accessedFields = extractConsumerAccessedFields(body);
+        consumerFieldMap.set(fn.name, new Set(accessedFields));
+        for (const f of accessedFields) {
+          allAccessedFields.add(f);
         }
       }
     }
   }
 
-  return mismatches.slice(0, 20);
+  // Comparison 1: Fields consumer accesses but provider doesn't return → missing
+  if (allProviderKeys.length > 0) {
+    for (const field of allAccessedFields) {
+      if (!allProviderKeys.includes(field)) {
+        const consumerNames = Array.from(consumerFieldMap.entries())
+          .filter(([, fields]) => fields.has(field))
+          .map(([name]) => name);
+        mismatches.push({
+          field,
+          severity: 'missing',
+          reason: consumerNames.length > 0
+            ? `Consumer(s) ${consumerNames.join(', ')} read "${field}" but route does not return it`
+            : `Consumer reads "${field}" but route does not return it`,
+        });
+      }
+    }
+  }
+
+  // Comparison 2: Fields provider returns but no consumer accesses → unused
+  if (allAccessedFields.size > 0) {
+    for (const field of providerKeys) {
+      if (!allAccessedFields.has(field)) {
+        mismatches.push({
+          field,
+          severity: 'unused',
+          reason: `Route returns "${field}" but no consumer reads it`,
+        });
+      }
+    }
+  } else if (providerKeys.length > 0 && consumerFns.size > 0 && !repoPath) {
+    // Can't extract consumer fields (no repoPath) but there are consumers
+    for (const field of providerKeys) {
+      mismatches.push({
+        field,
+        severity: 'warning',
+        reason: `Route returns "${field}" — unable to verify consumer access (needs repo path)`,
+      });
+    }
+  }
+
+  // Also flag error-only response fields when there are consumers
+  if (providerKeys.length === 0 && providerErrorKeys.length > 0 && consumerFns.size > 0) {
+    for (const field of providerErrorKeys) {
+      mismatches.push({
+        field,
+        severity: 'warning',
+        reason: `Error response field "${field}" returned by route`,
+      });
+    }
+  }
+
+  return mismatches.slice(0, 30);
+}
+
+function nodeProperties(node: { properties: Record<string, unknown> }, key: string): unknown {
+  return node.properties[key];
 }
