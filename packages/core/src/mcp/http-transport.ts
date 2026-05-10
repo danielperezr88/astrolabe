@@ -10,6 +10,10 @@
  * Uses the same `on`/`send`/`close` interface as McpTransport so the
  * MCP server dispatch layer works identically over both transports.
  *
+ * Concurrency: per-request response tracking via a Map keyed by JSON-RPC
+ * request ID ensures concurrent POST requests get independent, correctly
+ * routed SSE responses.
+ *
  * No external dependencies — uses Node.js built-in `http` module.
  */
 
@@ -46,8 +50,21 @@ export class StreamableHttpTransport {
   private host: string;
 
   // Callbacks — same pattern as McpTransport
-  private onMessage: ((data: unknown) => void) = () => {};
+  private onMessage: ((data: unknown) => Promise<void>) = async () => {};
   private onError: ((err: Error) => void) = () => {};
+
+  /**
+   * Per-request response tracking: JSON-RPC request ID → ServerResponse.
+   *
+   * When handlePost() receives a request, it registers the request's ID
+   * (or all IDs for a batch) pointing to the ServerResponse for that POST.
+   * When send() is called with a JSON-RPC response, it extracts the `id`
+   * field and looks up the correct ServerResponse to write to.
+   *
+   * This ensures concurrent POST requests get independent, correctly routed
+   * SSE responses — the second POST cannot overwrite the first's reference.
+   */
+  private readonly _responseMap = new Map<string | number, ServerResponse>();
 
   constructor(options?: StreamableHttpTransportOptions) {
     this.port = options?.port ?? DEFAULT_PORT;
@@ -120,9 +137,13 @@ export class StreamableHttpTransport {
    * The request body is parsed as JSON. For each JSON-RPC message, the
    * transport emits a 'message' event. The server dispatch layer calls
    * `send()` which writes the response as an SSE `data:` event.
+   *
+   * Per-request response tracking: before invoking onMessage, the request's
+   * JSON-RPC ID is registered in _responseMap pointing to this response.
+   * send() extracts the ID from the response data to find the correct stream.
    */
   private async handlePost(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = await this.readBody(req);
+    const body = await this.readBody(req, res);
     if (body === null) {
       // readBody already sent error response
       return;
@@ -135,8 +156,8 @@ export class StreamableHttpTransport {
       Connection: 'keep-alive',
     });
 
-    // Wire send() to write to this response's SSE stream
-    this._activeResponse = res;
+    // Register request IDs → response for per-request routing
+    let ids: Array<string | number> = [];
 
     try {
       // Parse — may be a single request or batch
@@ -153,27 +174,68 @@ export class StreamableHttpTransport {
         return;
       }
 
+      // Collect request IDs for per-request tracking
+      const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+      ids = this.registerIds(items, res);
+
       // Handle batch (array of requests)
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
-          this.onMessage(item);
+          await this.onMessage(item);
         }
       } else {
-        this.onMessage(parsed);
+        await this.onMessage(parsed);
       }
-    } catch (err) {
+    } catch {
       this.writeSse(res, JSON.stringify({
         jsonrpc: '2.0',
         id: null,
         error: { code: -32603, message: 'Internal error' },
       }));
     } finally {
+      // Clean up registered IDs
+      this.unregisterIds(ids);
       // End SSE stream after a tick to allow any pending send() calls to flush
-      this._activeResponse = null;
       setImmediate(() => {
         if (!res.writableEnded) res.end();
       });
     }
+  }
+
+  /**
+   * Register JSON-RPC request IDs → ServerResponse in the tracking map.
+   * Returns the list of IDs that were registered (for later cleanup).
+   */
+  private registerIds(items: unknown[], res: ServerResponse): Array<string | number> {
+    const ids: Array<string | number> = [];
+    for (const item of items) {
+      const id = this.extractId(item);
+      if (id !== undefined) {
+        this._responseMap.set(id, res);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Remove previously registered IDs from the tracking map.
+   */
+  private unregisterIds(ids: Array<string | number>): void {
+    for (const id of ids) {
+      this._responseMap.delete(id);
+    }
+  }
+
+  /**
+   * Extract a JSON-RPC ID suitable for use as a map key.
+   * Returns undefined for notifications (no ID) and null IDs.
+   */
+  private extractId(data: unknown): string | number | undefined {
+    if (data === null || typeof data !== 'object') return undefined;
+    const id = (data as Record<string, unknown>).id;
+    if (typeof id === 'string' || typeof id === 'number') return id;
+    return undefined;
   }
 
   /**
@@ -193,20 +255,22 @@ export class StreamableHttpTransport {
     res.end(JSON.stringify({ jsonrpc: '2.0', id: null, result: { status: 'session_terminated' } }));
   }
 
-  // ── Active response for send() targeting ────────────────────────────────
-
-  private _activeResponse: ServerResponse | null = null;
-
   /**
    * Send a JSON-RPC response. Writes it as an SSE `data:` event to the
-   * active POST response stream.
+   * response stream associated with the response's `id` field.
+   *
+   * Uses per-request tracking: extracts the `id` from the data to look up
+   * the correct ServerResponse from the _responseMap. This ensures concurrent
+   * POST requests get independent responses — one request cannot clobber
+   * another's response stream.
    */
   send(data: unknown): void {
     if (this.closed) {
       throw new Error('Transport is closed');
     }
 
-    const res = this._activeResponse;
+    const id = this.extractId(data);
+    const res = id !== undefined ? this._responseMap.get(id) : undefined;
     if (res && !res.writableEnded) {
       this.writeSse(res, JSON.stringify(data));
     }
@@ -238,14 +302,14 @@ export class StreamableHttpTransport {
   /**
    * Set the message handler. Same interface as McpTransport.
    */
-  on(event: 'message', handler: (data: unknown) => void): void;
+  on(event: 'message', handler: (data: unknown) => Promise<void>): void;
   /**
    * Set the error handler. Same interface as McpTransport.
    */
   on(event: 'error', handler: (err: Error) => void): void;
-  on(event: 'message' | 'error', handler: ((data: unknown) => void) | ((err: Error) => void)): void {
+  on(event: 'message' | 'error', handler: ((data: unknown) => Promise<void>) | ((err: Error) => void)): void {
     if (event === 'message') {
-      this.onMessage = handler as (data: unknown) => void;
+      this.onMessage = handler as (data: unknown) => Promise<void>;
     } else if (event === 'error') {
       this.onError = handler as (err: Error) => void;
     }
@@ -257,33 +321,39 @@ export class StreamableHttpTransport {
    * Read the full request body with size limit.
    * Returns null if an error response was already sent.
    */
-  private readBody(req: IncomingMessage): Promise<string | null> {
+  private readBody(req: IncomingMessage, res: ServerResponse): Promise<string | null> {
     return new Promise((resolve) => {
       const chunks: Buffer[] = [];
       let totalSize = 0;
+      let resolved = false;
+
+      const done = (value: string | null) => {
+        if (resolved) return;
+        resolved = true;
+        resolve(value);
+      };
 
       req.on('data', (chunk: Buffer) => {
+        if (resolved) return;
         totalSize += chunk.length;
         if (totalSize > MAX_BODY_SIZE) {
-          // Already sent a response — caller should not write
-          const res = this._activeResponse;
-          if (res && !res.headersSent) {
+          if (!res.headersSent) {
             res.writeHead(413, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Request body exceeds 10 MB limit' } }));
           }
-          resolve(null);
+          done(null);
           return;
         }
         chunks.push(chunk);
       });
 
       req.on('end', () => {
-        resolve(Buffer.concat(chunks).toString('utf-8'));
+        done(Buffer.concat(chunks).toString('utf-8'));
       });
 
       req.on('error', (err) => {
         this.onError(err);
-        resolve(null);
+        done(null);
       });
     });
   }
