@@ -12,6 +12,7 @@ export { mroPhase } from './mro.js';
 export { communityPhase } from './community.js';
 export { processTracingPhase } from './process-tracing.js';
 export { cobolPhase } from './cobol.js';
+export { vueSfcPhase } from './vue-sfc.js';
 export { callResolutionPhase } from '../call-processor.js';
 export { scopeResolutionPhase } from '../scope-resolver.js';
 export type { FileEntry, ScanOutput } from './scan.js';
