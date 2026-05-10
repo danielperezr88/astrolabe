@@ -1,0 +1,104 @@
+name: Prepare Release
+
+# ── Trigger ─────────────────────────────────────────────────────────────────
+# Manual workflow dispatch on staging. Generates CHANGELOG and bumps
+# package.json versions before the staging→main PR is opened.
+# Reviewer sees these changes in the PR diff.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip commit/push)'
+        type: boolean
+        default: true
+
+jobs:
+  prepare:
+    name: Prepare Release on Staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: staging
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── Calculate stable version ──────────────────────────────────────────
+      - name: Calculate stable version
+        id: version
+        run: |
+          VERSION=$(node scripts/next-version.mjs --release)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Stable version: ${VERSION}"
+
+      # ── Generate release notes ────────────────────────────────────────────
+      - name: Generate release notes
+        id: notes
+        run: |
+          NOTES=$(node scripts/release-notes.mjs)
+          {
+            echo "notes<<NOTES_EOF"
+            echo "$NOTES"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── Update CHANGELOG.md ───────────────────────────────────────────────
+      - name: Update CHANGELOG.md
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          HEADER="## [${VERSION}] — $(date +%Y-%m-%d)"
+          NOTES="${{ steps.notes.outputs.notes }}"
+
+          TEMP=$(mktemp)
+          {
+            echo "# Changelog"
+            echo ""
+            echo "${HEADER}"
+            echo ""
+            echo "${NOTES}"
+            echo ""
+            tail -n +3 CHANGELOG.md
+          } > "${TEMP}"
+          mv "${TEMP}" CHANGELOG.md
+
+      # ── Bump workspace versions ───────────────────────────────────────────
+      - name: Bump workspace versions
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          npm pkg set version="$VERSION"
+          npm pkg set version="$VERSION" -w packages/shared
+          npm pkg set version="$VERSION" -w packages/core
+          npm pkg set version="$VERSION" -w packages/cli
+          npm pkg set version="$VERSION" -w packages/vscode
+
+      # ── Commit and push to staging ────────────────────────────────────────
+      - name: Commit and push to staging
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          git add CHANGELOG.md package.json \
+            packages/shared/package.json \
+            packages/core/package.json \
+            packages/cli/package.json \
+            packages/vscode/package.json
+
+          git diff --cached --quiet && echo "No changes to commit" || {
+            git commit -m "chore: prepare release ${TAG} — CHANGELOG + version bump [skip ci]"
+            git push origin staging
+            echo "✅ Committed and pushed to staging"
+          }
+
+      - name: Dry run — skip commit
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "🔲 DRY RUN: Would commit CHANGELOG + version bump for v${{ steps.version.outputs.version }} to staging"
+          echo "Run again with dry_run=false to commit."
