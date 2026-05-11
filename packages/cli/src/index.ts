@@ -13,6 +13,7 @@ import {
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
   mroPhase, communityPhase, processTracingPhase,
   cobolPhase,
+  accessTrackingPhase,
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
@@ -150,7 +151,7 @@ program
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-          mroPhase, communityPhase, processTracingPhase,
+          mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase,
         ], ctx);
@@ -169,7 +170,7 @@ program
         await runPipeline([
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-          mroPhase, communityPhase, processTracingPhase,
+          mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase,
         ], context);
