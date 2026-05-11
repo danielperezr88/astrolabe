@@ -2199,6 +2199,167 @@ DIAGRAM TYPES:
       return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
     },
   },
+
+  // #463: Coverage report summary
+  'astrolabe.coverage_report': {
+    name: 'astrolabe.coverage_report',
+    description: `Show test coverage summary for an indexed repository, grouped by community/module. Requires coverage data to have been ingested via the ingest-coverage CLI command.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        group_by: { type: 'string', description: 'Group results by: file, community, label', enum: ['file', 'community', 'label'] },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const groupBy = (params.group_by as string) ?? 'file';
+
+      // Collect all nodes with coverage annotations
+      interface CoverageEntry { name: string; label: string; filePath: string; lineCoverage: number; functionCoverage: number; status: string; community?: string }
+      const entries: CoverageEntry[] = [];
+
+      // Build community index for grouping
+      const communityOf = new Map<string, string>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'MEMBER_OF') {
+          const communityNode = graph.getNode(rel.targetId);
+          if (communityNode && communityNode.label === 'Community') {
+            communityOf.set(rel.sourceId, (communityNode.properties.name as string) ?? communityNode.id);
+          }
+        }
+      }
+
+      for (const node of graph.iterNodes()) {
+        const cov = node.properties._coverage as { lineCoverage: number; functionCoverage: number } | undefined;
+        if (!cov) continue;
+
+        entries.push({
+          name: (node.properties.name as string) ?? node.id,
+          label: node.label,
+          filePath: (node.properties.filePath as string) ?? '',
+          lineCoverage: cov.lineCoverage,
+          functionCoverage: cov.functionCoverage,
+          status: (node.properties._coverageStatus as string) ?? 'unknown',
+          community: communityOf.get(node.id),
+        });
+      }
+
+      if (entries.length === 0) {
+        return { content: [{ type: 'text', text: 'No coverage data found. Run `astrolabe ingest-coverage <report-file>` first.' }] };
+      }
+
+      // Group results
+      const groups = new Map<string, CoverageEntry[]>();
+      for (const entry of entries) {
+        let key: string;
+        if (groupBy === 'community') key = entry.community ?? '(unassigned)';
+        else if (groupBy === 'label') key = entry.label;
+        else key = entry.filePath || '(unknown file)';
+
+        let bucket = groups.get(key);
+        if (!bucket) { bucket = []; groups.set(key, bucket); }
+        bucket.push(entry);
+      }
+
+      // Build output
+      const overallLineCov = entries.length > 0
+        ? entries.reduce((s, e) => s + e.lineCoverage, 0) / entries.length
+        : 0;
+      const lines: string[] = [
+        `Coverage Summary (${entries.length} entries, grouped by ${groupBy})`,
+        `Overall average line coverage: ${overallLineCov.toFixed(1)}%`,
+        '',
+      ];
+
+      const uncovered = entries.filter((e) => e.status === 'uncovered').length;
+      const partial = entries.filter((e) => e.status === 'partial').length;
+      const covered = entries.filter((e) => e.status === 'covered').length;
+      lines.push(`Status: ${covered} covered, ${partial} partial, ${uncovered} uncovered`);
+      lines.push('');
+
+      for (const [group, items] of groups) {
+        const avgLine = items.reduce((s, e) => s + e.lineCoverage, 0) / items.length;
+        const avgFn = items.reduce((s, e) => s + e.functionCoverage, 0) / items.length;
+        lines.push(`## ${group} (${items.length} items, avg line: ${avgLine.toFixed(1)}%, avg fn: ${avgFn.toFixed(1)}%)`);
+        for (const item of items.slice(0, 20)) {
+          const icon = item.status === 'covered' ? '✓' : item.status === 'partial' ? '◐' : '✗';
+          lines.push(`  ${icon} ${item.label}:${item.name} — line ${item.lineCoverage.toFixed(0)}%, fn ${item.functionCoverage.toFixed(0)}%`);
+        }
+        if (items.length > 20) lines.push(`  ... and ${items.length - 20} more`);
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #463: Coverage gaps — high-impact uncovered symbols
+  'astrolabe.coverage_gaps': {
+    name: 'astrolabe.coverage_gaps',
+    description: `Find symbols with high impact score but zero test coverage. These are the riskiest untested parts of the codebase.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        min_impact: { type: 'number', description: 'Minimum impact score (incoming edges) to consider' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const minImpact = (params.min_impact as number) ?? 2;
+
+      // Count incoming edges per node
+      const incomingCount = new Map<string, number>();
+      for (const rel of graph.iterRelationships()) {
+        incomingCount.set(rel.targetId, (incomingCount.get(rel.targetId) ?? 0) + 1);
+      }
+
+      // Find uncovered nodes with high impact
+      interface GapEntry { name: string; label: string; filePath: string; startLine: number; incomingEdges: number }
+      const gaps: GapEntry[] = [];
+
+      for (const node of graph.iterNodes()) {
+        const status = node.properties._coverageStatus as string | undefined;
+        if (status !== 'uncovered') continue;
+
+        const impact = incomingCount.get(node.id) ?? 0;
+        if (impact < minImpact) continue;
+
+        gaps.push({
+          name: (node.properties.name as string) ?? node.id,
+          label: node.label,
+          filePath: (node.properties.filePath as string) ?? '',
+          startLine: (node.properties.startLine as number) ?? 0,
+          incomingEdges: impact,
+        });
+      }
+
+      // Sort by impact (highest first)
+      gaps.sort((a, b) => b.incomingEdges - a.incomingEdges);
+
+      if (gaps.length === 0) {
+        return { content: [{ type: 'text', text: `No uncovered symbols with >= ${minImpact} incoming edges found. Either no coverage data ingested or all high-impact code is covered.` }] };
+      }
+
+      const lines: string[] = [
+        `Coverage Gaps: ${gaps.length} uncovered symbols with >= ${minImpact} incoming edges`,
+        '',
+      ];
+
+      for (const gap of gaps.slice(0, 50)) {
+        lines.push(`  ⚠ ${gap.label}:${gap.name} — ${gap.incomingEdges} dependents (${gap.filePath}:${gap.startLine})`);
+      }
+      if (gaps.length > 50) lines.push(`  ... and ${gaps.length - 50} more`);
+
+      lines.push('');
+      lines.push('These symbols have no test coverage but are depended upon by multiple callers. Consider adding tests to reduce risk.');
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
 };
 
 // ── Resources ──────────────────────────────────────────────────────────────
