@@ -18,7 +18,7 @@ import { createFtsSearch } from '../search/fts.js';
 import { loadRegistry } from '../mcp/registry.js';
 import { loadMeta } from '../analysis/meta.js';
 import { JobManager, type AnalyzeJob, type AnalyzeJobProgress } from './analyze-job.js';
-import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
+import { chat as ragChat, type ChatMessage, type LLMConfig } from '../agent/rag-chat.js';
 import { isAstrolabeError } from '@astrolabe-dev/shared';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -655,6 +655,10 @@ async function handleChat(res: ServerResponse, params: Record<string, unknown>) 
 
   const repo = params.repo as string | undefined;
   const history = (params.history as Array<{ role: string; content: string }>) ?? [];
+  // #767: Accept provider/model/apiKey from the Web UI.
+  const provider = params.provider as string | undefined;
+  const model = params.model as string | undefined;
+  const apiKey = params.apiKey as string | undefined;
 
   const messages: ChatMessage[] = history
     .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -662,7 +666,13 @@ async function handleChat(res: ServerResponse, params: Record<string, unknown>) 
   messages.push({ role: 'user', content: message });
 
   try {
-    const result = await ragChat(messages, { repo });
+    // #767: Build LLM config overrides from client-sent parameters.
+    const llm: Partial<LLMConfig> = {};
+    if (provider) llm.provider = provider;
+    if (model) llm.model = model;
+    if (apiKey) llm.apiKey = apiKey;
+
+    const result = await ragChat(messages, { repo, llm: Object.keys(llm).length ? llm : undefined });
     json(res, result);
   } catch (err: any) {
     handleError(res, err);
