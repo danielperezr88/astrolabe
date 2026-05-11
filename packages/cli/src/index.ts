@@ -15,6 +15,7 @@ import {
   cobolPhase,
   accessTrackingPhase,
   securityScanPhase,
+  coveragePhase,
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
@@ -32,6 +33,8 @@ import {
   startEvalServer,
   migrateFromGitNexus,
 } from '@astrolabe-dev/core';
+// #463: Coverage report parser
+import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
 import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 import { startWatch } from './watch.js';
@@ -157,6 +160,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
+          coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], ctx);
@@ -176,6 +180,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
+          coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], context);
@@ -1029,6 +1034,71 @@ program.command('wiki <repoPath>')
     console.log(`Overview: ${result.overviewPath}`);
     if (result.gistUrl) {
       console.log(`Gist: ${result.gistUrl}`);
+    }
+  });
+
+// ── ingest-coverage (#463) ──────────────────────────────────────────────────
+program
+  .command('ingest-coverage <report-file>')
+  .description('Import test coverage data into the knowledge graph (#463)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--format <type>', 'Coverage format: lcov, istanbul, cobertura (auto-detected if omitted)')
+  .option('--repo <name>', 'Repository name (optional if only one indexed)')
+  .option('--json', 'Output as JSON')
+  .action(async (reportFile: string, opts: { db: string; format?: string; repo?: string; json?: boolean }) => {
+    if (!existsSync(reportFile)) {
+      console.error(`Coverage report not found: ${reportFile}`);
+      process.exit(1);
+    }
+
+    if (!existsSync(opts.db)) {
+      console.error('No analysis found. Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    // #463: Read and parse coverage report
+    const content = readFileSync(resolve(reportFile), 'utf-8');
+    const format = (opts.format as 'lcov' | 'istanbul' | 'cobertura' | undefined) ?? detectFormat(content);
+    if (!format) {
+      console.error('Could not detect coverage format. Use --format to specify: lcov, istanbul, or cobertura.');
+      process.exit(1);
+    }
+
+    const report = parseCoverageReport(content, format);
+
+    // Load graph from DB
+    const store = createSqliteStore(opts.db);
+    try {
+      const graph = store.loadGraph();
+      const result = annotateGraphWithCoverage(graph, report);
+
+      // Save annotated graph back to DB
+      store.saveGraph(graph);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          format,
+          report: {
+            files: report.files.length,
+            totalLines: report.totalLines,
+            coveredLines: report.coveredLines,
+            lineCoveragePercent: report.lineCoveragePercent.toFixed(1),
+            totalFunctions: report.totalFunctions,
+            coveredFunctions: report.coveredFunctions,
+            functionCoveragePercent: report.functionCoveragePercent.toFixed(1),
+          },
+          annotation: result,
+        }, null, 2));
+      } else {
+        console.log(`Coverage report ingested (${format} format):`);
+        console.log(`  Files in report: ${report.files.length}`);
+        console.log(`  Line coverage:   ${report.coveredLines}/${report.totalLines} (${report.lineCoveragePercent.toFixed(1)}%)`);
+        console.log(`  Function coverage: ${report.coveredFunctions}/${report.totalFunctions} (${report.functionCoveragePercent.toFixed(1)}%)`);
+        console.log(`  Graph nodes annotated: ${result.filesProcessed} files`);
+        console.log(`  Uncovered nodes: ${result.uncoveredNodes}`);
+      }
+    } finally {
+      store.close();
     }
   });
 
