@@ -64,3 +64,7 @@ export type { AgentFilesResult } from './agents/index.js';
 export { parseFilesParallel, DEFAULT_WORKERS } from './analysis/workers/pool.js';
 export type { WorkerParseResult, PoolStats } from './analysis/workers/pool.js';
 export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } from './agent/rag-chat.js';
+// #461: Graphlet-based structural analysis
+export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analysis/graphlet/index.js';
+export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
+export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
