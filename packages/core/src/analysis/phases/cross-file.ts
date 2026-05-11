@@ -242,7 +242,7 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
       for (const node of graph.iterNodes()) {
         const fp = node.properties.filePath as string | undefined;
         if (fp !== filePath) continue;
-        if (node.label !== 'Function' && node.label !== 'Method') continue;
+        if (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Property') continue;
 
         // #376: Resolve returnType to target symbol
         const returnType = node.properties.returnType as string | undefined;
