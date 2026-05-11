@@ -23,6 +23,7 @@ import {
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
+  groupQuery, getGroupContracts, syncGroupContracts,
   autoSetup,
   generateAgentFiles,
   startHttpServer,
@@ -510,8 +511,13 @@ groupCmd.command('remove-repo <group> <path>')
 
 groupCmd.command('list')
   .description('List all groups')
-  .action(() => {
+  .option('--json', 'Output as JSON')
+  .action((opts: { json?: boolean }) => {
     const groups = listGroups();
+    if (opts.json) {
+      console.log(JSON.stringify(groups, null, 2));
+      return;
+    }
     if (groups.length === 0) {
       console.log('No groups defined. Use `astrolabe group create <name>` to create one.');
       return;
@@ -526,14 +532,139 @@ groupCmd.command('list')
 
 groupCmd.command('status <name>')
   .description('Show staleness and status of all repos in a group')
-  .action((name: string) => {
+  .option('--json', 'Output as JSON')
+  .action((name: string, opts: { json?: boolean }) => {
     const status = getGroupStatus(name);
+    if (opts.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
     console.log(`Group: ${status.name} (${status.repoCount} repos)`);
     for (const r of status.repos) {
       const staleIcon = r.stale ? '⚠' : '✓';
       const indexed = r.indexedAt ? new Date(r.indexedAt).toISOString() : 'never';
       console.log(`  ${staleIcon} ${r.path} → ${r.repoName} (indexed: ${indexed})`);
     }
+    if (status.lastSyncAt) {
+      console.log(`  Last sync: ${status.lastSyncAt}`);
+    }
+    if (status.recommendation) {
+      console.log(`  → ${status.recommendation}`);
+    }
+  });
+
+groupCmd.command('contracts <name>')
+  .description('Inspect extracted cross-repo contracts for a group (#758)')
+  .option('--type <type>', 'Filter by contract type (http, grpc, topic)')
+  .option('--repo <repo>', 'Filter by repo name')
+  .option('--unmatched', 'Show only low-confidence / unmatched contracts')
+  .option('--json', 'Output as JSON')
+  .action((name: string, opts: { type?: string; repo?: string; unmatched?: boolean; json?: boolean }) => {
+    const contracts = getGroupContracts(name);
+    if (!contracts) {
+      if (opts.json) {
+        console.log(JSON.stringify({ error: `No contracts extracted for group "${name}". Run group_sync first.` }, null, 2));
+      } else {
+        console.log(`No contracts extracted for group "${name}". Run "astrolabe group sync ${name}" first.`);
+      }
+      return;
+    }
+
+    // Apply filters
+    let crossLinks = contracts.crossLinks;
+    if (opts.type) {
+      crossLinks = crossLinks.filter((cl) => cl.contractType === opts.type);
+    }
+    if (opts.repo) {
+      crossLinks = crossLinks.filter((cl) =>
+        cl.provider.repoName === opts.repo || cl.consumer.repoName === opts.repo);
+    }
+    if (opts.unmatched) {
+      crossLinks = crossLinks.filter((cl) => cl.confidence < 0.5);
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify({
+        group: name,
+        extractedAt: new Date(contracts.extractedAt).toISOString(),
+        providerCount: contracts.providers.length,
+        consumerCount: contracts.consumers.length,
+        crossLinkCount: crossLinks.length,
+        providers: contracts.providers,
+        consumers: contracts.consumers,
+        crossLinks,
+        sharedLibs: (contracts as any).sharedLibs ?? [],
+      }, null, 2));
+      return;
+    }
+
+    const sharedLibCount = (contracts as any).sharedLibs?.length ?? 0;
+    console.log(`Group: ${name}`);
+    console.log(`Extracted: ${new Date(contracts.extractedAt).toISOString()}`);
+    console.log(`Providers: ${contracts.providers.length}`);
+    console.log(`Consumers: ${contracts.consumers.length}`);
+    console.log(`Cross-links: ${crossLinks.length}${sharedLibCount > 0 ? `\nShared libraries: ${sharedLibCount}` : ''}`);
+    console.log();
+
+    if (crossLinks.length > 0) {
+      for (const cl of crossLinks.slice(0, 50)) {
+        const icon = cl.confidence >= 0.7 ? '✓' : cl.confidence >= 0.5 ? '~' : '?';
+        console.log(`  ${icon} [${cl.contractType}] ${cl.provider.repoName} ${cl.provider.method} ${cl.provider.path}`);
+        console.log(`      → ${cl.consumer.repoName} ${cl.consumer.functionName} (confidence: ${cl.confidence.toFixed(2)})`);
+      }
+      if (crossLinks.length > 50) {
+        console.log(`  ... and ${crossLinks.length - 50} more`);
+      }
+    } else {
+      console.log('  No cross-links found.');
+    }
+  });
+
+groupCmd.command('query <name> <query>')
+  .description('Search across all repos in a group (#758)')
+  .option('--subgroup <prefix>', 'Limit to repos under a subgroup path prefix')
+  .option('--limit <n>', 'Max results per repo', '5')
+  .option('--json', 'Output as JSON')
+  .action((name: string, query: string, opts: { subgroup?: string; limit?: string; json?: boolean }) => {
+    const limit = parseInt(opts.limit ?? '5', 10);
+    const results = groupQuery(name, query, limit);
+
+    // Filter by subgroup prefix if specified
+    const filtered = opts.subgroup
+      ? results.filter((r) => r.repoName.startsWith(opts.subgroup!))
+      : results;
+
+    if (opts.json) {
+      console.log(JSON.stringify({ group: name, query, limit, resultCount: filtered.reduce((s, r) => s + r.results.length, 0), results: filtered }, null, 2));
+      return;
+    }
+
+    if (filtered.length === 0) {
+      console.log('No results found across group repos.');
+      return;
+    }
+
+    const totalResults = filtered.reduce((s, r) => s + r.results.length, 0);
+    console.log(`Results for "${query}" in group "${name}" (${totalResults} matches across ${filtered.length} repos):`);
+
+    for (const r of filtered) {
+      console.log(`\n  === ${r.repoName} ===`);
+      for (const rr of r.results) {
+        console.log(`    ${rr.label.padEnd(12)} ${rr.name.padEnd(30)} ${rr.filePath}`);
+      }
+    }
+  });
+
+groupCmd.command('sync <name>')
+  .description('Extract and cross-link HTTP contracts across group repos')
+  .action((name: string) => {
+    const results = syncGroupContracts(name);
+    for (const r of results) {
+      const icon = r.error ? '✗' : '✓';
+      console.log(`  ${icon} ${r.repoName}: ${r.providerCount} providers, ${r.consumerCount} consumers, ${r.crossLinks} cross-links${r.error ? ` (${r.error})` : ''}`);
+    }
+    const totalLinks = results.reduce((sum, r) => sum + r.crossLinks, 0);
+    console.log(`\nTotal cross-repo links: ${totalLinks}`);
   });
 
 // ── setup (auto-detect editors and configure MCP) ─────────────────────────

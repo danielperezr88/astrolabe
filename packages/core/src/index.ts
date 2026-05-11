@@ -40,7 +40,7 @@ export type { TfIdfVector, SimilarityResult } from './search/embeddings.js';
 export { createLogger } from './logging/index.js';
 export type { Logger, LogLevel, LogEntry } from './logging/logger.js';
 export { startMcpServer, loadRegistry, saveRegistry, removeRepo, getGitRemote, findEntryWithSiblingWarning } from './mcp/index.js';
-export { createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus, groupQuery, loadGroups, saveGroups, autoDetectGroups } from './mcp/index.js';
+export { createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus, groupQuery, loadGroups, saveGroups, autoDetectGroups, getGroupContracts, syncGroupContracts } from './mcp/index.js';
 export type { RegistryEntry } from './mcp/registry.js';
 export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus, ServiceBoundary } from './mcp/index.js';
 export { ServiceBoundaryDetector, autoDetectGroups as detectServiceBoundaries } from './analysis/service-boundary-detector.js';
