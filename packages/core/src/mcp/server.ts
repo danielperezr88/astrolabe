@@ -1957,6 +1957,146 @@ DIAGRAM TYPES:
       return { content: [{ type: 'text', text: result.diagram + '\n\n' + statsLine }] };
     },
   },
+
+  // #464: Security audit tool
+  'astrolabe.security_audit': {
+    name: 'astrolabe.security_audit',
+    description: `Run a security audit on an indexed repository. Detects secrets in code, identifies security-sensitive code patterns, and optionally checks dependencies for known vulnerabilities via OSV.dev.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (optional if only one indexed)' },
+        check_deps: { type: 'boolean', description: 'Check dependencies for vulnerabilities via OSV.dev (default: false)' },
+        severity_threshold: { type: 'string', description: 'Minimum severity to report: critical, high, medium, low (default: low)', enum: ['critical', 'high', 'medium', 'low'] },
+      },
+    },
+    handler: async (params) => {
+      const repo = params.repo as string | undefined;
+      const checkDeps = (params.check_deps as boolean) ?? false;
+      const severityThreshold = (params.severity_threshold as string) ?? 'low';
+
+      // #464: Load graph from DB
+      const ctx = backend.getRepo(repo);
+      const graph = ctx.loadGraph();
+
+      // #464: Import security patterns and scan logic inline to avoid circular deps
+      const SECRET_PATTERNS = [
+        { name: 'AWS Access Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' },
+        { name: 'AWS Secret Key', pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*['"][A-Za-z0-9/+=]{40}['"]/gi, severity: 'critical' },
+        { name: 'GitHub Token', pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, severity: 'critical' },
+        { name: 'GitHub OAuth', pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical' },
+        { name: 'Slack Token', pattern: /xox[baprs]-[0-9]{10,}-[A-Za-z0-9]+/g, severity: 'high' },
+        { name: 'Private Key', pattern: /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----/g, severity: 'critical' },
+        { name: 'JWT', pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+/g, severity: 'medium' },
+        { name: 'Generic API Key', pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"][A-Za-z0-9]{20,}['"]/gi, severity: 'high' },
+        { name: 'Generic Secret', pattern: /(?:secret|password|token)\s*[=:]\s*['"][A-Za-z0-9!@#$%^&*]{16,}['"]/gi, severity: 'high' },
+        { name: 'Google API Key', pattern: /AIza[0-9A-Za-z_-]{35}/g, severity: 'high' },
+        { name: 'Stripe Key', pattern: /(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}/g, severity: 'critical' },
+      ];
+
+      const SECURITY_PATTERNS = [
+        { category: 'auth', patterns: [/\b(?:login|authenticate|authorize|logout|session)\b/i], severity: 'medium' },
+        { category: 'crypto', patterns: [/\b(?:encrypt|decrypt|hash|sign|verify|cipher|digest)\b/i], severity: 'medium' },
+        { category: 'sql', patterns: [/\b(?:executeQuery|rawQuery|\.query\(|sql.*\+|SELECT.*FROM|INSERT.*INTO)\b/i], severity: 'high' },
+        { category: 'file-io', patterns: [/\b(?:readFile|writeFile|unlink|rmdir|exec|spawn)\b/i], severity: 'low' },
+        { category: 'network', patterns: [/\b(?:fetch|axios|http\.request|XMLHttpRequest|websocket)\b/i], severity: 'info' },
+      ];
+
+      const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const meetsThreshold = (sev: string) => (SEVERITY_ORDER[sev] ?? 4) <= (SEVERITY_ORDER[severityThreshold] ?? 4);
+
+      const findings: Array<Record<string, unknown>> = [];
+      let secretCount = 0;
+      let securityPatternCount = 0;
+
+      // #464: Scan all nodes
+      const binaryExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'eot', 'mp3', 'mp4', 'zip', 'gz', 'tar', 'wasm']);
+
+      for (const node of graph.iterNodes()) {
+        const content = typeof node.properties.content === 'string' ? node.properties.content : '';
+        const name = typeof node.properties.name === 'string' ? node.properties.name : '';
+        const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+        if (!filePath) continue;
+
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        if (binaryExtensions.has(ext)) continue;
+
+        // #464: Secret scanning
+        if (content) {
+          for (const { name: patternName, pattern, severity } of SECRET_PATTERNS) {
+            if (!meetsThreshold(severity)) continue;
+            const regex = new RegExp(pattern.source, pattern.flags);
+            if (regex.test(content)) {
+              secretCount++;
+              findings.push({
+                type: 'secret',
+                severity,
+                category: patternName,
+                message: `Detected ${patternName} in ${node.label} "${name || node.id}"`,
+                nodeId: node.id,
+                filePath,
+              });
+            }
+          }
+        }
+
+        // #464: Security pattern scanning
+        const textToScan = [name, content].filter(Boolean).join(' ');
+        if (textToScan) {
+          for (const { category, patterns, severity } of SECURITY_PATTERNS) {
+            if (!meetsThreshold(severity)) continue;
+            for (const pat of patterns) {
+              const regex = new RegExp(pat.source, pat.flags);
+              if (regex.test(textToScan)) {
+                securityPatternCount++;
+                findings.push({
+                  type: 'security-pattern',
+                  severity,
+                  category,
+                  message: `Security-sensitive ${category} pattern in ${node.label} "${name || node.id}"`,
+                  nodeId: node.id,
+                  filePath,
+                });
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // #464: Optionally check dependencies
+      let vulnerabilityReport: Record<string, unknown> | null = null;
+      if (checkDeps) {
+        try {
+          const { detectManifestFiles, parseManifest, checkVulnerabilities } = await import('../analysis/security/vulnerabilities.js');
+          const repoPath = ctx.entry.path;
+          const manifests = detectManifestFiles(repoPath);
+          const allDeps: Array<{ name: string; version: string; ecosystem: string }> = [];
+          for (const m of manifests) {
+            const deps = parseManifest(m.path, m.ecosystem);
+            allDeps.push(...deps);
+          }
+          if (allDeps.length > 0) {
+            vulnerabilityReport = await checkVulnerabilities(allDeps) as unknown as Record<string, unknown>;
+          }
+        } catch (err) {
+          vulnerabilityReport = { error: `Dependency check failed: ${String(err)}` };
+        }
+      }
+
+      const report = {
+        findings,
+        summary: {
+          totalFindings: findings.length,
+          secretCount,
+          securityPatternCount,
+        },
+        vulnerabilities: vulnerabilityReport,
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+    },
+  },
 };
 
 // ── Resources ──────────────────────────────────────────────────────────────

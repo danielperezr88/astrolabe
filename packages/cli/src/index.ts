@@ -14,6 +14,7 @@ import {
   mroPhase, communityPhase, processTracingPhase,
   cobolPhase,
   accessTrackingPhase,
+  securityScanPhase,
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
@@ -156,7 +157,7 @@ program
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           cobolPhase,
-          callResolutionPhase, scopeResolutionPhase,
+          callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], ctx);
 
         nodeCount = graph.nodeCount;
@@ -175,7 +176,7 @@ program
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           cobolPhase,
-          callResolutionPhase, scopeResolutionPhase,
+          callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], context);
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
@@ -990,6 +991,154 @@ program.command('wiki <repoPath>')
     console.log(`Overview: ${result.overviewPath}`);
     if (result.gistUrl) {
       console.log(`Gist: ${result.gistUrl}`);
+    }
+  });
+
+program
+  .command('scan-secrets [repo-path]')
+  .description('Scan for secrets and security-sensitive patterns in indexed code (#464)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--check-deps', 'Also check dependencies for vulnerabilities via OSV.dev')
+  .option('--severity <level>', 'Minimum severity to report', 'low')
+  .option('--json', 'Output as JSON')
+  .option('--log-level <level>', 'Log level', 'info')
+  .action(async (repoPath?: string, opts?: { db: string; checkDeps: boolean; severity: string; json: boolean; logLevel: string }) => {
+    const dbPath = resolve(opts?.db ?? '.astrolabe/astrolabe.db');
+    if (!existsSync(dbPath)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      const severityThreshold = opts?.severity ?? 'low';
+
+      // #464: Import scan helpers
+      const { meetsSeverity } = await import('@astrolabe-dev/core');
+
+      // Secret patterns
+      const SECRET_PATTERNS = [
+        { name: 'AWS Access Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' as const },
+        { name: 'AWS Secret Key', pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*['"][A-Za-z0-9/+=]{40}['"]/gi, severity: 'critical' as const },
+        { name: 'GitHub Token', pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, severity: 'critical' as const },
+        { name: 'GitHub OAuth', pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical' as const },
+        { name: 'Slack Token', pattern: /xox[baprs]-[0-9]{10,}-[A-Za-z0-9]+/g, severity: 'high' as const },
+        { name: 'Private Key', pattern: /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----/g, severity: 'critical' as const },
+        { name: 'JWT', pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+/g, severity: 'medium' as const },
+        { name: 'Generic API Key', pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"][A-Za-z0-9]{20,}['"]/gi, severity: 'high' as const },
+        { name: 'Generic Secret', pattern: /(?:secret|password|token)\s*[=:]\s*['"][A-Za-z0-9!@#$%^&*]{16,}['"]/gi, severity: 'high' as const },
+        { name: 'Google API Key', pattern: /AIza[0-9A-Za-z_-]{35}/g, severity: 'high' as const },
+        { name: 'Stripe Key', pattern: /(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}/g, severity: 'critical' as const },
+      ];
+
+      const SECURITY_PATTERNS = [
+        { category: 'auth', patterns: [/\b(?:login|authenticate|authorize|logout|session)\b/i], severity: 'medium' as const },
+        { category: 'crypto', patterns: [/\b(?:encrypt|decrypt|hash|sign|verify|cipher|digest)\b/i], severity: 'medium' as const },
+        { category: 'sql', patterns: [/\b(?:executeQuery|rawQuery|\.query\(|sql.*\+|SELECT.*FROM|INSERT.*INTO)\b/i], severity: 'high' as const },
+        { category: 'file-io', patterns: [/\b(?:readFile|writeFile|unlink|rmdir|exec|spawn)\b/i], severity: 'low' as const },
+        { category: 'network', patterns: [/\b(?:fetch|axios|http\.request|XMLHttpRequest|websocket)\b/i], severity: 'info' as const },
+      ];
+
+      const binaryExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'eot', 'mp3', 'mp4', 'zip', 'gz', 'tar', 'wasm']);
+
+      const findings: Array<{ type: string; severity: string; category: string; message: string; nodeId: string; filePath: string }> = [];
+      let secretCount = 0;
+      let securityPatternCount = 0;
+
+      for (const node of graph.iterNodes()) {
+        const content = typeof node.properties.content === 'string' ? node.properties.content : '';
+        const name = typeof node.properties.name === 'string' ? node.properties.name : '';
+        const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+        if (!filePath) continue;
+
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        if (binaryExtensions.has(ext)) continue;
+
+        // Secret scanning
+        if (content) {
+          for (const { name: patternName, pattern, severity } of SECRET_PATTERNS) {
+            if (!meetsSeverity(severity, severityThreshold)) continue;
+            const regex = new RegExp(pattern.source, pattern.flags);
+            if (regex.test(content)) {
+              secretCount++;
+              findings.push({ type: 'secret', severity, category: patternName, message: `Detected ${patternName} in ${node.label} "${name || node.id}"`, nodeId: node.id, filePath });
+            }
+          }
+        }
+
+        // Security pattern scanning
+        const textToScan = [name, content].filter(Boolean).join(' ');
+        if (textToScan) {
+          for (const { category, patterns, severity } of SECURITY_PATTERNS) {
+            if (!meetsSeverity(severity, severityThreshold)) continue;
+            for (const pat of patterns) {
+              const regex = new RegExp(pat.source, pat.flags);
+              if (regex.test(textToScan)) {
+                securityPatternCount++;
+                findings.push({ type: 'security-pattern', severity, category, message: `Security-sensitive ${category} pattern in ${node.label} "${name || node.id}"`, nodeId: node.id, filePath });
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Dependency vulnerability check
+      let vulnReport: unknown = null;
+      if (opts?.checkDeps) {
+        try {
+          const { detectManifestFiles, parseManifest, checkVulnerabilities } = await import('@astrolabe-dev/core');
+          const targetPath = repoPath ?? dirname(dbPath);
+          const manifests = detectManifestFiles(targetPath);
+          const allDeps: Array<{ name: string; version: string; ecosystem: string }> = [];
+          for (const m of manifests) {
+            const deps = parseManifest(m.path, m.ecosystem);
+            allDeps.push(...deps);
+          }
+          if (allDeps.length > 0) {
+            vulnReport = await checkVulnerabilities(allDeps);
+          }
+        } catch (err) {
+          vulnReport = { error: `Dependency check failed: ${String(err)}` };
+        }
+      }
+
+      if (opts?.json) {
+        console.log(JSON.stringify({ findings, summary: { totalFindings: findings.length, secretCount, securityPatternCount }, vulnerabilities: vulnReport }, null, 2));
+      } else {
+        console.log(`Security Scan Results`);
+        console.log(`=====================`);
+        console.log(`Secrets found: ${secretCount}`);
+        console.log(`Security patterns: ${securityPatternCount}`);
+        console.log(`Total findings: ${findings.length}`);
+        console.log();
+
+        if (findings.length > 0) {
+          // Group by severity
+          const bySeverity = new Map<string, typeof findings>();
+          for (const f of findings) {
+            const arr = bySeverity.get(f.severity) ?? [];
+            arr.push(f);
+            bySeverity.set(f.severity, arr);
+          }
+          for (const [sev, items] of bySeverity) {
+            console.log(`[${sev.toUpperCase()}] (${items.length} findings)`);
+            for (const f of items.slice(0, 20)) {
+              console.log(`  ${f.type}: ${f.message} (${f.filePath})`);
+            }
+            if (items.length > 20) console.log(`  ... and ${items.length - 20} more`);
+            console.log();
+          }
+        }
+
+        if (vulnReport) {
+          console.log('Dependency Vulnerabilities:');
+          console.log(JSON.stringify(vulnReport, null, 2));
+        }
+      }
+    } finally {
+      store.close();
     }
   });
 
