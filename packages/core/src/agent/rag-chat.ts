@@ -22,6 +22,8 @@ export interface LLMConfig {
   model: string;
   maxTokens: number;
   temperature: number;
+  /** #767: LLM provider name for auto-configuration. */
+  provider?: string;
 }
 
 const DEFAULT_LLM_CONFIG: LLMConfig = {
@@ -30,6 +32,7 @@ const DEFAULT_LLM_CONFIG: LLMConfig = {
   model: process.env.ASTROLABE_MODEL || 'gpt-4o-mini',
   maxTokens: 4096,
   temperature: 0,
+  provider: undefined, // #767
 };
 
 // ── Token Budget (#645) ──────────────────────────────────────────────────────
@@ -39,15 +42,64 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Context window sizes for common models (input tokens). */
+/** Context window sizes for common models (input tokens). #767: expanded beyond OpenAI. */
 const MODEL_INPUT_LIMITS: Record<string, number> = {
+  // OpenAI
   'gpt-4': 8192,
   'gpt-4-turbo': 128_000,
   'gpt-4o': 128_000,
   'gpt-4o-mini': 128_000,
   'gpt-3.5-turbo': 16_384,
   'gpt-3.5-turbo-16k': 16_384,
+  'o1': 200_000,
+  'o1-mini': 128_000,
+  'o1-pro': 200_000,
+  'o3': 200_000,
+  'o3-mini': 200_000,
+  'o4-mini': 200_000,
+  // Anthropic
+  'claude-3-opus': 200_000,
+  'claude-3-sonnet': 200_000,
+  'claude-3-haiku': 200_000,
+  'claude-3.5-sonnet': 200_000,
+  'claude-3.5-haiku': 200_000,
+  'claude-4-sonnet': 200_000,
+  'claude-4-opus': 200_000,
+  // Google
+  'gemini-1.5-pro': 1_000_000,
+  'gemini-1.5-flash': 1_000_000,
+  'gemini-2.0-flash': 1_000_000,
+  'gemini-2.5-pro': 1_000_000,
+  // MiniMax
+  'minimax-m2.5': 1_000_000,
+  // GLM
+  'glm-4': 128_000,
 };
+
+// #767: Provider endpoint configuration for auto-URL and env-key resolution.
+const PROVIDER_CONFIGS: Record<string, { baseUrl: string; envKey: string }> = {
+  openai: { baseUrl: 'https://api.openai.com/v1/chat/completions', envKey: 'OPENAI_API_KEY' },
+  anthropic: { baseUrl: 'https://api.anthropic.com/v1/messages', envKey: 'ANTHROPIC_API_KEY' },
+  ollama: { baseUrl: 'http://localhost:11434/v1/chat/completions', envKey: '' },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1/chat/completions', envKey: 'OPENROUTER_API_KEY' },
+  azure: { baseUrl: '', envKey: 'AZURE_OPENAI_API_KEY' },
+};
+
+// #767: OpenAI reasoning models that omit max_tokens / temperature.
+const REASONING_MODELS = new Set([
+  'o1', 'o1-mini', 'o1-pro', 'o1-preview', 'o1-mini-preview',
+  'o3', 'o3-mini',
+  'o4-mini',
+]);
+
+/** #767: Check if a model is an OpenAI reasoning model. */
+function isReasoningModel(model: string): boolean {
+  if (REASONING_MODELS.has(model)) return true;
+  for (const rm of REASONING_MODELS) {
+    if (model.startsWith(rm + '-') || model.startsWith(rm + '.')) return true;
+  }
+  return false;
+}
 
 function getInputLimit(model: string): number {
   if (MODEL_INPUT_LIMITS[model]) return MODEL_INPUT_LIMITS[model];
@@ -75,15 +127,27 @@ export interface ChatResponse {
  */
 export async function callLLM(messages: ChatMessage[], config?: Partial<LLMConfig>): Promise<{ content: string; promptTokens?: number; completionTokens?: number }> {
   const cfg = { ...DEFAULT_LLM_CONFIG, ...config };
-  if (!cfg.apiKey) throw new Error('No API key configured. Set ASTROLABE_API_KEY or OPENAI_API_KEY.');
 
-  const url = `${stripTrailingSep(cfg.baseUrl)}/chat/completions`;
+  // #767: Resolve URL and API key from provider config when available.
+  const providerCfg = cfg.provider ? PROVIDER_CONFIGS[cfg.provider] : undefined;
+  const url = cfg.baseUrl
+    ? `${stripTrailingSep(cfg.baseUrl)}/chat/completions`
+    : providerCfg?.baseUrl || 'https://api.openai.com/v1/chat/completions';
+  const apiKey = cfg.apiKey
+    || (providerCfg?.envKey ? process.env[providerCfg.envKey] : '')
+    || '';
+  if (!apiKey) throw new Error('No API key configured. Set ASTROLABE_API_KEY, OPENAI_API_KEY, or provider-specific env variable.');
+
+  // #767: Reasoning models omit max_tokens and temperature.
+  const isReasoning = isReasoningModel(cfg.model);
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
-    max_tokens: cfg.maxTokens,
-    temperature: cfg.temperature,
   };
+  if (!isReasoning) {
+    body.max_tokens = cfg.maxTokens;
+    body.temperature = cfg.temperature;
+  }
 
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
@@ -94,7 +158,7 @@ export async function callLLM(messages: ChatMessage[], config?: Partial<LLMConfi
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${cfg.apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(body),
       });
