@@ -117,6 +117,8 @@ const handler = (): Response => new Response();
       { name: 'getUser', label: 'Function', exported: true },
       { name: 'User', label: 'Class', exported: true },
       { name: 'handler', label: 'Function' },
+      { name: 'id', label: 'Property' },
+      { name: 'name', label: 'Property' },
     ],
     minPrecision: 0.8,
     minRecall: 0.8,
@@ -140,6 +142,7 @@ interface Token {
       { name: 'AuthService', label: 'Class', exported: true },
       { name: 'Token', label: 'Interface', exported: false },
       { name: 'login', label: 'Method', exported: false },
+      { name: 'jwt', label: 'Property' },
     ],
     expectedImports: [
       { source: 'express', names: ['Router'] },

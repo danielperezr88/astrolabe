@@ -110,6 +110,23 @@ const symbolPatterns: QueryPattern[] = [
     nameCapture: 'name',
     outerCapture: 'definition.property',
   },
+  // #750: Class field declarations — public/private/protected all use
+  // the public_field_definition node type regardless of accessibility modifier.
+  {
+    query: '(public_field_definition name: (property_identifier) @name type: (type_annotation (type_identifier)? @fieldType)?) @definition.property',
+    captureLabels: { 'definition.property': 'Property' },
+    nameCapture: 'name',
+    outerCapture: 'definition.property',
+    typeAnnotationCaptures: { 'fieldType': 'declaredType' },
+  },
+  // #750: Property declaration in interfaces/types (type-only, no value)
+  {
+    query: '(property_signature name: (property_identifier) @name type: (type_annotation (type_identifier)? @fieldType)) @definition.property',
+    captureLabels: { 'definition.property': 'Property' },
+    nameCapture: 'name',
+    outerCapture: 'definition.property',
+    typeAnnotationCaptures: { 'fieldType': 'declaredType' },
+  },
 ];
 
 // ── Import query patterns ──────────────────────────────────────────────────
