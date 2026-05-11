@@ -11,6 +11,8 @@ export {
   autoDetectGroups,
 } from './groups.js';
 export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus, ServiceBoundary } from './groups.js';
+export { getGroupContracts, syncGroupContracts } from './contracts.js';
+export type { GroupContracts, ProviderContract, ConsumerContract, ContractCrossLink } from './contracts.js';
 export {
   extractOpenApiContracts,
   extractDockerComposeContracts,
