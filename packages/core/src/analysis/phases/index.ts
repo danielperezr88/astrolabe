@@ -7,13 +7,14 @@ export { resolutionPhase } from './resolution.js';
 export { routesPhase } from './routes.js';
 export { toolsPhase } from './tools.js';
 export { ormPhase } from './orm.js';
-export { crossFilePhase } from './cross-file.js';
+export { crossFilePhase, typeChainResolution } from './cross-file.js';
 export { mroPhase } from './mro.js';
 export { communityPhase } from './community.js';
 export { processTracingPhase } from './process-tracing.js';
 export { cobolPhase } from './cobol.js';
 export { vueSfcPhase } from './vue-sfc.js';
 export { accessTrackingPhase, type AccessTrackingOutput } from './access-tracking.js';
+export { securityScanPhase, meetsSeverity, type SecurityScanOutput } from './security.js';
 // #463: Coverage annotation phase
 export { coveragePhase, type CoverageScanOutput } from './coverage.js';
 export { callResolutionPhase } from '../call-processor.js';

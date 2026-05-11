@@ -34,6 +34,8 @@ interface GenerateOptions {
   skills?: boolean;
   /** #267: Core agent skill files directory path. */
   coreSkillsPath?: string;
+  /** #760: Omit volatile counts (node/edge stats) from generated content. */
+  noStats?: boolean;
 }
 
 // ── Block markers ─────────────────────────────────────────────────────────
@@ -46,16 +48,21 @@ const END_MARKER = '<!-- astrolabe:end -->';
 function generateBlock(opts: GenerateOptions): string {
   const routes = opts.routeCount > 0 ? `, ${opts.routeCount} routes` : '';
   const tools = opts.toolCount > 0 ? `, ${opts.toolCount} tools` : '';
+  const communities = opts.communityCount > 0 ? `, ${opts.communityCount} communities` : '';
   const mode = opts.isIncremental ? ' (incremental)' : '';
+
+  const statsLine = opts.noStats
+    ? ''
+    : `\n${opts.nodeCount} symbols, ${opts.relationshipCount} relationships, ${opts.processCount} execution flows${routes}${tools}${communities}\n`;
 
   return `${START_MARKER}
 # Astrolabe — Code Intelligence${mode}
 
 This project is indexed by **Astrolabe** as \`${opts.repoName}\`.
-
-${opts.nodeCount} symbols, ${opts.relationshipCount} relationships, ${opts.processCount} execution flows${routes}${tools}
-
+${statsLine}
 ## MCP Tools
+
+**Core Analysis**
 
 | Tool | Purpose |
 |------|---------|
@@ -63,15 +70,44 @@ ${opts.nodeCount} symbols, ${opts.relationshipCount} relationships, ${opts.proce
 | \`astrolabe.context\` | 360-degree symbol view (incoming/outgoing edges, processes) |
 | \`astrolabe.impact\` | Blast radius analysis — upstream/downstream impact |
 | \`astrolabe.detect_changes\` | Git-diff based impact mapping |
+| \`astrolabe.filter_by_label\` | Filter graph nodes by label |
+| \`astrolabe.grep\` | Regex search across indexed files |
+
+**Architecture & Refactoring**
+
+| Tool | Purpose |
+|------|---------|
 | \`astrolabe.route_map\` | Map API routes to handlers and consumers |
 | \`astrolabe.api_impact\` | Pre-change impact report for route handlers |
 | \`astrolabe.tool_map\` | Map tool definitions to handlers and callers |
-| \`astrolabe.filter_by_label\` | Filter graph nodes by label |
+| \`astrolabe.shape_check\` | Detect API response shape mismatches |
+| \`astrolabe.rename\` | Preview multi-file symbol rename (dry_run mode) |
+| \`astrolabe.cypher\` | Graph traversal query engine |
+| \`astrolabe.graph_algorithms\` | PageRank, betweenness centrality, shortest path |
+
+**Cross-Repo Groups**
+
+| Tool | Purpose |
+|------|---------|
+| \`astrolabe.group_list\` | List all cross-repo groups |
+| \`astrolabe.group_status\` | Check group staleness |
+| \`astrolabe.group_query\` | Fan-out search across group repos |
+| \`astrolabe.group_sync\` | Extract cross-repo HTTP contracts |
+| \`astrolabe.group_contracts\` | Inspect extracted contracts |
+| \`astrolabe.group_impact\` | Cross-repo impact via contract tracing |
+
+**AI**
+
+| Tool | Purpose |
+|------|---------|
+| \`astrolabe.chat\` | RAG conversational AI assistant |
 
 ## Resources
 
 | URI | Content |
 |-----|---------|
+| \`astrolabe://repos\` | All indexed repositories |
+| \`astrolabe://setup\` | AGENTS.md content for onboarding |
 | \`astrolabe://repo/${opts.repoName}/context\` | Codebase overview, stats, staleness check |
 | \`astrolabe://repo/${opts.repoName}/clusters\` | Functional clusters with cohesion scores |
 | \`astrolabe://repo/${opts.repoName}/processes\` | Execution flows |
@@ -97,6 +133,7 @@ astrolabe analyze ${opts.repoPath}    # Re-index the codebase
 astrolabe query "<search>"            # Search symbols
 astrolabe context <symbol>            # Symbol context
 astrolabe impact <symbol>             # Impact analysis
+astrolabe index ${opts.repoPath}      # Register existing analysis
 astrolabe status                      # Check analysis status
 \`\`\`
 

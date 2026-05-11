@@ -14,6 +14,7 @@ import {
   mroPhase, communityPhase, processTracingPhase,
   cobolPhase,
   accessTrackingPhase,
+  securityScanPhase,
   coveragePhase,
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
@@ -24,11 +25,13 @@ import {
   loadMeta, saveMeta, computeFileDiff, buildMeta,
   installHooks,
   createGroup, removeGroup, addRepoToGroup, removeRepoFromGroup, listGroups, getGroupStatus,
+  groupQuery, getGroupContracts, syncGroupContracts,
   autoSetup,
   generateAgentFiles,
   startHttpServer,
   generateWiki,
   startEvalServer,
+  migrateFromGitNexus,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -56,9 +59,10 @@ program
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
   .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
+  .option('--no-stats', 'Omit volatile counts from AGENTS.md/CLAUDE.md (#760)')
   .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
   .option('--profile', 'Emit phase-level timing information (Pitfall 7)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; maxFileSize?: number; profile?: boolean }) => {
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; noStats?: boolean; maxFileSize?: number; profile?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
 
@@ -157,7 +161,7 @@ program
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           coveragePhase,
           cobolPhase,
-          callResolutionPhase, scopeResolutionPhase,
+          callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], ctx);
 
         nodeCount = graph.nodeCount;
@@ -177,7 +181,7 @@ program
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
           coveragePhase,
           cobolPhase,
-          callResolutionPhase, scopeResolutionPhase,
+          callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], context);
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
@@ -245,6 +249,7 @@ program
           isIncremental,
           graph: opts.skills ? graph : undefined,
           skills: opts.skills ?? false,
+          noStats: opts.noStats ?? false,
         });
         log.info('Agent files generated', { agentsMd: agentResult.agentsMd, claudeMd: agentResult.claudeMd, skillsCount: agentResult.skillsCount });
       }
@@ -352,6 +357,86 @@ program
     else { console.log('No .astrolabe directory found.'); }
   });
 
+// ── index ────────────────────────────────────────────────────────────────────
+program
+  .command('index [path]')
+  .description('Register an existing .astrolabe/ folder in the global registry without re-running analysis')
+  .option('-d, --db <path>', 'Database path (default: <path>/.astrolabe/astrolabe.db)')
+  .option('--force', 'Register even if meta.json is missing')
+  .option('--allow-non-git', 'Allow non-git directories')
+  .action((repoPath: string | undefined, opts: { db?: string; force?: boolean; allowNonGit?: boolean }) => {
+    const resolvedPath = resolve(repoPath ?? '.');
+
+    // Resolve db path — either explicit or default .astrolabe/astrolabe.db
+    const dbPath = opts.db ? resolve(opts.db) : join(resolvedPath, '.astrolabe', 'astrolabe.db');
+    const metaDir = dirname(dbPath);
+
+    // Validate the DB exists and is readable
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze` first, or specify a valid --db path.');
+      process.exit(1);
+    }
+
+    // Validate the database is a valid Astrolabe SQLite file
+    let nodeCount = 0;
+    let relCount = 0;
+    try {
+      const store = createSqliteStore(dbPath);
+      try {
+        nodeCount = store.getNodeCount();
+        relCount = store.getRelationshipCount();
+      } finally { store.close(); }
+    } catch (err) {
+      console.error(`Invalid database: ${dbPath}`, String(err));
+      process.exit(1);
+    }
+
+    if (nodeCount === 0) {
+      console.error(`Database is empty (0 nodes). Run \`astrolabe analyze\` first.`);
+      process.exit(1);
+    }
+
+    // Check for meta.json (skip with --force)
+    const meta = loadMeta(metaDir);
+    if (!meta && !opts.force) {
+      console.error(`meta.json not found in ${metaDir}. Use --force to register anyway.`);
+      process.exit(1);
+    }
+
+    // Validate git repo (skip with --allow-non-git)
+    let lastCommit = meta?.lastCommit ?? 'unknown';
+    let remoteUrl: string | undefined;
+    if (!opts.allowNonGit) {
+      try {
+        lastCommit = execSync('git rev-parse HEAD', { cwd: resolvedPath, encoding: 'utf-8' }).trim();
+        remoteUrl = getGitRemote(resolvedPath) ?? undefined;
+      } catch {
+        console.error('Not a git repository. Use --allow-non-git to register anyway.');
+        process.exit(1);
+      }
+    }
+
+    // Register in global registry (same upsert pattern as analyze)
+    const repoName = basename(resolvedPath);
+    const repos = loadRegistry();
+    const existingIdx = repos.findIndex((r) => r.path === resolvedPath);
+    const entry = { name: repoName, path: resolvedPath, dbPath, lastCommit, indexedAt: Date.now(), remoteUrl };
+    if (existingIdx >= 0) {
+      repos[existingIdx] = entry;
+      console.log(`Updated registry entry for "${repoName}".`);
+    } else {
+      repos.push(entry);
+      console.log(`Registered "${repoName}" in global registry.`);
+    }
+    saveRegistry(repos);
+
+    console.log(`  Path: ${resolvedPath}`);
+    console.log(`  DB:   ${dbPath}`);
+    console.log(`  Nodes: ${nodeCount}, Relationships: ${relCount}`);
+    console.log(`  Commit: ${lastCommit}`);
+  });
+
 // ── remove ────────────────────────────────────────────────────────────────────
 program
   .command('remove <target>')
@@ -398,6 +483,34 @@ program
       } else {
         console.log(`No .astrolabe directory found at ${removed.path}.`);
       }
+    }
+  });
+
+// ── migrate ────────────────────────────────────────────────────────────────
+// #771: GitNexus/LadybugDB → Astrolabe SQLite migration
+program
+  .command('migrate <source-path>')
+  .description('Import GitNexus/LadybugDB analysis into Astrolabe SQLite format (#771)')
+  .option('-o, --output <path>', 'Output database path', '.astrolabe/astrolabe.db')
+  .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
+  .action((sourcePath: string, opts: { output: string; logLevel: string }) => {
+    const absSource = resolve(sourcePath);
+    const absOutput = resolve(opts.output);
+
+    console.log(`Migrating GitNexus data from ${absSource}...`);
+    try {
+      const result = migrateFromGitNexus(absSource, absOutput);
+      console.log(`Migration complete: ${result.nodeCount} nodes, ${result.edgeCount} edges`);
+      if (result.warnings.length) {
+        console.log(`Warnings (${result.warnings.length}):`);
+        for (const w of result.warnings.slice(0, 10)) console.log(`  - ${w}`);
+      }
+      if (result.skippedTypes.length) {
+        console.log(`Skipped types: ${result.skippedTypes.join(', ')}`);
+      }
+    } catch (err: any) {
+      console.error(`Migration failed: ${err.message}`);
+      process.exit(1);
     }
   });
 
@@ -515,8 +628,13 @@ groupCmd.command('remove-repo <group> <path>')
 
 groupCmd.command('list')
   .description('List all groups')
-  .action(() => {
+  .option('--json', 'Output as JSON')
+  .action((opts: { json?: boolean }) => {
     const groups = listGroups();
+    if (opts.json) {
+      console.log(JSON.stringify(groups, null, 2));
+      return;
+    }
     if (groups.length === 0) {
       console.log('No groups defined. Use `astrolabe group create <name>` to create one.');
       return;
@@ -531,14 +649,139 @@ groupCmd.command('list')
 
 groupCmd.command('status <name>')
   .description('Show staleness and status of all repos in a group')
-  .action((name: string) => {
+  .option('--json', 'Output as JSON')
+  .action((name: string, opts: { json?: boolean }) => {
     const status = getGroupStatus(name);
+    if (opts.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
     console.log(`Group: ${status.name} (${status.repoCount} repos)`);
     for (const r of status.repos) {
       const staleIcon = r.stale ? '⚠' : '✓';
       const indexed = r.indexedAt ? new Date(r.indexedAt).toISOString() : 'never';
       console.log(`  ${staleIcon} ${r.path} → ${r.repoName} (indexed: ${indexed})`);
     }
+    if (status.lastSyncAt) {
+      console.log(`  Last sync: ${status.lastSyncAt}`);
+    }
+    if (status.recommendation) {
+      console.log(`  → ${status.recommendation}`);
+    }
+  });
+
+groupCmd.command('contracts <name>')
+  .description('Inspect extracted cross-repo contracts for a group (#758)')
+  .option('--type <type>', 'Filter by contract type (http, grpc, topic)')
+  .option('--repo <repo>', 'Filter by repo name')
+  .option('--unmatched', 'Show only low-confidence / unmatched contracts')
+  .option('--json', 'Output as JSON')
+  .action((name: string, opts: { type?: string; repo?: string; unmatched?: boolean; json?: boolean }) => {
+    const contracts = getGroupContracts(name);
+    if (!contracts) {
+      if (opts.json) {
+        console.log(JSON.stringify({ error: `No contracts extracted for group "${name}". Run group_sync first.` }, null, 2));
+      } else {
+        console.log(`No contracts extracted for group "${name}". Run "astrolabe group sync ${name}" first.`);
+      }
+      return;
+    }
+
+    // Apply filters
+    let crossLinks = contracts.crossLinks;
+    if (opts.type) {
+      crossLinks = crossLinks.filter((cl) => cl.contractType === opts.type);
+    }
+    if (opts.repo) {
+      crossLinks = crossLinks.filter((cl) =>
+        cl.provider.repoName === opts.repo || cl.consumer.repoName === opts.repo);
+    }
+    if (opts.unmatched) {
+      crossLinks = crossLinks.filter((cl) => cl.confidence < 0.5);
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify({
+        group: name,
+        extractedAt: new Date(contracts.extractedAt).toISOString(),
+        providerCount: contracts.providers.length,
+        consumerCount: contracts.consumers.length,
+        crossLinkCount: crossLinks.length,
+        providers: contracts.providers,
+        consumers: contracts.consumers,
+        crossLinks,
+        sharedLibs: (contracts as any).sharedLibs ?? [],
+      }, null, 2));
+      return;
+    }
+
+    const sharedLibCount = (contracts as any).sharedLibs?.length ?? 0;
+    console.log(`Group: ${name}`);
+    console.log(`Extracted: ${new Date(contracts.extractedAt).toISOString()}`);
+    console.log(`Providers: ${contracts.providers.length}`);
+    console.log(`Consumers: ${contracts.consumers.length}`);
+    console.log(`Cross-links: ${crossLinks.length}${sharedLibCount > 0 ? `\nShared libraries: ${sharedLibCount}` : ''}`);
+    console.log();
+
+    if (crossLinks.length > 0) {
+      for (const cl of crossLinks.slice(0, 50)) {
+        const icon = cl.confidence >= 0.7 ? '✓' : cl.confidence >= 0.5 ? '~' : '?';
+        console.log(`  ${icon} [${cl.contractType}] ${cl.provider.repoName} ${cl.provider.method} ${cl.provider.path}`);
+        console.log(`      → ${cl.consumer.repoName} ${cl.consumer.functionName} (confidence: ${cl.confidence.toFixed(2)})`);
+      }
+      if (crossLinks.length > 50) {
+        console.log(`  ... and ${crossLinks.length - 50} more`);
+      }
+    } else {
+      console.log('  No cross-links found.');
+    }
+  });
+
+groupCmd.command('query <name> <query>')
+  .description('Search across all repos in a group (#758)')
+  .option('--subgroup <prefix>', 'Limit to repos under a subgroup path prefix')
+  .option('--limit <n>', 'Max results per repo', '5')
+  .option('--json', 'Output as JSON')
+  .action((name: string, query: string, opts: { subgroup?: string; limit?: string; json?: boolean }) => {
+    const limit = parseInt(opts.limit ?? '5', 10);
+    const results = groupQuery(name, query, limit);
+
+    // Filter by subgroup prefix if specified
+    const filtered = opts.subgroup
+      ? results.filter((r) => r.repoName.startsWith(opts.subgroup!))
+      : results;
+
+    if (opts.json) {
+      console.log(JSON.stringify({ group: name, query, limit, resultCount: filtered.reduce((s, r) => s + r.results.length, 0), results: filtered }, null, 2));
+      return;
+    }
+
+    if (filtered.length === 0) {
+      console.log('No results found across group repos.');
+      return;
+    }
+
+    const totalResults = filtered.reduce((s, r) => s + r.results.length, 0);
+    console.log(`Results for "${query}" in group "${name}" (${totalResults} matches across ${filtered.length} repos):`);
+
+    for (const r of filtered) {
+      console.log(`\n  === ${r.repoName} ===`);
+      for (const rr of r.results) {
+        console.log(`    ${rr.label.padEnd(12)} ${rr.name.padEnd(30)} ${rr.filePath}`);
+      }
+    }
+  });
+
+groupCmd.command('sync <name>')
+  .description('Extract and cross-link HTTP contracts across group repos')
+  .action((name: string) => {
+    const results = syncGroupContracts(name);
+    for (const r of results) {
+      const icon = r.error ? '✗' : '✓';
+      console.log(`  ${icon} ${r.repoName}: ${r.providerCount} providers, ${r.consumerCount} consumers, ${r.crossLinks} cross-links${r.error ? ` (${r.error})` : ''}`);
+    }
+    const totalLinks = results.reduce((sum, r) => sum + r.crossLinks, 0);
+    console.log(`\nTotal cross-repo links: ${totalLinks}`);
   });
 
 // ── setup (auto-detect editors and configure MCP) ─────────────────────────
@@ -717,11 +960,16 @@ program.command('wiki <repoPath>')
   .description('Generate LLM-powered wiki documentation from knowledge graph (#269)')
   .option('--model <model>', 'LLM model name', 'gpt-4o-mini')
   .option('--base-url <url>', 'LLM API base URL')
+  .option('--provider <provider>', 'LLM provider (openai, anthropic, ollama, openrouter, azure) (#763)')
+  .option('--api-key <key>', 'LLM API key (overrides env var)')
   .option('--force', 'Force full regeneration of wiki')
   .option('--review', 'Stop after module tree creation for review (#452)')
   .option('--resume', 'Resume from edited module tree (#452)')
   .option('--gist', 'Publish wiki to GitHub Gist after generation (#452)')
-  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; force?: boolean; review?: boolean; resume?: boolean; gist?: boolean }) => {
+  .option('--concurrency <n>', 'Max concurrent LLM calls (default: 1)', parseInt)
+  .option('--reasoning-model', 'Force reasoning model prompt mode (for o1/o3/o4-mini)')
+  .option('--no-reasoning-model', 'Disable reasoning model detection')
+  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; provider?: string; apiKey?: string; force?: boolean; review?: boolean; resume?: boolean; gist?: boolean; concurrency?: number; reasoningModel?: boolean; noReasoningModel?: boolean }) => {
     const repoName = repoPath.split('/').pop() || repoPath;
     const dbPath = join(repoPath, '.astrolabe', 'astrolabe.db');
 
@@ -737,8 +985,11 @@ program.command('wiki <repoPath>')
     console.log(`Generating wiki for ${repoName}...`);
     const result = await generateWiki({
       repoPath, repoName, graph,
-      model: opts.model, baseUrl: opts.baseUrl, force: opts.force,
+      model: opts.model, baseUrl: opts.baseUrl, apiKey: opts.apiKey,
+      provider: opts.provider, force: opts.force,
       review: opts.review, resume: opts.resume, gist: opts.gist,
+      concurrency: opts.concurrency,
+      reasoningModel: opts.noReasoningModel ? false : opts.reasoningModel,
     });
 
     console.log(`Wiki generated: ${result.pageCount} pages, ${result.moduleCount} modules`);
@@ -807,6 +1058,155 @@ program
         console.log(`  Function coverage: ${report.coveredFunctions}/${report.totalFunctions} (${report.functionCoveragePercent.toFixed(1)}%)`);
         console.log(`  Graph nodes annotated: ${result.filesProcessed} files`);
         console.log(`  Uncovered nodes: ${result.uncoveredNodes}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('scan-secrets [repo-path]')
+  .description('Scan for secrets and security-sensitive patterns in indexed code (#464)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--check-deps', 'Also check dependencies for vulnerabilities via OSV.dev')
+  .option('--severity <level>', 'Minimum severity to report', 'low')
+  .option('--json', 'Output as JSON')
+  .option('--log-level <level>', 'Log level', 'info')
+  .action(async (repoPath?: string, opts?: { db: string; checkDeps: boolean; severity: string; json: boolean; logLevel: string }) => {
+    const dbPath = resolve(opts?.db ?? '.astrolabe/astrolabe.db');
+    if (!existsSync(dbPath)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      const severityThreshold = opts?.severity ?? 'low';
+
+      // #464: Import scan helpers
+      const { meetsSeverity } = await import('@astrolabe-dev/core');
+
+      // Secret patterns
+      const SECRET_PATTERNS = [
+        { name: 'AWS Access Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' as const },
+        { name: 'AWS Secret Key', pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*['"][A-Za-z0-9/+=]{40}['"]/gi, severity: 'critical' as const },
+        { name: 'GitHub Token', pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, severity: 'critical' as const },
+        { name: 'GitHub OAuth', pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical' as const },
+        { name: 'Slack Token', pattern: /xox[baprs]-[0-9]{10,}-[A-Za-z0-9]+/g, severity: 'high' as const },
+        { name: 'Private Key', pattern: /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----/g, severity: 'critical' as const },
+        { name: 'JWT', pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+/g, severity: 'medium' as const },
+        { name: 'Generic API Key', pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"][A-Za-z0-9]{20,}['"]/gi, severity: 'high' as const },
+        { name: 'Generic Secret', pattern: /(?:secret|password|token)\s*[=:]\s*['"][A-Za-z0-9!@#$%^&*]{16,}['"]/gi, severity: 'high' as const },
+        { name: 'Google API Key', pattern: /AIza[0-9A-Za-z_-]{35}/g, severity: 'high' as const },
+        { name: 'Stripe Key', pattern: /(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}/g, severity: 'critical' as const },
+      ];
+
+      const SECURITY_PATTERNS = [
+        { category: 'auth', patterns: [/\b(?:login|authenticate|authorize|logout|session)\b/i], severity: 'medium' as const },
+        { category: 'crypto', patterns: [/\b(?:encrypt|decrypt|hash|sign|verify|cipher|digest)\b/i], severity: 'medium' as const },
+        { category: 'sql', patterns: [/\b(?:executeQuery|rawQuery|\.query\(|sql.*\+|SELECT.*FROM|INSERT.*INTO)\b/i], severity: 'high' as const },
+        { category: 'file-io', patterns: [/\b(?:readFile|writeFile|unlink|rmdir|exec|spawn)\b/i], severity: 'low' as const },
+        { category: 'network', patterns: [/\b(?:fetch|axios|http\.request|XMLHttpRequest|websocket)\b/i], severity: 'info' as const },
+      ];
+
+      const binaryExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'eot', 'mp3', 'mp4', 'zip', 'gz', 'tar', 'wasm']);
+
+      const findings: Array<{ type: string; severity: string; category: string; message: string; nodeId: string; filePath: string }> = [];
+      let secretCount = 0;
+      let securityPatternCount = 0;
+
+      for (const node of graph.iterNodes()) {
+        const content = typeof node.properties.content === 'string' ? node.properties.content : '';
+        const name = typeof node.properties.name === 'string' ? node.properties.name : '';
+        const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+        if (!filePath) continue;
+
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        if (binaryExtensions.has(ext)) continue;
+
+        // Secret scanning
+        if (content) {
+          for (const { name: patternName, pattern, severity } of SECRET_PATTERNS) {
+            if (!meetsSeverity(severity, severityThreshold)) continue;
+            const regex = new RegExp(pattern.source, pattern.flags);
+            if (regex.test(content)) {
+              secretCount++;
+              findings.push({ type: 'secret', severity, category: patternName, message: `Detected ${patternName} in ${node.label} "${name || node.id}"`, nodeId: node.id, filePath });
+            }
+          }
+        }
+
+        // Security pattern scanning
+        const textToScan = [name, content].filter(Boolean).join(' ');
+        if (textToScan) {
+          for (const { category, patterns, severity } of SECURITY_PATTERNS) {
+            if (!meetsSeverity(severity, severityThreshold)) continue;
+            for (const pat of patterns) {
+              const regex = new RegExp(pat.source, pat.flags);
+              if (regex.test(textToScan)) {
+                securityPatternCount++;
+                findings.push({ type: 'security-pattern', severity, category, message: `Security-sensitive ${category} pattern in ${node.label} "${name || node.id}"`, nodeId: node.id, filePath });
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Dependency vulnerability check
+      let vulnReport: unknown = null;
+      if (opts?.checkDeps) {
+        try {
+          const { detectManifestFiles, parseManifest, checkVulnerabilities } = await import('@astrolabe-dev/core');
+          const targetPath = repoPath ?? dirname(dbPath);
+          const manifests = detectManifestFiles(targetPath);
+          const allDeps: Array<{ name: string; version: string; ecosystem: string }> = [];
+          for (const m of manifests) {
+            const deps = parseManifest(m.path, m.ecosystem);
+            allDeps.push(...deps);
+          }
+          if (allDeps.length > 0) {
+            vulnReport = await checkVulnerabilities(allDeps);
+          }
+        } catch (err) {
+          vulnReport = { error: `Dependency check failed: ${String(err)}` };
+        }
+      }
+
+      if (opts?.json) {
+        console.log(JSON.stringify({ findings, summary: { totalFindings: findings.length, secretCount, securityPatternCount }, vulnerabilities: vulnReport }, null, 2));
+      } else {
+        console.log(`Security Scan Results`);
+        console.log(`=====================`);
+        console.log(`Secrets found: ${secretCount}`);
+        console.log(`Security patterns: ${securityPatternCount}`);
+        console.log(`Total findings: ${findings.length}`);
+        console.log();
+
+        if (findings.length > 0) {
+          // Group by severity
+          const bySeverity = new Map<string, typeof findings>();
+          for (const f of findings) {
+            const arr = bySeverity.get(f.severity) ?? [];
+            arr.push(f);
+            bySeverity.set(f.severity, arr);
+          }
+          for (const [sev, items] of bySeverity) {
+            console.log(`[${sev.toUpperCase()}] (${items.length} findings)`);
+            for (const f of items.slice(0, 20)) {
+              console.log(`  ${f.type}: ${f.message} (${f.filePath})`);
+            }
+            if (items.length > 20) console.log(`  ... and ${items.length - 20} more`);
+            console.log();
+          }
+        }
+
+        if (vulnReport) {
+          console.log('Dependency Vulnerabilities:');
+          console.log(JSON.stringify(vulnReport, null, 2));
+        }
+      }
       }
     } finally {
       store.close();
