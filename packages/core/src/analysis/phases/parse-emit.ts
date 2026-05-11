@@ -103,7 +103,7 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
 
     if (shouldUseWorkers) {
       const fileInfos = parsable.map((f) => ({ path: f.absolutePath, size: f.size }));
-      const { results, stats } = await parseFilesParallel(
+      const { results } = await parseFilesParallel(
         fileInfos,
         async (filePath: string) => {
           const r = await parseFile(filePath, wasmDir);
@@ -137,17 +137,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
         for (const rel of workerResult.relationships) {
           emitRelationship(graph, rel as ParsedRelationship, relPath);
         }
-        inferParentClasses(graph, relPath);
-      }
-      errorCount = stats.errorCount;
-
-      // Log pool stats via progress callback
-      context.onProgress('parse-emit', 100,
-        `Parsed ${fileCount} files (${stats.workerCount} workers, ${stats.chunkCount} chunks, ${stats.durationMs}ms)`,
-      );
-
-      return { symbolCount, importCount, fileCount, errorCount, symbolCounts };
+      inferParentClasses(graph, relPath);
+      // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
+      inferHasPropertyEdges(graph, relPath);
     }
+  }
 
     // Sequential fallback: process in chunks to keep memory under control
     for (let i = 0; i < parsable.length; i += CHUNK_SIZE) {
@@ -185,6 +179,8 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
         // Language providers don't always set parentClass. Walk the file's
         // symbols to assign each Method/Constructor to its nearest Class.
         inferParentClasses(graph, relPath);
+        // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
+        inferHasPropertyEdges(graph, relPath);
       }
 
       // Yield event-loop for very large repos
@@ -350,6 +346,69 @@ function emitRelationship(
     confidence: 0.7,
     reason: `tree-sitter ${rel.type.toLowerCase()} capture`,
   });
+}
+
+/**
+ * #750: Create HAS_PROPERTY edges from Class/Interface nodes to Property nodes
+ * in the same file. For each Property, finds the nearest enclosing Class/Interface
+ * by line range and creates a HAS_PROPERTY edge.
+ */
+function inferHasPropertyEdges(
+  graph: PhaseContext['graph'],
+  filePath: string,
+): void {
+  // Collect Class/Interface nodes in this file with their line ranges
+  const classLike: Array<{ id: string; startLine: number; endLine: number }> = [];
+  const properties: Array<{ id: string; startLine: number }> = [];
+
+  for (const node of graph.iterNodes()) {
+    if (node.properties.filePath !== filePath) continue;
+    if (node.label === 'Class' || node.label === 'Interface' || node.label === 'Struct' || node.label === 'Trait') {
+      classLike.push({
+        id: node.id,
+        startLine: (node.properties.startLine as number) ?? 0,
+        endLine: (node.properties.endLine as number) ?? Infinity,
+      });
+    } else if (node.label === 'Property') {
+      // Only infer for properties that don't already have an explicit owner
+      if (!node.properties.ownerClass) {
+        properties.push({ id: node.id, startLine: (node.properties.startLine as number) ?? 0 });
+      }
+    }
+  }
+
+  if (classLike.length === 0 || properties.length === 0) return;
+
+  classLike.sort((a, b) => a.startLine - b.startLine);
+
+  for (const prop of properties) {
+    let owner: typeof classLike[0] | null = null;
+    for (const cls of classLike) {
+      if (cls.startLine <= prop.startLine && prop.startLine <= cls.endLine) {
+        owner = cls;
+      }
+    }
+    if (!owner) continue;
+
+    // Create HAS_PROPERTY edge: Class → Property
+    const edgeId = `hasProperty:${owner.id}:${prop.id}`;
+    if (graph.getRelationship(edgeId)) continue;
+
+    graph.addRelationship({
+      id: edgeId,
+      sourceId: owner.id,
+      targetId: prop.id,
+      type: 'HAS_PROPERTY',
+      confidence: 1,
+      reason: `field declared in class body`,
+    });
+
+    // Also set the ownerClass property on the Property node
+    const propNode = graph.getNode(prop.id);
+    if (propNode) {
+      propNode.properties.ownerClass = owner.id;
+    }
+  }
 }
 
 /**

@@ -2050,7 +2050,7 @@ function readResource(uri: string): string | null {
       for (const rel of graph.iterRelationships()) types.add(rel.type);
       return `Node Labels: ${Array.from(labels).sort().join(', ')}\nRelationship Types: ${Array.from(types).sort().join(', ')}`;
     } catch {
-      return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool, Section, Framework\nRelationship Types: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, HAS_PROPERTY, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF, USES_FRAMEWORK`;
+      return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool, Section, Framework\nRelationship Types: ACCESSES, CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, HAS_PROPERTY, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF, USES_FRAMEWORK`;
     }
   }
 
