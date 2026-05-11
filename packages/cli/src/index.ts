@@ -712,11 +712,16 @@ program.command('wiki <repoPath>')
   .description('Generate LLM-powered wiki documentation from knowledge graph (#269)')
   .option('--model <model>', 'LLM model name', 'gpt-4o-mini')
   .option('--base-url <url>', 'LLM API base URL')
+  .option('--provider <provider>', 'LLM provider (openai, anthropic, ollama, openrouter, azure) (#763)')
+  .option('--api-key <key>', 'LLM API key (overrides env var)')
   .option('--force', 'Force full regeneration of wiki')
   .option('--review', 'Stop after module tree creation for review (#452)')
   .option('--resume', 'Resume from edited module tree (#452)')
   .option('--gist', 'Publish wiki to GitHub Gist after generation (#452)')
-  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; force?: boolean; review?: boolean; resume?: boolean; gist?: boolean }) => {
+  .option('--concurrency <n>', 'Max concurrent LLM calls (default: 1)', parseInt)
+  .option('--reasoning-model', 'Force reasoning model prompt mode (for o1/o3/o4-mini)')
+  .option('--no-reasoning-model', 'Disable reasoning model detection')
+  .action(async (repoPath: string, opts: { model?: string; baseUrl?: string; provider?: string; apiKey?: string; force?: boolean; review?: boolean; resume?: boolean; gist?: boolean; concurrency?: number; reasoningModel?: boolean; noReasoningModel?: boolean }) => {
     const repoName = repoPath.split('/').pop() || repoPath;
     const dbPath = join(repoPath, '.astrolabe', 'astrolabe.db');
 
@@ -732,8 +737,11 @@ program.command('wiki <repoPath>')
     console.log(`Generating wiki for ${repoName}...`);
     const result = await generateWiki({
       repoPath, repoName, graph,
-      model: opts.model, baseUrl: opts.baseUrl, force: opts.force,
+      model: opts.model, baseUrl: opts.baseUrl, apiKey: opts.apiKey,
+      provider: opts.provider, force: opts.force,
       review: opts.review, resume: opts.resume, gist: opts.gist,
+      concurrency: opts.concurrency,
+      reasoningModel: opts.noReasoningModel ? false : opts.reasoningModel,
     });
 
     console.log(`Wiki generated: ${result.pageCount} pages, ${result.moduleCount} modules`);
