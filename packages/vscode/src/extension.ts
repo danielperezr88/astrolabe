@@ -19,7 +19,7 @@ import {
   runPipeline,
   scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
   resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-  mroPhase, communityPhase, processTracingPhase,
+  mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
   createSqliteStore, createFtsSearch,
   loadRegistry, saveRegistry,
   createLogger,
@@ -163,7 +163,7 @@ async function runAnalysis(
     await runPipeline([
       scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
       resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
-      mroPhase, communityPhase, processTracingPhase,
+      mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
     ], phaseCtx);
 
     if (progress) progress.report({ message: 'Persisting to SQLite...' });

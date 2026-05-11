@@ -13,6 +13,7 @@ export { communityPhase } from './community.js';
 export { processTracingPhase } from './process-tracing.js';
 export { cobolPhase } from './cobol.js';
 export { vueSfcPhase } from './vue-sfc.js';
+export { accessTrackingPhase, type AccessTrackingOutput } from './access-tracking.js';
 export { callResolutionPhase } from '../call-processor.js';
 export { scopeResolutionPhase } from '../scope-resolver.js';
 export type { FileEntry, ScanOutput } from './scan.js';

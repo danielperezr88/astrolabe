@@ -227,6 +227,71 @@ const Product = mongoose.model('Product', productSchema);
     });
   });
 
+  // ── Prisma Client method detection (#756) ────────────────────────────────
+
+  describe('Prisma Client method detection (#756)', () => {
+    it('creates QUERIES edges from functions to Prisma models', async () => {
+      const repo = makeRepo({
+        'prisma/schema.prisma': `
+model User {
+  id    Int     @id @default(autoincrement())
+  email String  @unique
+}
+`,
+        'src/service.ts': `
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
+
+async function getUsers() {
+  return prisma.user.findMany();
+}
+
+async function getUser(id: number) {
+  return prisma.user.findUnique({ where: { id } });
+}
+`,
+      });
+
+      const graph = createKnowledgeGraph();
+      // Import node for @prisma/client
+      graph.addNode({
+        id: 'import:prisma',
+        label: 'Import',
+        properties: { name: '@prisma/client', filePath: 'src/service.ts' },
+      });
+      // Function nodes in the file
+      graph.addNode({
+        id: 'Function:src/service.ts:getUsers',
+        label: 'Function',
+        properties: { name: 'getUsers', filePath: 'src/service.ts' },
+      });
+      graph.addNode({
+        id: 'Function:src/service.ts:getUser',
+        label: 'Function',
+        properties: { name: 'getUser', filePath: 'src/service.ts' },
+      });
+      const context = createPhaseContext(repo, graph, () => {});
+      const output = (await runPipeline([ormPhase], context))[0] as OrmOutput;
+
+      expect(output.frameworks).toContain('prisma');
+
+      // Check QUERIES edges exist from functions to User model
+      const queriesEdges = [...graph.iterRelationshipsByType('QUERIES')];
+      expect(queriesEdges.length).toBeGreaterThanOrEqual(1);
+
+      // Verify at least one edge targets the Prisma User model
+      const userModel = graph.findNodesByLabel('CodeElement').find(
+        n => n.properties.orm === 'prisma' && n.properties.kind === 'model' && n.properties.name === 'User',
+      );
+      expect(userModel).toBeDefined();
+
+      const userQueries = queriesEdges.filter(e => e.targetId === userModel!.id);
+      expect(userQueries.length).toBeGreaterThanOrEqual(1);
+
+      rmSync(repo, { recursive: true, force: true });
+    });
+  });
+
   // ── Prisma detection (existing — regression check) ─────────────────────────
 
   describe('Prisma detection (existing)', () => {

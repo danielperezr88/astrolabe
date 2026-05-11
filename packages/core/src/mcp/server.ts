@@ -478,7 +478,7 @@ class LocalBackend {
     return { match_count: results.length, matches: results, siblingWarning };
   }
 
-  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3) {
+  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000) {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
@@ -528,8 +528,10 @@ class LocalBackend {
     const visited = new Set<string>([targetNode.id]);
     const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
     let truncated = false;
+    const deadline = Date.now() + Math.min(timeoutMs, 3_600_000);
 
     while (queue.length > 0 && affected.length < MAX_IMPACT_RESULTS) {
+      if (Date.now() >= deadline) { truncated = true; break; }
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
@@ -969,6 +971,7 @@ service: monorepo path prefix filter (only active in group mode).`,
         maxDepth: { type: 'number', description: 'How many levels to traverse in local graph', default: 5 },
         minConfidence: { type: 'number', description: 'Minimum edge confidence (0.0-1.0)', default: 0.3 },
         crossDepth: { type: 'number', description: 'Cross-repo hop depth via contract bridge (0 = single repo only)', default: 0 },
+        timeoutMs: { type: 'number', description: 'Wall-clock budget in ms (default 30000, max 3600000). Returns partial results if exceeded.', default: 30000 },
         repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode' },
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
         subgroup: { type: 'string', description: 'Optional group subgroup prefix limiting cross-repo fan-out' },
@@ -981,6 +984,7 @@ service: monorepo path prefix filter (only active in group mode).`,
       const target = requireString(params, 'target');
       const repo = params.repo as string | undefined;
       const crossDepth = requireNumber(params, 'crossDepth', 0);
+      const timeoutMs = Math.min(requireNumber(params, 'timeoutMs', 30000), 3_600_000);
       let result: unknown;
 
       if (repo?.startsWith('@') && crossDepth > 0) {
@@ -996,6 +1000,7 @@ service: monorepo path prefix filter (only active in group mode).`,
           anchor.repo.entry.name,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
         );
 
         // Cross-repo fan-out via contract links
@@ -1031,6 +1036,7 @@ service: monorepo path prefix filter (only active in group mode).`,
                     targetRepo,
                     requireNumber(params, 'maxDepth', 3),
                     requireNumber(params, 'minConfidence', 0.3),
+                    timeoutMs,
                   );
                   crossResults.push({ repo: targetRepo, contract: link.contractType, link, result: crossResult });
                 } catch { /* skip unreachable repos */ }
@@ -1056,6 +1062,7 @@ service: monorepo path prefix filter (only active in group mode).`,
           anchor?.repo.entry.name,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
         );
       } else {
         result = backend.impact(
@@ -1064,6 +1071,7 @@ service: monorepo path prefix filter (only active in group mode).`,
           repo,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
         );
       }
 
@@ -2050,7 +2058,7 @@ function readResource(uri: string): string | null {
       for (const rel of graph.iterRelationships()) types.add(rel.type);
       return `Node Labels: ${Array.from(labels).sort().join(', ')}\nRelationship Types: ${Array.from(types).sort().join(', ')}`;
     } catch {
-      return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool, Section, Framework\nRelationship Types: CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, HAS_PROPERTY, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF, USES_FRAMEWORK`;
+      return `Node Labels: File, Folder, Package, Function, Class, Method, Interface, Enum, Variable, Import, Community, Process, Route, Tool, Section, Framework\nRelationship Types: ACCESSES, CONTAINS, CALLS, EXTENDS, IMPLEMENTS, IMPORTS, USES, DEFINES, HAS_METHOD, HAS_PROPERTY, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, ENTRY_POINT_OF, USES_FRAMEWORK`;
     }
   }
 

@@ -372,8 +372,8 @@ function extractSymbols(
       }
     }
 
-    // #432: Extract metadata from AST for function-like symbols
-    if (label === 'Function' || label === 'Method' || label === 'Constructor') {
+    // #432: Extract metadata from AST for function-like symbols and Property nodes
+    if (label === 'Function' || label === 'Method' || label === 'Constructor' || label === 'Property') {
       const metadata = extractSymbolMetadata(outerNode.node, label, languageName);
       if (Object.keys(metadata).length > 0) {
         const entry = seen.get(dedupKey);
@@ -614,7 +614,7 @@ function extractSymbolMetadata(
   label: string,
   languageName: string,
 ): Record<string, unknown> {
-  if (label !== 'Function' && label !== 'Method' && label !== 'Constructor') return {};
+  if (label !== 'Function' && label !== 'Method' && label !== 'Constructor' && label !== 'Property') return {};
 
   const props: Record<string, unknown> = {};
   const funcNode = findFunctionNode(node);
