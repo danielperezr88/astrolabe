@@ -15,6 +15,7 @@ import {
   cobolPhase,
   accessTrackingPhase,
   securityScanPhase,
+  coveragePhase,
   callResolutionPhase, scopeResolutionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
@@ -30,10 +31,14 @@ import {
   startHttpServer,
   generateWiki,
   startEvalServer,
+  countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
   migrateFromGitNexus,
 } from '@astrolabe-dev/core';
+// #463: Coverage report parser
+import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
 import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
+import { startWatch } from './watch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -156,6 +161,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
+          coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], ctx);
@@ -175,6 +181,7 @@ program
           structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
           resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase,
           mroPhase, communityPhase, processTracingPhase, accessTrackingPhase,
+          coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
         ], context);
@@ -350,6 +357,43 @@ program
   .action(() => {
     if (existsSync('.astrolabe')) { rmSync('.astrolabe', { recursive: true, force: true }); console.log('Removed .astrolabe directory.'); }
     else { console.log('No .astrolabe directory found.'); }
+  });
+
+// ── watch ──────────────────────────────────────────────────────────────────────
+program
+  .command('watch <repo-path>')
+  .description('Watch for file changes and incrementally re-index (#462)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
+  .option('--debounce <ms>', 'Debounce interval in milliseconds', parseInt, 500)
+  .action(async (repoPath: string, opts: { db: string; logLevel: string; debounce: number }) => {
+    const absRepo = resolve(repoPath);
+    const dbPath = resolve(opts.db);
+
+    console.log(`#462: Starting watch mode for ${absRepo}...`);
+    console.log(`Database: ${dbPath}`);
+    console.log('Press Ctrl+C to stop.');
+
+    try {
+      const watcher = await startWatch(absRepo, {
+        dbPath,
+        logLevel: opts.logLevel,
+        debounceMs: opts.debounce,
+      });
+
+      // #462: Graceful shutdown on SIGINT/SIGTERM
+      const shutdown = async () => {
+        console.log('\nShutting down watcher...');
+        await watcher.close();
+        process.exit(0);
+      };
+
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } catch (err: any) {
+      console.error(`Watch mode failed: ${err.message}`);
+      process.exit(1);
+    }
   });
 
 // ── index ────────────────────────────────────────────────────────────────────
@@ -994,6 +1038,138 @@ program.command('wiki <repoPath>')
     }
   });
 
+// ── analyze-architecture ──────────────────────────────────────────────────────
+program
+  .command('analyze-architecture [repoPath]')
+  .description('Detect architectural patterns using graphlet-based structural analysis (#461)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    const graph = store.loadGraph();
+    store.close();
+
+    // Build adjacency map from CALLS, IMPORTS, EXTENDS edges
+    const nodeIds = new Set<string>();
+    for (const node of graph.iterNodes()) nodeIds.add(node.id);
+    const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
+    const profile = countGraphlets(graph.iterNodes(), adjMap);
+
+    // Extract community info from Community nodes
+    const communities: Array<{ id: string; nodeCount: number }> = [];
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'Community') {
+        communities.push({ id: node.id, nodeCount: (node.properties.symbolCount as number) ?? 0 });
+      }
+    }
+
+    const patterns = detectPatterns(profile);
+    const health = scoreArchitectureHealth(profile, communities, adjMap);
+
+    if (opts.json) {
+      console.log(JSON.stringify({ profile, patterns, health }, null, 2));
+      return;
+    }
+
+    const totalMotifs3 = profile.motif3.empty + profile.motif3.oneEdge + profile.motif3.twoEdge + profile.motif3.triangle;
+    const totalMotifs4 = profile.motif4.chain + profile.motif4.star + profile.motif4.diamond + profile.motif4.cycle + profile.motif4.clique;
+
+    console.log(`\n=== Architecture Analysis ===`);
+    console.log(`Nodes: ${profile.nodeCount} | Edges: ${profile.edgeCount} | ${profile.sampled ? `Sampled (${profile.sampleSize} nodes)` : 'Full enumeration'}`);
+    console.log(`\n--- 3-Node Motifs (${totalMotifs3} total) ---`);
+    console.log(`  empty:    ${profile.motif3.empty}`);
+    console.log(`  oneEdge:  ${profile.motif3.oneEdge}`);
+    console.log(`  twoEdge:  ${profile.motif3.twoEdge}`);
+    console.log(`  triangle: ${profile.motif3.triangle}`);
+    console.log(`\n--- 4-Node Motifs (${totalMotifs4} total) ---`);
+    console.log(`  chain:   ${profile.motif4.chain}`);
+    console.log(`  star:    ${profile.motif4.star}`);
+    console.log(`  diamond: ${profile.motif4.diamond}`);
+    console.log(`  cycle:   ${profile.motif4.cycle}`);
+    console.log(`  clique:  ${profile.motif4.clique}`);
+    console.log(`\n--- Detected Patterns ---`);
+    for (const p of patterns) console.log(`  ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
+    console.log(`\n--- Health Score: ${health.overallScore}/100 ---`);
+    console.log(`  Cohesion: ${(health.cohesion * 100).toFixed(1)}% | Modularity: ${(health.modularity * 100).toFixed(1)}% | Complexity: ${(health.complexity * 100).toFixed(1)}%`);
+    if (health.antiPatterns.length > 0) {
+      console.log(`\n--- Anti-Patterns ---`);
+      for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
+    }
+    console.log();
+  });
+
+// ── ingest-coverage (#463) ──────────────────────────────────────────────────
+program
+  .command('ingest-coverage <report-file>')
+  .description('Import test coverage data into the knowledge graph (#463)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--format <type>', 'Coverage format: lcov, istanbul, cobertura (auto-detected if omitted)')
+  .option('--repo <name>', 'Repository name (optional if only one indexed)')
+  .option('--json', 'Output as JSON')
+  .action(async (reportFile: string, opts: { db: string; format?: string; repo?: string; json?: boolean }) => {
+    if (!existsSync(reportFile)) {
+      console.error(`Coverage report not found: ${reportFile}`);
+      process.exit(1);
+    }
+
+    if (!existsSync(opts.db)) {
+      console.error('No analysis found. Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    // #463: Read and parse coverage report
+    const content = readFileSync(resolve(reportFile), 'utf-8');
+    const format = (opts.format as 'lcov' | 'istanbul' | 'cobertura' | undefined) ?? detectFormat(content);
+    if (!format) {
+      console.error('Could not detect coverage format. Use --format to specify: lcov, istanbul, or cobertura.');
+      process.exit(1);
+    }
+
+    const report = parseCoverageReport(content, format);
+
+    // Load graph from DB
+    const store = createSqliteStore(opts.db);
+    try {
+      const graph = store.loadGraph();
+      const result = annotateGraphWithCoverage(graph, report);
+
+      // Save annotated graph back to DB
+      store.saveGraph(graph);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          format,
+          report: {
+            files: report.files.length,
+            totalLines: report.totalLines,
+            coveredLines: report.coveredLines,
+            lineCoveragePercent: report.lineCoveragePercent.toFixed(1),
+            totalFunctions: report.totalFunctions,
+            coveredFunctions: report.coveredFunctions,
+            functionCoveragePercent: report.functionCoveragePercent.toFixed(1),
+          },
+          annotation: result,
+        }, null, 2));
+      } else {
+        console.log(`Coverage report ingested (${format} format):`);
+        console.log(`  Files in report: ${report.files.length}`);
+        console.log(`  Line coverage:   ${report.coveredLines}/${report.totalLines} (${report.lineCoveragePercent.toFixed(1)}%)`);
+        console.log(`  Function coverage: ${report.coveredFunctions}/${report.totalFunctions} (${report.functionCoveragePercent.toFixed(1)}%)`);
+        console.log(`  Graph nodes annotated: ${result.filesProcessed} files`);
+        console.log(`  Uncovered nodes: ${result.uncoveredNodes}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── scan-secrets ──────────────────────────────────────────────────────────────
 program
   .command('scan-secrets [repo-path]')
   .description('Scan for secrets and security-sensitive patterns in indexed code (#464)')

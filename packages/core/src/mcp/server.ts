@@ -27,6 +27,9 @@ import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
+// #461: Graphlet-based structural analysis
+import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
+import type { CommunityInfo } from '../analysis/graphlet/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1958,6 +1961,105 @@ DIAGRAM TYPES:
     },
   },
 
+  'astrolabe.analyze_architecture': {
+    name: 'astrolabe.analyze_architecture',
+    description: `Analyze architectural patterns using graphlet-based structural analysis. Detects hub-and-spoke, chain, diamond, and cycle motifs. Maps to architectural patterns (layered, microservices, event-driven, MVC) and scores overall health.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        include_health: { type: 'boolean', description: 'Include architecture health scoring (default: true)' },
+      },
+    },
+    handler: async (params) => {
+      const timer = new PhaseTimer('analyze_architecture');
+      timer.start();
+
+      // 1. Load graph
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      // 2. Collect non-structural node IDs (exclude File, Folder, Import, Package)
+      const structuralLabels = new Set(['File', 'Folder', 'Import', 'Package']);
+      const nodeIds = new Set<string>();
+      const nodeIterable: Array<{ id: string }> = [];
+      for (const node of graph.iterNodes()) {
+        if (!structuralLabels.has(node.label)) {
+          nodeIds.add(node.id);
+          nodeIterable.push({ id: node.id });
+        }
+      }
+
+      // 3. Build adjacency map from CALLS, IMPORTS, EXTENDS edges only
+      const allowedEdgeTypes = new Set(['CALLS', 'IMPORTS', 'EXTENDS']);
+      const relIterable: Array<{ sourceId: string; targetId: string; type: string }> = [];
+      for (const rel of graph.iterRelationships()) {
+        if (allowedEdgeTypes.has(rel.type)) {
+          relIterable.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
+        }
+      }
+      const adjMap = buildAdjacencyMap(relIterable, nodeIds);
+
+      timer.mark('build_adjacency');
+
+      // 4. Count graphlets
+      const profile = countGraphlets(nodeIterable, adjMap);
+
+      timer.mark('count_graphlets');
+
+      // 5. Detect patterns
+      const patterns = detectPatterns(profile);
+
+      timer.mark('detect_patterns');
+
+      // 6. Optionally score health
+      let health: ReturnType<typeof scoreArchitectureHealth> | undefined;
+      const includeHealth = params.include_health !== false; // default true
+      if (includeHealth) {
+        // Extract community info from graph
+        const communities: CommunityInfo[] = [];
+        const communityNodes = graph.findNodesByLabel('Community');
+        for (const cNode of communityNodes) {
+          const memberCount = cNode.properties.symbolCount as number | undefined;
+          if (memberCount !== undefined && memberCount > 0) {
+            communities.push({ id: cNode.id, nodeCount: memberCount });
+          }
+        }
+        health = scoreArchitectureHealth(profile, communities, adjMap);
+        timer.mark('health_score');
+      }
+
+      timer.stop();
+
+      const output = {
+        graphletProfile: {
+          motif3: profile.motif3,
+          motif4: profile.motif4,
+          nodeCount: profile.nodeCount,
+          edgeCount: profile.edgeCount,
+          sampled: profile.sampled,
+          sampleSize: profile.sampleSize,
+        },
+        patterns: patterns.map((p) => ({
+          name: p.name,
+          confidence: Math.round(p.confidence * 100) / 100,
+          description: p.description,
+          indicators: p.indicators,
+        })),
+        health: health ? {
+          overallScore: health.overallScore,
+          cohesion: health.cohesion,
+          modularity: health.modularity,
+          complexity: health.complexity,
+          antiPatterns: health.antiPatterns,
+        } : undefined,
+      };
+
+      const nextHint = '\n\nNext: use graph_algorithms({algorithm: "pagerank"}) to identify the most important modules, or cypher({query: {...}}) to explore specific dependency patterns.';
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) + nextHint }] };
+    },
+  },
+
   // #464: Security audit tool
   'astrolabe.security_audit': {
     name: 'astrolabe.security_audit',
@@ -2095,6 +2197,167 @@ DIAGRAM TYPES:
       };
 
       return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+    },
+  },
+
+  // #463: Coverage report summary
+  'astrolabe.coverage_report': {
+    name: 'astrolabe.coverage_report',
+    description: `Show test coverage summary for an indexed repository, grouped by community/module. Requires coverage data to have been ingested via the ingest-coverage CLI command.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        group_by: { type: 'string', description: 'Group results by: file, community, label', enum: ['file', 'community', 'label'] },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const groupBy = (params.group_by as string) ?? 'file';
+
+      // Collect all nodes with coverage annotations
+      interface CoverageEntry { name: string; label: string; filePath: string; lineCoverage: number; functionCoverage: number; status: string; community?: string }
+      const entries: CoverageEntry[] = [];
+
+      // Build community index for grouping
+      const communityOf = new Map<string, string>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'MEMBER_OF') {
+          const communityNode = graph.getNode(rel.targetId);
+          if (communityNode && communityNode.label === 'Community') {
+            communityOf.set(rel.sourceId, (communityNode.properties.name as string) ?? communityNode.id);
+          }
+        }
+      }
+
+      for (const node of graph.iterNodes()) {
+        const cov = node.properties._coverage as { lineCoverage: number; functionCoverage: number } | undefined;
+        if (!cov) continue;
+
+        entries.push({
+          name: (node.properties.name as string) ?? node.id,
+          label: node.label,
+          filePath: (node.properties.filePath as string) ?? '',
+          lineCoverage: cov.lineCoverage,
+          functionCoverage: cov.functionCoverage,
+          status: (node.properties._coverageStatus as string) ?? 'unknown',
+          community: communityOf.get(node.id),
+        });
+      }
+
+      if (entries.length === 0) {
+        return { content: [{ type: 'text', text: 'No coverage data found. Run `astrolabe ingest-coverage <report-file>` first.' }] };
+      }
+
+      // Group results
+      const groups = new Map<string, CoverageEntry[]>();
+      for (const entry of entries) {
+        let key: string;
+        if (groupBy === 'community') key = entry.community ?? '(unassigned)';
+        else if (groupBy === 'label') key = entry.label;
+        else key = entry.filePath || '(unknown file)';
+
+        let bucket = groups.get(key);
+        if (!bucket) { bucket = []; groups.set(key, bucket); }
+        bucket.push(entry);
+      }
+
+      // Build output
+      const overallLineCov = entries.length > 0
+        ? entries.reduce((s, e) => s + e.lineCoverage, 0) / entries.length
+        : 0;
+      const lines: string[] = [
+        `Coverage Summary (${entries.length} entries, grouped by ${groupBy})`,
+        `Overall average line coverage: ${overallLineCov.toFixed(1)}%`,
+        '',
+      ];
+
+      const uncovered = entries.filter((e) => e.status === 'uncovered').length;
+      const partial = entries.filter((e) => e.status === 'partial').length;
+      const covered = entries.filter((e) => e.status === 'covered').length;
+      lines.push(`Status: ${covered} covered, ${partial} partial, ${uncovered} uncovered`);
+      lines.push('');
+
+      for (const [group, items] of groups) {
+        const avgLine = items.reduce((s, e) => s + e.lineCoverage, 0) / items.length;
+        const avgFn = items.reduce((s, e) => s + e.functionCoverage, 0) / items.length;
+        lines.push(`## ${group} (${items.length} items, avg line: ${avgLine.toFixed(1)}%, avg fn: ${avgFn.toFixed(1)}%)`);
+        for (const item of items.slice(0, 20)) {
+          const icon = item.status === 'covered' ? '✓' : item.status === 'partial' ? '◐' : '✗';
+          lines.push(`  ${icon} ${item.label}:${item.name} — line ${item.lineCoverage.toFixed(0)}%, fn ${item.functionCoverage.toFixed(0)}%`);
+        }
+        if (items.length > 20) lines.push(`  ... and ${items.length - 20} more`);
+        lines.push('');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #463: Coverage gaps — high-impact uncovered symbols
+  'astrolabe.coverage_gaps': {
+    name: 'astrolabe.coverage_gaps',
+    description: `Find symbols with high impact score but zero test coverage. These are the riskiest untested parts of the codebase.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        min_impact: { type: 'number', description: 'Minimum impact score (incoming edges) to consider' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const minImpact = (params.min_impact as number) ?? 2;
+
+      // Count incoming edges per node
+      const incomingCount = new Map<string, number>();
+      for (const rel of graph.iterRelationships()) {
+        incomingCount.set(rel.targetId, (incomingCount.get(rel.targetId) ?? 0) + 1);
+      }
+
+      // Find uncovered nodes with high impact
+      interface GapEntry { name: string; label: string; filePath: string; startLine: number; incomingEdges: number }
+      const gaps: GapEntry[] = [];
+
+      for (const node of graph.iterNodes()) {
+        const status = node.properties._coverageStatus as string | undefined;
+        if (status !== 'uncovered') continue;
+
+        const impact = incomingCount.get(node.id) ?? 0;
+        if (impact < minImpact) continue;
+
+        gaps.push({
+          name: (node.properties.name as string) ?? node.id,
+          label: node.label,
+          filePath: (node.properties.filePath as string) ?? '',
+          startLine: (node.properties.startLine as number) ?? 0,
+          incomingEdges: impact,
+        });
+      }
+
+      // Sort by impact (highest first)
+      gaps.sort((a, b) => b.incomingEdges - a.incomingEdges);
+
+      if (gaps.length === 0) {
+        return { content: [{ type: 'text', text: `No uncovered symbols with >= ${minImpact} incoming edges found. Either no coverage data ingested or all high-impact code is covered.` }] };
+      }
+
+      const lines: string[] = [
+        `Coverage Gaps: ${gaps.length} uncovered symbols with >= ${minImpact} incoming edges`,
+        '',
+      ];
+
+      for (const gap of gaps.slice(0, 50)) {
+        lines.push(`  ⚠ ${gap.label}:${gap.name} — ${gap.incomingEdges} dependents (${gap.filePath}:${gap.startLine})`);
+      }
+      if (gaps.length > 50) lines.push(`  ... and ${gaps.length - 50} more`);
+
+      lines.push('');
+      lines.push('These symbols have no test coverage but are depended upon by multiple callers. Consider adding tests to reduce risk.');
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
   },
 };
