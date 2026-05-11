@@ -30,7 +30,8 @@
   "dependencies": {
     "@astrolabe-dev/core": "^1.0.0",
     "@astrolabe-dev/shared": "^1.0.0",
-    "commander": "^12.0.0"
+    "commander": "^12.0.0",
+    "chokidar": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
