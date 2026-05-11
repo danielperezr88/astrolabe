@@ -22,7 +22,7 @@ export { PhaseTimer, type PhaseTimerResult } from './core/phase-timer.js';
 export { initParser, parseFile, parseFiles, parseString, resetParser, AstCache, defaultWasmDir, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
 export { symbolId, captureText, captureRange } from './analysis/language-definition.js';
 export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult } from './analysis/language-definition.js';
-export { scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase, resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase, typeChainResolution, mroPhase, communityPhase, processTracingPhase, cobolPhase, vueSfcPhase, accessTrackingPhase, securityScanPhase, meetsSeverity, callResolutionPhase, scopeResolutionPhase } from './analysis/phases/index.js';
+export { scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase, resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase, typeChainResolution, mroPhase, communityPhase, processTracingPhase, cobolPhase, vueSfcPhase, accessTrackingPhase, securityScanPhase, meetsSeverity, coveragePhase, callResolutionPhase, scopeResolutionPhase } from './analysis/phases/index.js';
 export type { FileEntry, ScanOutput } from './analysis/phases/scan.js';
 export type { StructureOutput } from './analysis/phases/structure.js';
 export type { ParseEmitOutput } from './analysis/phases/parse-emit.js';
@@ -34,6 +34,11 @@ export type { ProcessTracingOutput } from './analysis/phases/process-tracing.js'
 export type { SecurityScanOutput } from './analysis/phases/security.js';
 export { checkVulnerabilities, detectManifestFiles, parseManifest } from './analysis/security/vulnerabilities.js';
 export type { Dependency, VulnerabilityInfo, VulnerabilityReport, ManifestFile } from './analysis/security/vulnerabilities.js';
+// #463: Coverage report parser
+export { parseLcov, parseIstanbul, parseCobertura, parseCoverageReport, detectFormat, normalizeCoveragePath, coveragePathMatches } from './analysis/coverage/parser.js';
+export type { CoverageReport, FileCoverage } from './analysis/coverage/parser.js';
+export type { CoverageScanOutput } from './analysis/phases/coverage.js';
+export { annotateGraphWithCoverage } from './analysis/phases/coverage.js';
 export { createSqliteStore, acquireDbLock } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
 export type { DbLock } from './persist/lock.js';
@@ -70,3 +75,7 @@ export type { AgentFilesResult } from './agents/index.js';
 export { parseFilesParallel, DEFAULT_WORKERS } from './analysis/workers/pool.js';
 export type { WorkerParseResult, PoolStats } from './analysis/workers/pool.js';
 export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } from './agent/rag-chat.js';
+// #461: Graphlet-based structural analysis
+export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analysis/graphlet/index.js';
+export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
+export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
