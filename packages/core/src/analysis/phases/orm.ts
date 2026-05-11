@@ -38,6 +38,7 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
     const changedPaths = context.state.get('incremental:changedPaths') as Set<string> | undefined;
 
     // #634: Track files with ORM imports for content scanning
+    const prismaImportFiles = new Set<string>();
     const supabaseImportFiles = new Set<string>();
     const sqlalchemyImportFiles = new Set<string>();
     const typeormImportFiles = new Set<string>();
@@ -95,6 +96,8 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
       // Prisma client import
       if (source.includes('@prisma/client')) {
         frameworks.add('prisma');
+        const fp = node.properties.filePath as string | undefined;
+        if (fp) prismaImportFiles.add(fp);
         const prismaNodeId = `orm:prisma:client:${node.id}`;
         graph.addNode({
           id: prismaNodeId,
@@ -256,15 +259,15 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
       if (!elements) continue;
 
       for (const elementId of elements) {
-        const edgeId = `orm:uses:${node.id}:supabase:${elementId}`;
+        const edgeId = `orm:queries:${node.id}:supabase:${elementId}`;
         if (!graph.getRelationship(edgeId)) {
           graph.addRelationship({
             id: edgeId,
             sourceId: node.id,
             targetId: elementId,
-            type: 'USES',
+            type: 'QUERIES',
             confidence: 0.7,
-            reason: 'Function uses Supabase',
+            reason: 'Function queries Supabase table/rpc',
           });
           queryEdgeCount++;
         }
@@ -382,6 +385,67 @@ export const ormPhase: PhaseDefinition<OrmOutput> = {
             properties: { name: 'Schema', filePath: fp, kind: 'schema', orm: 'mongoose' },
           });
           modelCount++;
+        }
+      }
+    }
+
+    // ── Prisma Client method detection (#756) ────────────────────────────────
+    // Detects prisma.model.method() patterns and creates QUERIES edges
+    // linking handlers to their Prisma models.
+    const prismaMethods = [
+      'findMany', 'findUnique', 'findFirst', 'findFirstOrThrow', 'findUniqueOrThrow',
+      'create', 'createMany', 'update', 'updateMany', 'upsert',
+      'delete', 'deleteMany', 'count', 'aggregate', 'groupBy',
+    ];
+    const prismaMethodsRe = new RegExp(
+      `\\b(?:prisma|PrismaClient)\\.([a-zA-Z]\\w*)\\.(?:${prismaMethods.join('|')})\\s*\\(`,
+      'g',
+    );
+    // Build index of Prisma model nodes for O(1) lookup (case-insensitive key)
+    const prismaModelsByName = new Map<string, string>();
+    for (const node of graph.iterNodes()) {
+      if (node.label === 'CodeElement' && node.properties.orm === 'prisma' && node.properties.kind === 'model') {
+        prismaModelsByName.set((node.properties.name as string).toLowerCase(), node.id);
+      }
+    }
+
+    for (const fp of prismaImportFiles) {
+      if (changedPaths && !changedPaths.has(fp)) continue;
+      const content = await readFileCached(fp);
+      if (!content) continue;
+
+      const accessedModels = new Map<string, string[]>();
+      let match: RegExpExecArray | null;
+      while ((match = prismaMethodsRe.exec(content)) !== null) {
+        const modelName = match[1]!;
+        const method = match[0]!.split('.').pop()!.split('(')[0]!;
+        if (!accessedModels.has(modelName)) accessedModels.set(modelName, []);
+        accessedModels.get(modelName)!.push(method);
+      }
+
+      // Link Function/Method nodes in this file to the Prisma models they query
+      if (accessedModels.size > 0) {
+        for (const node of graph.iterNodes()) {
+          if (node.label !== 'Function' && node.label !== 'Method') continue;
+          const nodeFp = node.properties.filePath as string | undefined;
+          if (nodeFp !== fp) continue;
+
+          for (const [modelName] of accessedModels) {
+            const modelNodeId = prismaModelsByName.get(modelName.toLowerCase());
+            if (!modelNodeId) continue;
+            const edgeId = `orm:queries:${node.id}:prisma:${modelNodeId}`;
+            if (!graph.getRelationship(edgeId)) {
+              graph.addRelationship({
+                id: edgeId,
+                sourceId: node.id,
+                targetId: modelNodeId,
+                type: 'QUERIES',
+                confidence: 0.8,
+                reason: `Function queries Prisma model ${modelName}`,
+              });
+              queryEdgeCount++;
+            }
+          }
         }
       }
     }
