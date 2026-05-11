@@ -14,6 +14,8 @@ export { processTracingPhase } from './process-tracing.js';
 export { cobolPhase } from './cobol.js';
 export { vueSfcPhase } from './vue-sfc.js';
 export { accessTrackingPhase, type AccessTrackingOutput } from './access-tracking.js';
+// #463: Coverage annotation phase
+export { coveragePhase, type CoverageScanOutput } from './coverage.js';
 export { callResolutionPhase } from '../call-processor.js';
 export { scopeResolutionPhase } from '../scope-resolver.js';
 export type { FileEntry, ScanOutput } from './scan.js';
