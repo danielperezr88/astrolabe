@@ -31,6 +31,12 @@ export interface WikiOptions {
   baseUrl?: string;
   /** LLM API key. */
   apiKey?: string;
+  /** #763: LLM provider (openai, anthropic, ollama, openrouter, azure). Auto-configures baseUrl. */
+  provider?: string;
+  /** #763: Override reasoning model detection (force/disable reasoning mode). */
+  reasoningModel?: boolean;
+  /** #763: Max concurrent LLM calls (default: 1 = sequential). */
+  concurrency?: number;
   /** Force full regeneration (clears existing wiki). */
   force?: boolean;
   /** Stop after module tree creation (review mode). */
@@ -110,12 +116,53 @@ function estimateTokens(text: string): number {
 
 /** Context window sizes for common models (input tokens). */
 const MODEL_TOKEN_LIMITS: Record<string, number> = {
+  // OpenAI
   'gpt-4': 8192,
   'gpt-4-turbo': 128_000,
   'gpt-4o': 128_000,
   'gpt-4o-mini': 128_000,
   'gpt-3.5-turbo': 16_384,
   'gpt-3.5-turbo-16k': 16_384,
+  'o1': 200_000,
+  'o1-mini': 128_000,
+  'o1-pro': 200_000,
+  'o3': 200_000,
+  'o3-mini': 200_000,
+  'o4-mini': 200_000,
+  // Anthropic
+  'claude-3-opus': 200_000,
+  'claude-3-sonnet': 200_000,
+  'claude-3-haiku': 200_000,
+  'claude-3.5-sonnet': 200_000,
+  'claude-3.5-haiku': 200_000,
+  'claude-4-sonnet': 200_000,
+  'claude-4-opus': 200_000,
+  // Google
+  'gemini-1.5-pro': 1_000_000,
+  'gemini-1.5-flash': 1_000_000,
+  'gemini-2.0-flash': 1_000_000,
+  'gemini-2.5-pro': 1_000_000,
+  // MiniMax
+  'minimax-m2.5': 1_000_000,
+  // GLM
+  'glm-4': 128_000,
+};
+
+/** #763: Reasoning models require different prompt construction. */
+const REASONING_MODELS = new Set([
+  'o1', 'o1-mini', 'o1-pro', 'o1-preview', 'o1-mini-preview',
+  'o3', 'o3-mini',
+  'o4-mini',
+  'deepseek-r1', 'deepseek-reasoner',
+]);
+
+/** #763: Provider auto-configuration — maps provider name to default base URL and env var. */
+const PROVIDER_CONFIGS: Record<string, { baseUrl: string; envKey: string }> = {
+  openai: { baseUrl: 'https://api.openai.com/v1/chat/completions', envKey: 'OPENAI_API_KEY' },
+  anthropic: { baseUrl: 'https://api.anthropic.com/v1/messages', envKey: 'ANTHROPIC_API_KEY' },
+  ollama: { baseUrl: 'http://localhost:11434/v1/chat/completions', envKey: '' },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1/chat/completions', envKey: 'OPENROUTER_API_KEY' },
+  azure: { baseUrl: '', envKey: 'AZURE_OPENAI_API_KEY' }, // Azure requires custom endpoint
 };
 
 /** Default input token budget when model is unknown. */
@@ -131,13 +178,31 @@ function getInputBudget(model: string): number {
   return DEFAULT_INPUT_BUDGET;
 }
 
-function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
-  // #355: Only use OpenAI-compatible keys (OPENAI_API_KEY or explicit --api-key)
-  const apiKey = opts.apiKey || process.env.OPENAI_API_KEY || '';
-  if (!apiKey) return Promise.resolve('');
+function isReasoningModel(model: string): boolean {
+  // Exact match or prefix match (e.g. o1-2024-12-17)
+  if (REASONING_MODELS.has(model)) return true;
+  for (const rm of REASONING_MODELS) {
+    if (model.startsWith(rm + '-') || model.startsWith(rm + '.')) return true;
+  }
+  return false;
+}
 
-  const url = opts.baseUrl || 'https://api.openai.com/v1/chat/completions';
+function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise<string> {
+  // #763: Resolve provider config if specified
+  const providerCfg = opts.provider ? PROVIDER_CONFIGS[opts.provider] : undefined;
+  const apiKey = opts.apiKey
+    || (providerCfg?.envKey ? process.env[providerCfg.envKey] : '')
+    || process.env.OPENAI_API_KEY
+    || '';
+  if (!apiKey && opts.provider !== 'ollama') return Promise.resolve('');
+
+  const url = opts.baseUrl || providerCfg?.baseUrl || 'https://api.openai.com/v1/chat/completions';
   const model = opts.model || 'gpt-4o-mini';
+
+  // #763: Detect reasoning model — skip temperature/max_tokens for reasoning models
+  const isReasoning = opts.reasoningModel !== undefined
+    ? opts.reasoningModel
+    : isReasoningModel(model);
 
   // #645: Truncate prompt to fit model's input token budget.
   // Reserve 500 tokens for the completion (max_tokens) + system overhead.
@@ -155,7 +220,17 @@ function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000); // #356: 30s timeout
+  const timeout = setTimeout(() => controller.abort(), 60_000); // #763: 60s timeout for reasoning models
+
+  // #763: Build request body based on reasoning model detection
+  const body: Record<string, unknown> = {
+    model,
+    messages: [{ role: 'user', content: safePrompt }],
+  };
+  if (!isReasoning) {
+    body.max_tokens = 500;
+    body.temperature = 0.3;
+  }
 
   return fetch(url, {
     method: 'POST',
@@ -163,12 +238,7 @@ function callLlm(prompt: string, opts: WikiOptions, moduleName: string): Promise
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: safePrompt }],
-      max_tokens: 500,
-      temperature: 0.3,
-    }),
+    body: JSON.stringify(body),
     signal: controller.signal,
   })
     .then((r) => {
@@ -199,6 +269,20 @@ async function generateModuleDescription(
 
   const prompt = `Write a 2-3 sentence description of a software module named "${moduleName}" containing these symbols: ${symbols.slice(0, 15).join(', ')}. Focus on the module's purpose and what it provides. Be concise.`;
   return callLlm(prompt, opts, moduleName);
+}
+
+/** #763: Build a module page from name, symbols, and description. */
+function buildModulePage(name: string, symbols: string[], description: string): string {
+  return [
+    `# ${name}\n`,
+    `> Auto-generated by Astrolabe Wiki | ${new Date().toISOString().split('T')[0]}\n`,
+    `\n## Overview\n`,
+    description,
+    `\n## Key Symbols (${symbols.length})\n`,
+    ...symbols.slice(0, 30).map((s) => `- \`${s}\``),
+    `\n## Dependencies\n`,
+    `_See cross-module links in the overview page._`,
+  ].join('\n');
 }
 
 export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
@@ -309,6 +393,9 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
   // Build module-to-files mapping for meta.json
   const moduleFilesMap: Record<string, string[]> = {};
 
+  // #763: Queue for batch concurrent LLM calls
+  const moduleQueue: Array<{ name: string; symbols: string[]; safeName: string; filesForModule: string[] }> = [];
+
   // Generate per-module pages
   for (const [name, symbols] of communities) {
     let safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -337,21 +424,37 @@ export async function generateWiki(opts: WikiOptions): Promise<WikiResult> {
         })();
     moduleFilesMap[name] = filesForModule;
 
-    const description = await generateModuleDescription(name, symbols, opts);
+    // #763: Collect module info for batch LLM calls
+    moduleQueue.push({ name, symbols, safeName, filesForModule });
+  }
 
-    const content = [
-      `# ${name}\n`,
-      `> Auto-generated by Astrolabe Wiki | ${new Date().toISOString().split('T')[0]}\n`,
-      `\n## Overview\n`,
-      description,
-      `\n## Key Symbols (${symbols.length})\n`,
-      ...symbols.slice(0, 30).map((s) => `- \`${s}\``),
-      `\n## Dependencies\n`,
-      `_See cross-module links in the overview page._`,
-    ].join('\n');
-
-    writeFileSync(join(wikiDir, `${safeName}.md`), content, 'utf-8');
-    pageCount++;
+  // #763: Generate module descriptions with optional concurrency
+  const concurrency = opts.concurrency ?? 1;
+  if (concurrency > 1 && moduleQueue.length > 0) {
+    // Batch concurrent LLM calls
+    const batches: typeof moduleQueue[] = [];
+    for (let i = 0; i < moduleQueue.length; i += concurrency) {
+      batches.push(moduleQueue.slice(i, i + concurrency));
+    }
+    for (const batch of batches) {
+      const descriptions = await Promise.all(
+        batch.map((m) => generateModuleDescription(m.name, m.symbols, opts)),
+      );
+      for (let i = 0; i < batch.length; i++) {
+        const { name, symbols: syms, safeName: sn, filesForModule: _ } = batch[i];
+        const content = buildModulePage(name, syms, descriptions[i]);
+        writeFileSync(join(wikiDir, `${sn}.md`), content, 'utf-8');
+        pageCount++;
+      }
+    }
+  } else {
+    // Sequential (original behavior)
+    for (const { name, symbols: syms, safeName: sn } of moduleQueue) {
+      const description = await generateModuleDescription(name, syms, opts);
+      const content = buildModulePage(name, syms, description);
+      writeFileSync(join(wikiDir, `${sn}.md`), content, 'utf-8');
+      pageCount++;
+    }
   }
 
   // Generate overview page
