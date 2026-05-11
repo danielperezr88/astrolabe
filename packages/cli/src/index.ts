@@ -29,6 +29,7 @@ import {
   startHttpServer,
   generateWiki,
   startEvalServer,
+  migrateFromGitNexus,
 } from '@astrolabe-dev/core';
 import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
@@ -476,6 +477,34 @@ program
       } else {
         console.log(`No .astrolabe directory found at ${removed.path}.`);
       }
+    }
+  });
+
+// ── migrate ────────────────────────────────────────────────────────────────
+// #771: GitNexus/LadybugDB → Astrolabe SQLite migration
+program
+  .command('migrate <source-path>')
+  .description('Import GitNexus/LadybugDB analysis into Astrolabe SQLite format (#771)')
+  .option('-o, --output <path>', 'Output database path', '.astrolabe/astrolabe.db')
+  .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
+  .action((sourcePath: string, opts: { output: string; logLevel: string }) => {
+    const absSource = resolve(sourcePath);
+    const absOutput = resolve(opts.output);
+
+    console.log(`Migrating GitNexus data from ${absSource}...`);
+    try {
+      const result = migrateFromGitNexus(absSource, absOutput);
+      console.log(`Migration complete: ${result.nodeCount} nodes, ${result.edgeCount} edges`);
+      if (result.warnings.length) {
+        console.log(`Warnings (${result.warnings.length}):`);
+        for (const w of result.warnings.slice(0, 10)) console.log(`  - ${w}`);
+      }
+      if (result.skippedTypes.length) {
+        console.log(`Skipped types: ${result.skippedTypes.join(', ')}`);
+      }
+    } catch (err: any) {
+      console.error(`Migration failed: ${err.message}`);
+      process.exit(1);
     }
   });
 
