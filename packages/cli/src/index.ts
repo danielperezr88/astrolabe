@@ -31,6 +31,7 @@ import {
 } from '@astrolabe-dev/core';
 import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
+import { startWatch } from './watch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -345,6 +346,43 @@ program
   .action(() => {
     if (existsSync('.astrolabe')) { rmSync('.astrolabe', { recursive: true, force: true }); console.log('Removed .astrolabe directory.'); }
     else { console.log('No .astrolabe directory found.'); }
+  });
+
+// ── watch ──────────────────────────────────────────────────────────────────────
+program
+  .command('watch <repo-path>')
+  .description('Watch for file changes and incrementally re-index (#462)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
+  .option('--debounce <ms>', 'Debounce interval in milliseconds', parseInt, 500)
+  .action(async (repoPath: string, opts: { db: string; logLevel: string; debounce: number }) => {
+    const absRepo = resolve(repoPath);
+    const dbPath = resolve(opts.db);
+
+    console.log(`#462: Starting watch mode for ${absRepo}...`);
+    console.log(`Database: ${dbPath}`);
+    console.log('Press Ctrl+C to stop.');
+
+    try {
+      const watcher = await startWatch(absRepo, {
+        dbPath,
+        logLevel: opts.logLevel,
+        debounceMs: opts.debounce,
+      });
+
+      // #462: Graceful shutdown on SIGINT/SIGTERM
+      const shutdown = async () => {
+        console.log('\nShutting down watcher...');
+        await watcher.close();
+        process.exit(0);
+      };
+
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } catch (err: any) {
+      console.error(`Watch mode failed: ${err.message}`);
+      process.exit(1);
+    }
   });
 
 // ── remove ────────────────────────────────────────────────────────────────────
