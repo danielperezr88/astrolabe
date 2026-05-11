@@ -311,12 +311,12 @@ class LocalBackend {
   }
 
   /** #401: Context across group repos with optional service filtering. */
-  contextGroup(nameOrUid: string, repoParam: string, service?: string) {
+  contextGroup(nameOrUid: string, repoParam: string, service?: string, kind?: string, filePath?: string) {
     const { contexts, groupName } = this.resolveGroupRepos(repoParam);
     const allMatches: Array<{ repoName: string; match: Record<string, unknown> }> = [];
 
     for (const { repo, memberPath } of contexts) {
-      const result = this.context(nameOrUid, repo.entry.name);
+      const result = this.context(nameOrUid, repo.entry.name, kind, filePath);
       if (!('error' in result)) {
         allMatches.push({ repoName: `${groupName}/${memberPath}`, match: result as unknown as Record<string, unknown> });
       }
@@ -390,7 +390,7 @@ class LocalBackend {
     return { processes, process_symbols: processSymbols, definitions, siblingWarning };
   }
 
-  context(nameOrUid: string, repo?: string) {
+  context(nameOrUid: string, repo?: string, kind?: string, filePath?: string) {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
@@ -398,13 +398,30 @@ class LocalBackend {
     const siblingWarning = this.getSiblingWarning(ctx.entry.path);
 
     // Find ALL matching symbols (handle overloads) (#116)
-    const symbols: GraphNode[] = [];
+    // #764: Compute relevance score for disambiguation
+    const symbols: Array<{ node: GraphNode; relevance: number }> = [];
     for (const node of graph.iterNodes()) {
       if (node.id === nameOrUid || node.properties.name === nameOrUid) {
-        symbols.push(node);
+        let relevance: number;
+        if (node.id === nameOrUid) {
+          relevance = 1.0;
+        } else if (kind && node.label === kind) {
+          relevance = 0.9;
+        } else if (filePath && (node.properties.filePath ?? '').includes(filePath)) {
+          relevance = 0.7;
+        } else {
+          relevance = 0.5;
+        }
+        // Apply filters if provided
+        if (kind && node.label !== kind) continue;
+        if (filePath && !(node.properties.filePath ?? '').includes(filePath)) continue;
+        symbols.push({ node, relevance });
       }
     }
     if (symbols.length === 0) return { error: `Symbol "${nameOrUid}" not found.`, siblingWarning };
+
+    // Sort by relevance (highest first)
+    symbols.sort((a, b) => b.relevance - a.relevance);
 
     // #177: Build adjacency index ONCE for all symbols (O(R) not O(S × R))
     const incomingMap = new Map<string, Map<string, string[]>>();
@@ -445,26 +462,26 @@ class LocalBackend {
       });
     }
 
-    const results = symbols.map((symbol) => {
-      const inc = incomingMap.get(symbol.id);
+    const results = symbols.map((entry) => {
+      const inc = incomingMap.get(entry.node.id);
       const incoming: Record<string, string[]> = {};
       if (inc) { for (const [t, names] of inc) incoming[t] = names; }
 
-      const out = outgoingMap.get(symbol.id);
+      const out = outgoingMap.get(entry.node.id);
       const outgoing: Record<string, string[]> = {};
       if (out) { for (const [t, names] of out) outgoing[t] = names; }
 
-      const processes = processMap.get(symbol.id) ?? [];
+      const processes = processMap.get(entry.node.id) ?? [];
 
       // TODO(#164): Include resolved type information once parser captures
       // returnType/declaredType on Function/Method nodes and cross-file
       // phase produces resolved_returnType.
       const symbolInfo: Record<string, unknown> = {
-        uid: symbol.id,
-        kind: symbol.label,
-        name: (symbol.properties.name as string) ?? '',
-        filePath: symbol.properties.filePath ?? '',
-        startLine: symbol.properties.startLine ?? 0,
+        uid: entry.node.id,
+        kind: entry.node.label,
+        name: (entry.node.properties.name as string) ?? '',
+        filePath: entry.node.properties.filePath ?? '',
+        startLine: entry.node.properties.startLine ?? 0,
       };
 
       return {
@@ -472,25 +489,64 @@ class LocalBackend {
         incoming,
         outgoing,
         processes,
+        relevance: entry.relevance,
       };
     });
 
     return { match_count: results.length, matches: results, siblingWarning };
   }
 
-  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3) {
+  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000, targetUid?: string, kind?: string, filePath?: string) {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
-    // Find target symbol
-    let targetNode: GraphNode | undefined;
+    // #764: Disambiguation — collect ALL matching candidates instead of first-match break
+    const candidates: Array<{ node: GraphNode; relevance: number }> = [];
     for (const node of graph.iterNodes()) {
-      if (node.id === target || node.properties.name === target) {
-        targetNode = node;
-        break;
+      let matched = false;
+      let relevance = 0;
+      if (targetUid && node.id === targetUid) {
+        matched = true;
+        relevance = 1.0;
+      } else if (!targetUid && (node.id === target || node.properties.name === target)) {
+        matched = true;
+        if (node.id === target) {
+          relevance = 1.0;
+        } else if (kind && node.label === kind) {
+          relevance = 0.9;
+        } else if (filePath && (node.properties.filePath ?? '').includes(filePath)) {
+          relevance = 0.7;
+        } else {
+          relevance = 0.5;
+        }
       }
+      if (!matched) continue;
+      // Apply filters
+      if (kind && node.label !== kind) continue;
+      if (filePath && !(node.properties.filePath ?? '').includes(filePath)) continue;
+      candidates.push({ node, relevance });
     }
-    if (!targetNode) return { error: `Target "${target}" not found.` };
+
+    if (candidates.length === 0) return { error: `Target "${target}" not found.` };
+
+    // Sort by relevance
+    candidates.sort((a, b) => b.relevance - a.relevance);
+
+    // If multiple candidates remain, return disambiguation result instead of picking one
+    if (candidates.length > 1) {
+      return {
+        ambiguous: true as const,
+        candidates: candidates.map((c) => ({
+          uid: c.node.id,
+          name: (c.node.properties.name as string) ?? '',
+          kind: c.node.label,
+          filePath: c.node.properties.filePath ?? '',
+          relevance: c.relevance,
+        })),
+      };
+    }
+
+    const targetNode = candidates[0].node;
 
     // Pre-build adjacency index: Map<nodeId, { neighborId, type, confidence }[]> (#119)
     // Also track unfiltered edge counts per node for untraceable detection (#695):
@@ -528,8 +584,10 @@ class LocalBackend {
     const visited = new Set<string>([targetNode.id]);
     const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
     let truncated = false;
+    const deadline = Date.now() + Math.min(timeoutMs, 3_600_000);
 
     while (queue.length > 0 && affected.length < MAX_IMPACT_RESULTS) {
+      if (Date.now() >= deadline) { truncated = true; break; }
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
@@ -928,6 +986,8 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos, or "@<group
         name: { type: 'string', description: 'Symbol name or node ID' },
         repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode' },
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
+        kind: { type: 'string', description: 'Node label filter (Function, Class, Method, etc.) for disambiguation' },
+        file_path: { type: 'string', description: 'File path filter (substring match) for disambiguation' },
       },
       required: ['name'],
     },
@@ -937,12 +997,14 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos, or "@<group
       const name = requireString(params, 'name');
       const repo = params.repo as string | undefined;
       const service = params.service as string | undefined;
+      const kind = params.kind as string | undefined;
+      const filePath = params.file_path as string | undefined;
       let result: unknown;
 
       if (repo?.startsWith('@')) {
-        result = backend.contextGroup(name, repo, service);
+        result = backend.contextGroup(name, repo, service, kind, filePath);
       } else {
-        result = backend.context(name, repo);
+        result = backend.context(name, repo, kind, filePath);
       }
 
       timer.mark('lookup');
@@ -969,9 +1031,13 @@ service: monorepo path prefix filter (only active in group mode).`,
         maxDepth: { type: 'number', description: 'How many levels to traverse in local graph', default: 5 },
         minConfidence: { type: 'number', description: 'Minimum edge confidence (0.0-1.0)', default: 0.3 },
         crossDepth: { type: 'number', description: 'Cross-repo hop depth via contract bridge (0 = single repo only)', default: 0 },
+        timeoutMs: { type: 'number', description: 'Wall-clock budget in ms (default 30000, max 3600000). Returns partial results if exceeded.', default: 30000 },
         repo: { type: 'string', description: 'Repository name, or "@<groupName>" / "@<groupName>/<memberPath>" for group mode' },
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
         subgroup: { type: 'string', description: 'Optional group subgroup prefix limiting cross-repo fan-out' },
+        targetUid: { type: 'string', description: 'Exact node ID for zero-ambiguity lookup (skips name resolution)' },
+        kind: { type: 'string', description: 'Node label filter for disambiguation when target name is ambiguous' },
+        file_path: { type: 'string', description: 'File path filter for disambiguation' },
       },
       required: ['target', 'direction'],
     },
@@ -981,6 +1047,10 @@ service: monorepo path prefix filter (only active in group mode).`,
       const target = requireString(params, 'target');
       const repo = params.repo as string | undefined;
       const crossDepth = requireNumber(params, 'crossDepth', 0);
+      const timeoutMs = Math.min(requireNumber(params, 'timeoutMs', 30000), 3_600_000);
+      const targetUid = params.targetUid as string | undefined;
+      const kind = params.kind as string | undefined;
+      const filePath = params.file_path as string | undefined;
       let result: unknown;
 
       if (repo?.startsWith('@') && crossDepth > 0) {
@@ -996,6 +1066,10 @@ service: monorepo path prefix filter (only active in group mode).`,
           anchor.repo.entry.name,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
+          targetUid,
+          kind,
+          filePath,
         );
 
         // Cross-repo fan-out via contract links
@@ -1031,6 +1105,7 @@ service: monorepo path prefix filter (only active in group mode).`,
                     targetRepo,
                     requireNumber(params, 'maxDepth', 3),
                     requireNumber(params, 'minConfidence', 0.3),
+                    timeoutMs,
                   );
                   crossResults.push({ repo: targetRepo, contract: link.contractType, link, result: crossResult });
                 } catch { /* skip unreachable repos */ }
@@ -1056,6 +1131,10 @@ service: monorepo path prefix filter (only active in group mode).`,
           anchor?.repo.entry.name,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
+          targetUid,
+          kind,
+          filePath,
         );
       } else {
         result = backend.impact(
@@ -1064,6 +1143,10 @@ service: monorepo path prefix filter (only active in group mode).`,
           repo,
           requireNumber(params, 'maxDepth', 5),
           requireNumber(params, 'minConfidence', 0.3),
+          timeoutMs,
+          targetUid,
+          kind,
+          filePath,
         );
       }
 
@@ -1419,6 +1502,9 @@ Returns direct impacts (within same repo) plus cross-repo impacts discovered thr
         maxDepth: { type: 'number', default: 3 },
         crossDepth: { type: 'number', default: 2 },
         minConfidence: { type: 'number', default: 0.3 },
+        targetUid: { type: 'string', description: 'Exact node ID for zero-ambiguity lookup (skips name resolution)' },
+        kind: { type: 'string', description: 'Node label filter for disambiguation when target name is ambiguous' },
+        file_path: { type: 'string', description: 'File path filter for disambiguation' },
       },
       required: ['name', 'target'],
     },
@@ -1431,6 +1517,9 @@ Returns direct impacts (within same repo) plus cross-repo impacts discovered thr
       const maxDepth = requireNumber(params, 'maxDepth', 3);
       const crossDepth = requireNumber(params, 'crossDepth', 2);
       const minConfidence = requireNumber(params, 'minConfidence', 0.3);
+      const targetUid = params.targetUid as string | undefined;
+      const kind = params.kind as string | undefined;
+      const filePath = params.file_path as string | undefined;
 
       // 1. Resolve the group
       const groups = listGroups();
@@ -1450,19 +1539,42 @@ Returns direct impacts (within same repo) plus cross-repo impacts discovered thr
         return { content: [{ type: 'text', text: JSON.stringify({ error: `No reachable repos in group '${groupName}'` }) }] };
       }
 
-      // 3. Search for target across all group members
+      // 3. Search for target across all group members (#764: collect all matches, not first-match break)
       let anchorRepo: string | undefined;
       const reposWithTarget: string[] = [];
       for (const { repo } of contexts) {
         const graph = repo.loadGraph();
-        let found = false;
+        const repoCandidates: Array<{ uid: string; name: string; kind: string; filePath: string; relevance: number }> = [];
         for (const node of graph.iterNodes()) {
-          if (node.id === target || node.properties.name === target) {
-            found = true;
-            break;
+          let matched = false;
+          let relevance = 0;
+          if (targetUid && node.id === targetUid) {
+            matched = true;
+            relevance = 1.0;
+          } else if (!targetUid && (node.id === target || node.properties.name === target)) {
+            matched = true;
+            if (node.id === target) {
+              relevance = 1.0;
+            } else if (kind && node.label === kind) {
+              relevance = 0.9;
+            } else if (filePath && (node.properties.filePath ?? '').includes(filePath)) {
+              relevance = 0.7;
+            } else {
+              relevance = 0.5;
+            }
           }
+          if (!matched) continue;
+          if (kind && node.label !== kind) continue;
+          if (filePath && !(node.properties.filePath ?? '').includes(filePath)) continue;
+          repoCandidates.push({
+            uid: node.id,
+            name: (node.properties.name as string) ?? '',
+            kind: node.label,
+            filePath: node.properties.filePath ?? '',
+            relevance,
+          });
         }
-        if (found) {
+        if (repoCandidates.length > 0) {
           if (!anchorRepo) anchorRepo = repo.entry.name;
           if (!reposWithTarget.includes(repo.entry.name)) {
             reposWithTarget.push(repo.entry.name);
@@ -1843,6 +1955,146 @@ DIAGRAM TYPES:
       const result = generateDiagram(graph, opts);
       const statsLine = `// ${result.stats.nodeCount} nodes, ${result.stats.edgeCount} edges`;
       return { content: [{ type: 'text', text: result.diagram + '\n\n' + statsLine }] };
+    },
+  },
+
+  // #464: Security audit tool
+  'astrolabe.security_audit': {
+    name: 'astrolabe.security_audit',
+    description: `Run a security audit on an indexed repository. Detects secrets in code, identifies security-sensitive code patterns, and optionally checks dependencies for known vulnerabilities via OSV.dev.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (optional if only one indexed)' },
+        check_deps: { type: 'boolean', description: 'Check dependencies for vulnerabilities via OSV.dev (default: false)' },
+        severity_threshold: { type: 'string', description: 'Minimum severity to report: critical, high, medium, low (default: low)', enum: ['critical', 'high', 'medium', 'low'] },
+      },
+    },
+    handler: async (params) => {
+      const repo = params.repo as string | undefined;
+      const checkDeps = (params.check_deps as boolean) ?? false;
+      const severityThreshold = (params.severity_threshold as string) ?? 'low';
+
+      // #464: Load graph from DB
+      const ctx = backend.getRepo(repo);
+      const graph = ctx.loadGraph();
+
+      // #464: Import security patterns and scan logic inline to avoid circular deps
+      const SECRET_PATTERNS = [
+        { name: 'AWS Access Key', pattern: /AKIA[0-9A-Z]{16}/g, severity: 'critical' },
+        { name: 'AWS Secret Key', pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*['"][A-Za-z0-9/+=]{40}['"]/gi, severity: 'critical' },
+        { name: 'GitHub Token', pattern: /gh[pousr]_[A-Za-z0-9_]{36,}/g, severity: 'critical' },
+        { name: 'GitHub OAuth', pattern: /gho_[A-Za-z0-9]{36}/g, severity: 'critical' },
+        { name: 'Slack Token', pattern: /xox[baprs]-[0-9]{10,}-[A-Za-z0-9]+/g, severity: 'high' },
+        { name: 'Private Key', pattern: /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----/g, severity: 'critical' },
+        { name: 'JWT', pattern: /eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+/g, severity: 'medium' },
+        { name: 'Generic API Key', pattern: /(?:api[_-]?key|apikey)\s*[=:]\s*['"][A-Za-z0-9]{20,}['"]/gi, severity: 'high' },
+        { name: 'Generic Secret', pattern: /(?:secret|password|token)\s*[=:]\s*['"][A-Za-z0-9!@#$%^&*]{16,}['"]/gi, severity: 'high' },
+        { name: 'Google API Key', pattern: /AIza[0-9A-Za-z_-]{35}/g, severity: 'high' },
+        { name: 'Stripe Key', pattern: /(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}/g, severity: 'critical' },
+      ];
+
+      const SECURITY_PATTERNS = [
+        { category: 'auth', patterns: [/\b(?:login|authenticate|authorize|logout|session)\b/i], severity: 'medium' },
+        { category: 'crypto', patterns: [/\b(?:encrypt|decrypt|hash|sign|verify|cipher|digest)\b/i], severity: 'medium' },
+        { category: 'sql', patterns: [/\b(?:executeQuery|rawQuery|\.query\(|sql.*\+|SELECT.*FROM|INSERT.*INTO)\b/i], severity: 'high' },
+        { category: 'file-io', patterns: [/\b(?:readFile|writeFile|unlink|rmdir|exec|spawn)\b/i], severity: 'low' },
+        { category: 'network', patterns: [/\b(?:fetch|axios|http\.request|XMLHttpRequest|websocket)\b/i], severity: 'info' },
+      ];
+
+      const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const meetsThreshold = (sev: string) => (SEVERITY_ORDER[sev] ?? 4) <= (SEVERITY_ORDER[severityThreshold] ?? 4);
+
+      const findings: Array<Record<string, unknown>> = [];
+      let secretCount = 0;
+      let securityPatternCount = 0;
+
+      // #464: Scan all nodes
+      const binaryExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'eot', 'mp3', 'mp4', 'zip', 'gz', 'tar', 'wasm']);
+
+      for (const node of graph.iterNodes()) {
+        const content = typeof node.properties.content === 'string' ? node.properties.content : '';
+        const name = typeof node.properties.name === 'string' ? node.properties.name : '';
+        const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+        if (!filePath) continue;
+
+        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+        if (binaryExtensions.has(ext)) continue;
+
+        // #464: Secret scanning
+        if (content) {
+          for (const { name: patternName, pattern, severity } of SECRET_PATTERNS) {
+            if (!meetsThreshold(severity)) continue;
+            const regex = new RegExp(pattern.source, pattern.flags);
+            if (regex.test(content)) {
+              secretCount++;
+              findings.push({
+                type: 'secret',
+                severity,
+                category: patternName,
+                message: `Detected ${patternName} in ${node.label} "${name || node.id}"`,
+                nodeId: node.id,
+                filePath,
+              });
+            }
+          }
+        }
+
+        // #464: Security pattern scanning
+        const textToScan = [name, content].filter(Boolean).join(' ');
+        if (textToScan) {
+          for (const { category, patterns, severity } of SECURITY_PATTERNS) {
+            if (!meetsThreshold(severity)) continue;
+            for (const pat of patterns) {
+              const regex = new RegExp(pat.source, pat.flags);
+              if (regex.test(textToScan)) {
+                securityPatternCount++;
+                findings.push({
+                  type: 'security-pattern',
+                  severity,
+                  category,
+                  message: `Security-sensitive ${category} pattern in ${node.label} "${name || node.id}"`,
+                  nodeId: node.id,
+                  filePath,
+                });
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // #464: Optionally check dependencies
+      let vulnerabilityReport: Record<string, unknown> | null = null;
+      if (checkDeps) {
+        try {
+          const { detectManifestFiles, parseManifest, checkVulnerabilities } = await import('../analysis/security/vulnerabilities.js');
+          const repoPath = ctx.entry.path;
+          const manifests = detectManifestFiles(repoPath);
+          const allDeps: Array<{ name: string; version: string; ecosystem: string }> = [];
+          for (const m of manifests) {
+            const deps = parseManifest(m.path, m.ecosystem);
+            allDeps.push(...deps);
+          }
+          if (allDeps.length > 0) {
+            vulnerabilityReport = await checkVulnerabilities(allDeps) as unknown as Record<string, unknown>;
+          }
+        } catch (err) {
+          vulnerabilityReport = { error: `Dependency check failed: ${String(err)}` };
+        }
+      }
+
+      const report = {
+        findings,
+        summary: {
+          totalFindings: findings.length,
+          secretCount,
+          securityPatternCount,
+        },
+        vulnerabilities: vulnerabilityReport,
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
     },
   },
 };
