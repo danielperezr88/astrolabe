@@ -268,9 +268,10 @@ jobs:
 
 
       # ── Publish to npm ────────────────────────────────────────────────────
-      # NOTE: Version bump and CHANGELOG are now done on staging via
-      # prepare-release.yml before the staging→main PR is opened.
-      # The reviewer sees those changes in the PR diff.
+      # Auto-bumps workspace versions to the calculated release version.
+      # This makes the pipeline self-sufficient even if prepare-release.yml
+      # was not run on staging before the staging→main PR (#748).
+      # NOTE: CHANGELOG updates still require prepare-release.yml on staging.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -281,6 +282,15 @@ jobs:
       - run: npm ci
 
       - run: npm install --no-save --package-lock=false --legacy-peer-deps
+
+      - name: Bump workspace versions for release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Bumping workspace versions to ${VERSION}..."
+          npm pkg set version="${VERSION}" --workspace packages/shared
+          npm pkg set version="${VERSION}" --workspace packages/core
+          npm pkg set version="${VERSION}" --workspace packages/cli
+          echo "✅ Workspace versions set to ${VERSION}"
 
       - name: Build CLI package
         run: |

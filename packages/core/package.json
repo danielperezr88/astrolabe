@@ -1,6 +1,6 @@
 {
   "name": "@astrolabe-dev/core",
-  "version": "1.0.0",
+  "version": "1.0.8",
   "description": "Codebase knowledge graph engine — multi-language static analysis with graph persistence",
   "type": "module",
   "main": "dist/index.js",
