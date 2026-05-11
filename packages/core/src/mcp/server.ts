@@ -27,6 +27,9 @@ import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
+// #461: Graphlet-based structural analysis
+import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
+import type { CommunityInfo } from '../analysis/graphlet/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1955,6 +1958,105 @@ DIAGRAM TYPES:
       const result = generateDiagram(graph, opts);
       const statsLine = `// ${result.stats.nodeCount} nodes, ${result.stats.edgeCount} edges`;
       return { content: [{ type: 'text', text: result.diagram + '\n\n' + statsLine }] };
+    },
+  },
+
+  'astrolabe.analyze_architecture': {
+    name: 'astrolabe.analyze_architecture',
+    description: `Analyze architectural patterns using graphlet-based structural analysis. Detects hub-and-spoke, chain, diamond, and cycle motifs. Maps to architectural patterns (layered, microservices, event-driven, MVC) and scores overall health.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        include_health: { type: 'boolean', description: 'Include architecture health scoring (default: true)' },
+      },
+    },
+    handler: async (params) => {
+      const timer = new PhaseTimer('analyze_architecture');
+      timer.start();
+
+      // 1. Load graph
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      // 2. Collect non-structural node IDs (exclude File, Folder, Import, Package)
+      const structuralLabels = new Set(['File', 'Folder', 'Import', 'Package']);
+      const nodeIds = new Set<string>();
+      const nodeIterable: Array<{ id: string }> = [];
+      for (const node of graph.iterNodes()) {
+        if (!structuralLabels.has(node.label)) {
+          nodeIds.add(node.id);
+          nodeIterable.push({ id: node.id });
+        }
+      }
+
+      // 3. Build adjacency map from CALLS, IMPORTS, EXTENDS edges only
+      const allowedEdgeTypes = new Set(['CALLS', 'IMPORTS', 'EXTENDS']);
+      const relIterable: Array<{ sourceId: string; targetId: string; type: string }> = [];
+      for (const rel of graph.iterRelationships()) {
+        if (allowedEdgeTypes.has(rel.type)) {
+          relIterable.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
+        }
+      }
+      const adjMap = buildAdjacencyMap(relIterable, nodeIds);
+
+      timer.mark('build_adjacency');
+
+      // 4. Count graphlets
+      const profile = countGraphlets(nodeIterable, adjMap);
+
+      timer.mark('count_graphlets');
+
+      // 5. Detect patterns
+      const patterns = detectPatterns(profile);
+
+      timer.mark('detect_patterns');
+
+      // 6. Optionally score health
+      let health: ReturnType<typeof scoreArchitectureHealth> | undefined;
+      const includeHealth = params.include_health !== false; // default true
+      if (includeHealth) {
+        // Extract community info from graph
+        const communities: CommunityInfo[] = [];
+        const communityNodes = graph.findNodesByLabel('Community');
+        for (const cNode of communityNodes) {
+          const memberCount = cNode.properties.symbolCount as number | undefined;
+          if (memberCount !== undefined && memberCount > 0) {
+            communities.push({ id: cNode.id, nodeCount: memberCount });
+          }
+        }
+        health = scoreArchitectureHealth(profile, communities, adjMap);
+        timer.mark('health_score');
+      }
+
+      timer.stop();
+
+      const output = {
+        graphletProfile: {
+          motif3: profile.motif3,
+          motif4: profile.motif4,
+          nodeCount: profile.nodeCount,
+          edgeCount: profile.edgeCount,
+          sampled: profile.sampled,
+          sampleSize: profile.sampleSize,
+        },
+        patterns: patterns.map((p) => ({
+          name: p.name,
+          confidence: Math.round(p.confidence * 100) / 100,
+          description: p.description,
+          indicators: p.indicators,
+        })),
+        health: health ? {
+          overallScore: health.overallScore,
+          cohesion: health.cohesion,
+          modularity: health.modularity,
+          complexity: health.complexity,
+          antiPatterns: health.antiPatterns,
+        } : undefined,
+      };
+
+      const nextHint = '\n\nNext: use graph_algorithms({algorithm: "pagerank"}) to identify the most important modules, or cypher({query: {...}}) to explore specific dependency patterns.';
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) + nextHint }] };
     },
   },
 
