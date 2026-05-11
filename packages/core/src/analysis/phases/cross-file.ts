@@ -12,7 +12,7 @@
  */
 
 import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
-import type { GraphNode } from '@astrolabe-dev/shared';
+import type { GraphNode, KnowledgeGraph } from '@astrolabe-dev/shared';
 import { dirname } from 'node:path';
 import { toPosix } from '@astrolabe-dev/shared';
 
@@ -304,11 +304,164 @@ export const crossFilePhase: PhaseDefinition<CrossFileOutput> = {
       }
     }
 
+    // Deep type chain resolution — creates CHAINABLE_TO edges
+    const chainEdges = typeChainResolution(graph);
+
     return {
-      propagatedEdges,
+      propagatedEdges: propagatedEdges + chainEdges,
       filesProcessed: sortedFiles.length,
       unresolvedBefore: 0,
       unresolvedAfter: 0,
     };
   },
 };
+
+// ── Deep type chain resolution ──────────────────────────────────────────────
+
+/** Labels that can act as chain sources via declaredType. */
+const CHAIN_SOURCE_LABELS = new Set(['Property', 'Variable']);
+
+/** Labels whose methods are chainable targets. */
+const TYPE_LABELS = new Set(['Class', 'Interface']);
+
+/**
+ * Create CHAINABLE_TO edges that enable tracing call chains like
+ * `user.address.getCity().toString()` through the knowledge graph.
+ *
+ * Runs AFTER the existing RETURNS_TYPE / DECLARES_TYPE resolution.
+ * Supports up to 3 levels of chaining via iterative BFS.
+ *
+ * @returns Number of CHAINABLE_TO edges created.
+ */
+export function typeChainResolution(graph: KnowledgeGraph): number {
+  const MAX_CHAIN_DEPTH = 3;
+  let chainEdges = 0;
+
+  // 1. Build class/interface → member-methods index from MEMBER_OF edges
+  const classToMethods = new Map<string, GraphNode[]>();
+  for (const rel of graph.iterRelationshipsByType('MEMBER_OF')) {
+    const member = graph.getNode(rel.sourceId);
+    if (!member || (member.label !== 'Function' && member.label !== 'Method')) continue;
+    let arr = classToMethods.get(rel.targetId);
+    if (!arr) { arr = []; classToMethods.set(rel.targetId, arr); }
+    arr.push(member);
+  }
+
+  // 2. Build node-id → type-node-id lookups from existing edges
+  const declaresTypeTargets = new Map<string, string>();
+  for (const rel of graph.iterRelationshipsByType('DECLARES_TYPE')) {
+    declaresTypeTargets.set(rel.sourceId, rel.targetId);
+  }
+
+  const returnsTypeTargets = new Map<string, string>();
+  for (const rel of graph.iterRelationshipsByType('RETURNS_TYPE')) {
+    returnsTypeTargets.set(rel.sourceId, rel.targetId);
+  }
+
+  // Helper: create a CHAINABLE_TO edge (idempotent)
+  const addChainableEdge = (sourceId: string, targetId: string, reason: string): boolean => {
+    const edgeId = `chain:${sourceId}:${targetId}`;
+    if (graph.getRelationship(edgeId)) return false;
+    graph.addRelationship({
+      id: edgeId,
+      sourceId,
+      targetId,
+      type: 'CHAINABLE_TO',
+      confidence: 0.8,
+      reason,
+    });
+    return true;
+  };
+
+  // 3. Level 1: Property/Variable with declaredType → chain to type's methods
+  const chainableSources = new Set<string>();
+
+  for (const node of graph.iterNodes()) {
+    if (!CHAIN_SOURCE_LABELS.has(node.label)) continue;
+    const typeNodeId = declaresTypeTargets.get(node.id);
+    if (!typeNodeId) continue;
+
+    const typeNode = graph.getNode(typeNodeId);
+    if (!typeNode || !TYPE_LABELS.has(typeNode.label)) continue;
+
+    const methods = classToMethods.get(typeNodeId) ?? [];
+    const sourceName = (node.properties.name as string) ?? 'unknown';
+    const typeName = (typeNode.properties.name as string) ?? 'Unknown';
+
+    for (const method of methods) {
+      const methodName = (method.properties.name as string) ?? 'unknown';
+      if (addChainableEdge(
+        node.id,
+        method.id,
+        `declared type chain: ${sourceName} → ${typeName} → ${methodName}()`,
+      )) {
+        chainEdges++;
+        chainableSources.add(method.id);
+      }
+    }
+  }
+
+  // Level 1 also: Function/Method with returnType → chain to type's methods
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Function' && node.label !== 'Method') continue;
+    const typeNodeId = returnsTypeTargets.get(node.id);
+    if (!typeNodeId) continue;
+
+    const typeNode = graph.getNode(typeNodeId);
+    if (!typeNode || !TYPE_LABELS.has(typeNode.label)) continue;
+
+    const methods = classToMethods.get(typeNodeId) ?? [];
+    const funcName = (node.properties.name as string) ?? 'unknown';
+    const typeName = (typeNode.properties.name as string) ?? 'Unknown';
+
+    for (const method of methods) {
+      const methodName = (method.properties.name as string) ?? 'unknown';
+      if (addChainableEdge(
+        node.id,
+        method.id,
+        `return type chain: ${funcName}() → ${typeName} → ${methodName}()`,
+      )) {
+        chainEdges++;
+        chainableSources.add(method.id);
+      }
+    }
+  }
+
+  // 4. Levels 2–3: BFS — follow return types of chainable methods
+  for (let level = 2; level <= MAX_CHAIN_DEPTH; level++) {
+    const nextSources = new Set<string>();
+
+    for (const sourceId of chainableSources) {
+      const sourceNode = graph.getNode(sourceId);
+      if (!sourceNode) continue;
+
+      const returnTypeNodeId = returnsTypeTargets.get(sourceId);
+      if (!returnTypeNodeId) continue;
+
+      const typeNode = graph.getNode(returnTypeNodeId);
+      if (!typeNode || !TYPE_LABELS.has(typeNode.label)) continue;
+
+      const methods = classToMethods.get(returnTypeNodeId) ?? [];
+      const sourceName = (sourceNode.properties.name as string) ?? 'unknown';
+      const typeName = (typeNode.properties.name as string) ?? 'Unknown';
+
+      for (const method of methods) {
+        const methodName = (method.properties.name as string) ?? 'unknown';
+        if (addChainableEdge(
+          sourceId,
+          method.id,
+          `chain depth ${level}: ${sourceName}() → ${typeName} → ${methodName}()`,
+        )) {
+          chainEdges++;
+          nextSources.add(method.id);
+        }
+      }
+    }
+
+    if (nextSources.size === 0) break;
+    chainableSources.clear();
+    for (const id of nextSources) chainableSources.add(id);
+  }
+
+  return chainEdges;
+}
