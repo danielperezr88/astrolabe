@@ -53,9 +53,10 @@ program
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
   .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
+  .option('--no-stats', 'Omit volatile counts from AGENTS.md/CLAUDE.md (#760)')
   .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
   .option('--profile', 'Emit phase-level timing information (Pitfall 7)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; maxFileSize?: number; profile?: boolean }) => {
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; noStats?: boolean; maxFileSize?: number; profile?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
 
@@ -240,6 +241,7 @@ program
           isIncremental,
           graph: opts.skills ? graph : undefined,
           skills: opts.skills ?? false,
+          noStats: opts.noStats ?? false,
         });
         log.info('Agent files generated', { agentsMd: agentResult.agentsMd, claudeMd: agentResult.claudeMd, skillsCount: agentResult.skillsCount });
       }
