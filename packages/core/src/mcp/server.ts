@@ -20,6 +20,7 @@ import { loadRegistry, findEntryWithSiblingWarning, type RegistryEntry } from '.
 import { listGroups, getGroupStatus, groupQuery } from './groups.js';
 import { syncGroupContracts, getGroupContracts } from './contracts.js';
 import { McpTransport } from './transport.js';
+import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
@@ -2455,7 +2456,52 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
   }
 }
 
-export async function startMcpServer(): Promise<void> {
+export interface McpServerOptions {
+  /** Transport type: 'stdio' (default) or 'http' (StreamableHTTP). */
+  transport?: 'stdio' | 'http';
+  /** Port for HTTP transport. Default: 4748. Only used when transport is 'http'. */
+  port?: number;
+  /** Host for HTTP transport. Default: 'localhost'. Only used when transport is 'http'. */
+  host?: string;
+}
+
+export async function startMcpServer(options?: McpServerOptions): Promise<void> {
+  const transportType = options?.transport ?? 'stdio';
+
+  // ── HTTP (StreamableHTTP) transport ────────────────────────────────────
+  if (transportType === 'http') {
+    const httpTransport = new StreamableHttpTransport({
+      port: options?.port,
+      host: options?.host,
+    });
+
+    await httpTransport.listen();
+    const addr = httpTransport.address ?? `http://localhost:${options?.port ?? 4748}`;
+    console.error(`Astrolabe MCP server (StreamableHTTP) listening on ${addr}/mcp`);
+
+    // Graceful shutdown
+    process.on('SIGINT', () => { backend.shutdown(); httpTransport.close(); process.exit(0); });
+    process.on('SIGTERM', () => { backend.shutdown(); httpTransport.close(); process.exit(0); });
+
+    httpTransport.on('message', async (data: unknown) => {
+      try {
+        const req = data as JsonRpcRequest;
+        const res = await handleRequest(req);
+        if (res !== null) {
+          httpTransport.send(res);
+        }
+      } catch {
+        // Parse error already handled by transport
+      }
+    });
+
+    httpTransport.on('error', (err: Error) => {
+      console.error('MCP HTTP transport error:', err.message);
+    });
+    return;
+  }
+
+  // ── Stdio transport (default) ──────────────────────────────────────────
   // #274: Dual-framing transport with security hardening
   const transport = new McpTransport(process.stdin, process.stdout);
 

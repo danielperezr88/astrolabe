@@ -28,7 +28,8 @@ import {
   generateWiki,
   startEvalServer,
 } from '@astrolabe-dev/core';
-import type { ScanOutput, IncrementalInfo } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
+import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -93,6 +94,9 @@ program
       let edgeCount = 0;
       let isIncremental = false; // #338: track for AGENTS.md generation
 
+      // #732: Capture pipeline context for --profile / benchmark output
+      let profileCtx: { state: Map<string, unknown> } | null = null;
+
       if (storedMeta && dbExists) {
         // ── Incremental mode ──
         isIncremental = true; // #338: track for AGENTS.md generation
@@ -154,6 +158,8 @@ program
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
         log.info('Incremental analysis complete', { nodes: nodeCount, edges: edgeCount });
+        // #732: Capture pipeline context for --profile / benchmark output
+        profileCtx = ctx;
       } else {
         // ── Full analysis (first run or missing meta/DB) ──
         graph = createKnowledgeGraph();
@@ -170,6 +176,27 @@ program
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;
         log.info('Full analysis complete', { nodes: nodeCount, edges: edgeCount });
+        // #732: Capture pipeline context for --profile / benchmark output
+        profileCtx = context;
+      }
+
+      // #732: Emit structured profile/benchmark output to stderr
+      if (opts.profile && profileCtx) {
+        const timing = profileCtx.state.get(PIPELINE_TIMING_KEY) as PhaseTimerResult | undefined;
+        const mem = profileCtx.state.get(PIPELINE_MEMORY_KEY) as { before: NodeJS.MemoryUsage; after: NodeJS.MemoryUsage } | undefined;
+        const profileData = {
+          version: pkg.version,
+          timestamp: new Date().toISOString(),
+          phases: timing?.phases ?? {},
+          totalMs: timing?.totalMs ?? 0,
+          memory: mem ?? null,
+          nodeCount,
+          edgeCount,
+        };
+        // Emit structured JSON to stderr so piped/scripted consumers can capture it
+        console.error('---ASTROLABE_PROFILE_START---');
+        console.error(JSON.stringify(profileData, null, 2));
+        console.error('---ASTROLABE_PROFILE_END---');
       }
 
       // Save graph to SQLite
@@ -244,7 +271,26 @@ program
 program
   .command('serve-mcp')
   .description('Start an MCP server for AI assistant integration')
-  .action(async () => { console.error('Astrolabe MCP server starting...'); await startMcpServer(); });
+  .option('-t, --transport <type>', 'Transport type: stdio (default) or http', 'stdio')
+  .option('-p, --port <number>', 'Port for HTTP transport (default: 4748)', '4748')
+  .option('-h, --host <host>', 'Host for HTTP transport (default: localhost)', 'localhost')
+  .action(async (opts: { transport: string; port: string; host: string }) => {
+    const transportType = opts.transport as 'stdio' | 'http';
+    if (transportType !== 'stdio' && transportType !== 'http') {
+      console.error(`Invalid transport: ${opts.transport}. Use 'stdio' or 'http'.`);
+      process.exit(1);
+    }
+
+    if (transportType === 'stdio') {
+      console.error('Astrolabe MCP server starting (stdio)...');
+    }
+
+    await startMcpServer({
+      transport: transportType,
+      port: parseInt(opts.port, 10),
+      host: opts.host,
+    });
+  });
 
 // ── serve (HTTP API) ──────────────────────────────────────────────────────
 program

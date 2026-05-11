@@ -1,12 +1,15 @@
 /**
- * Post-install: ensure better-sqlite3 has the correct native binary.
+ * Post-install: native binaries + tree-sitter grammar verification.
  *
- * Downloads TWO prebuilt binaries:
- *   1. node-v137: system Node.js (CLI, tests)
- *   2. electron-v140: VS Code's Electron (saved as sidecar)
+ * 1. Downloads better-sqlite3 native binaries:
+ *    - node-v137: system Node.js (CLI, tests)
+ *    - electron-v140: VS Code's Electron (saved as sidecar)
  *
- * At runtime, packages/core/src/persist/sqlite.ts detects whether it's
- * running in Electron and loads the appropriate binary automatically.
+ *    At runtime, packages/core/src/persist/sqlite.ts detects whether it's
+ *    running in Electron and loads the appropriate binary automatically.
+ *
+ * 2. Verifies tree-sitter WASM grammar files and attempts to build any
+ *    that are missing (non-blocking, warnings only).
  */
 
 import { createWriteStream, existsSync, mkdirSync, readdirSync, copyFileSync, rmSync, statSync } from 'node:fs';
@@ -129,10 +132,20 @@ async function installBinary(bin) {
 }
 
 async function main() {
+  // Step 1: Native binary installation (better-sqlite3)
   for (const bin of BINARIES) {
     await installBinary(bin);
   }
   console.log('[astrolabe] Native binaries ready.');
+
+  // Step 2: Tree-sitter WASM grammar verification (non-blocking)
+  console.log('');
+  try {
+    const { default: verifyGrammars } = await import('./build-grammars.mjs');
+    await verifyGrammars();
+  } catch {
+    console.log('[astrolabe] Grammar verification skipped (build-grammars.mjs not available).');
+  }
 }
 
 main();
