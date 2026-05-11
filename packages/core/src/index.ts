@@ -34,6 +34,9 @@ export type { ProcessTracingOutput } from './analysis/phases/process-tracing.js'
 export { createSqliteStore, acquireDbLock } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
 export type { DbLock } from './persist/lock.js';
+// #771: LadybugDB migration bridge
+export { migrateFromGitNexus } from './persist/ladybug-migrate.js';
+export type { MigrationResult } from './persist/ladybug-migrate.js';
 export { createFtsSearch, buildTfIdfIndex, searchTfIdf, cosineSimilarity } from './search/index.js';
 export type { FtsSearch, SearchResult } from './search/fts.js';
 export type { TfIdfVector, SimilarityResult } from './search/embeddings.js';
