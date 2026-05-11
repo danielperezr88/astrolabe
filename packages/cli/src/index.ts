@@ -271,7 +271,26 @@ program
 program
   .command('serve-mcp')
   .description('Start an MCP server for AI assistant integration')
-  .action(async () => { console.error('Astrolabe MCP server starting...'); await startMcpServer(); });
+  .option('-t, --transport <type>', 'Transport type: stdio (default) or http', 'stdio')
+  .option('-p, --port <number>', 'Port for HTTP transport (default: 4748)', '4748')
+  .option('-h, --host <host>', 'Host for HTTP transport (default: localhost)', 'localhost')
+  .action(async (opts: { transport: string; port: string; host: string }) => {
+    const transportType = opts.transport as 'stdio' | 'http';
+    if (transportType !== 'stdio' && transportType !== 'http') {
+      console.error(`Invalid transport: ${opts.transport}. Use 'stdio' or 'http'.`);
+      process.exit(1);
+    }
+
+    if (transportType === 'stdio') {
+      console.error('Astrolabe MCP server starting (stdio)...');
+    }
+
+    await startMcpServer({
+      transport: transportType,
+      port: parseInt(opts.port, 10),
+      host: opts.host,
+    });
+  });
 
 // ── serve (HTTP API) ──────────────────────────────────────────────────────
 program
