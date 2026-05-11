@@ -347,6 +347,86 @@ program
     else { console.log('No .astrolabe directory found.'); }
   });
 
+// ── index ────────────────────────────────────────────────────────────────────
+program
+  .command('index [path]')
+  .description('Register an existing .astrolabe/ folder in the global registry without re-running analysis')
+  .option('-d, --db <path>', 'Database path (default: <path>/.astrolabe/astrolabe.db)')
+  .option('--force', 'Register even if meta.json is missing')
+  .option('--allow-non-git', 'Allow non-git directories')
+  .action((repoPath: string | undefined, opts: { db?: string; force?: boolean; allowNonGit?: boolean }) => {
+    const resolvedPath = resolve(repoPath ?? '.');
+
+    // Resolve db path — either explicit or default .astrolabe/astrolabe.db
+    const dbPath = opts.db ? resolve(opts.db) : join(resolvedPath, '.astrolabe', 'astrolabe.db');
+    const metaDir = dirname(dbPath);
+
+    // Validate the DB exists and is readable
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze` first, or specify a valid --db path.');
+      process.exit(1);
+    }
+
+    // Validate the database is a valid Astrolabe SQLite file
+    let nodeCount = 0;
+    let relCount = 0;
+    try {
+      const store = createSqliteStore(dbPath);
+      try {
+        nodeCount = store.getNodeCount();
+        relCount = store.getRelationshipCount();
+      } finally { store.close(); }
+    } catch (err) {
+      console.error(`Invalid database: ${dbPath}`, String(err));
+      process.exit(1);
+    }
+
+    if (nodeCount === 0) {
+      console.error(`Database is empty (0 nodes). Run \`astrolabe analyze\` first.`);
+      process.exit(1);
+    }
+
+    // Check for meta.json (skip with --force)
+    const meta = loadMeta(metaDir);
+    if (!meta && !opts.force) {
+      console.error(`meta.json not found in ${metaDir}. Use --force to register anyway.`);
+      process.exit(1);
+    }
+
+    // Validate git repo (skip with --allow-non-git)
+    let lastCommit = meta?.lastCommit ?? 'unknown';
+    let remoteUrl: string | undefined;
+    if (!opts.allowNonGit) {
+      try {
+        lastCommit = execSync('git rev-parse HEAD', { cwd: resolvedPath, encoding: 'utf-8' }).trim();
+        remoteUrl = getGitRemote(resolvedPath) ?? undefined;
+      } catch {
+        console.error('Not a git repository. Use --allow-non-git to register anyway.');
+        process.exit(1);
+      }
+    }
+
+    // Register in global registry (same upsert pattern as analyze)
+    const repoName = basename(resolvedPath);
+    const repos = loadRegistry();
+    const existingIdx = repos.findIndex((r) => r.path === resolvedPath);
+    const entry = { name: repoName, path: resolvedPath, dbPath, lastCommit, indexedAt: Date.now(), remoteUrl };
+    if (existingIdx >= 0) {
+      repos[existingIdx] = entry;
+      console.log(`Updated registry entry for "${repoName}".`);
+    } else {
+      repos.push(entry);
+      console.log(`Registered "${repoName}" in global registry.`);
+    }
+    saveRegistry(repos);
+
+    console.log(`  Path: ${resolvedPath}`);
+    console.log(`  DB:   ${dbPath}`);
+    console.log(`  Nodes: ${nodeCount}, Relationships: ${relCount}`);
+    console.log(`  Commit: ${lastCommit}`);
+  });
+
 // ── remove ────────────────────────────────────────────────────────────────────
 program
   .command('remove <target>')
