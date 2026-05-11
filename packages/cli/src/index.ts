@@ -1207,7 +1207,6 @@ program
           console.log(JSON.stringify(vulnReport, null, 2));
         }
       }
-      }
     } finally {
       store.close();
     }
