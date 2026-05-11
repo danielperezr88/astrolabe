@@ -1,11 +1,21 @@
 name: Prepare Release
 
 # ── Trigger ─────────────────────────────────────────────────────────────────
-# Manual workflow dispatch on staging. Generates CHANGELOG and bumps
-# package.json versions before the staging→main PR is opened.
-# Reviewer sees these changes in the PR diff.
+# Two trigger modes:
+#
+# 1. AUTOMATIC: When a staging→main PR is opened or marked ready for review,
+#    this workflow runs on staging, generates CHANGELOG + version bump, and
+#    commits to staging. The PR automatically picks up the new commit.
+#
+# 2. MANUAL: workflow_dispatch with dry_run toggle for ad-hoc preparation
+#    or validation without a PR.
+#
+# This ensures the release pipeline never fails due to missing version bumps.
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, ready_for_review]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -17,6 +27,11 @@ jobs:
   prepare:
     name: Prepare Release on Staging
     runs-on: ubuntu-latest
+    # Only run for PRs from staging branch (skip other source branches)
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.ref == 'staging')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,8 +91,14 @@ jobs:
           npm pkg set version="$VERSION" -w packages/vscode
 
       # ── Commit and push to staging ────────────────────────────────────────
+      # Runs when:
+      #   - Triggered by PR (auto) — always commits (dry_run not applicable)
+      #   - Triggered manually with dry_run=false
       - name: Commit and push to staging
-        if: github.event.inputs.dry_run != 'true'
+        if: >
+          github.event_name == 'pull_request' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.dry_run != 'true')
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -98,7 +119,9 @@ jobs:
           }
 
       - name: Dry run — skip commit
-        if: github.event.inputs.dry_run == 'true'
+        if: >
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.dry_run == 'true'
         run: |
           echo "🔲 DRY RUN: Would commit CHANGELOG + version bump for v${{ steps.version.outputs.version }} to staging"
           echo "Run again with dry_run=false to commit."
