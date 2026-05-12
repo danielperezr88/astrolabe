@@ -33,6 +33,7 @@ import {
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
   migrateFromGitNexus,
+  EDGE_DECAY_FACTORS, applyDecay, noisyOr,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -591,41 +592,85 @@ program
       }
 
       if (opts.probabilistic) {
-        // #806: Probabilistic mode — simple confidence-decay visualization
-        const decaySchedules: Record<string, (c: number, d: number) => number> = {
-          linear: (c) => c,
-          exponential: (c, d) => c * Math.exp(-0.3 * (d - 1)),
-          logarithmic: (c, d) => c / Math.log2(d + 1),
-        };
-        const schedule = decaySchedules[opts.decay ?? 'linear'] ?? decaySchedules.linear;
-        const EDGE_DECAY: Record<string, number> = {
-          CALLS: 0.9, IMPORTS: 0.7, EXTENDS: 0.8, IMPLEMENTS: 0.85,
-          USES: 0.6, ACCESSES: 0.65, CONTAINS: 0.95, DEFINES: 0.95,
-          QUERIES: 0.75, ROUTES: 0.7, MEMBER_OF: 0.3, ENTRY_POINT_OF: 0.4,
-          HAS_PROPERTY: 0.5, CHAINABLE_TO: 0.7, CO_CHANGES: 0.8, SEMANTICALLY_SIMILAR: 0.6,
-        };
+        // #806: Probabilistic multi-hop BFS with confidence decay and Noisy-OR fusion
+        const schedule = (opts.decay ?? 'linear') as 'linear' | 'exponential' | 'logarithmic';
+        const maxDepth = 3;
 
-        const nodeScores = new Map<string, { score: number; paths: string[] }>();
-        nodeScores.set(symbolName, { score: 1.0, paths: [] });
-
+        // Find the target node
+        let targetId: string | null = null;
         for (const node of graph.iterNodes()) {
-          if (node.properties.name !== symbolName) continue;
-          for (const { neighborId, type } of (adj.get(node.id) ?? [])) {
-            const other = graph.getNode(neighborId);
-            if (!other) continue;
-            const decay = EDGE_DECAY[type] ?? 0.7;
-            const score = Math.round(schedule(decay, 1) * 1000) / 1000;
-            nodeScores.set(other.properties.name ?? neighborId, { score, paths: [type] });
+          if (node.properties.name === symbolName) { targetId = node.id; break; }
+        }
+        if (!targetId) {
+          console.log(`Symbol "${symbolName}" not found.`);
+          return;
+        }
+
+        // Pre-build adjacency with confidence (incoming + outgoing)
+        const probAdj = new Map<string, Array<{ neighborId: string; type: string; confidence: number; direction: 'outgoing' | 'incoming' }>>();
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type === 'STEP_IN_PROCESS') continue;
+          // outgoing: source → target
+          let bucket = probAdj.get(rel.sourceId);
+          if (!bucket) { bucket = []; probAdj.set(rel.sourceId, bucket); }
+          bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence, direction: 'outgoing' });
+          // incoming: target → source
+          bucket = probAdj.get(rel.targetId);
+          if (!bucket) { bucket = []; probAdj.set(rel.targetId, bucket); }
+          bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence, direction: 'incoming' });
+        }
+
+        // BFS with confidence decay
+        const nodeScores = new Map<string, { paths: Array<{ via: string; depth: number; confidence: number }>; bestScore: number }>();
+        nodeScores.set(targetId, { paths: [], bestScore: 1.0 });
+        const queue: Array<{ id: string; depth: number }> = [{ id: targetId, depth: 0 }];
+        const visited = new Set<string>([targetId]);
+
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (current.depth >= maxDepth) continue;
+
+          for (const { neighborId, type, confidence } of (probAdj.get(current.id) ?? [])) {
+            if (neighborId === targetId) continue;
+
+            const edgeDecay = EDGE_DECAY_FACTORS[type] ?? 0.7;
+            const parentEntry = nodeScores.get(current.id);
+            const parentConfidence = parentEntry?.bestScore ?? 1.0;
+            let decayedConfidence = parentConfidence * edgeDecay * Math.max(confidence, 0.1);
+            decayedConfidence = applyDecay(decayedConfidence, current.depth + 1, schedule);
+
+            const existing = nodeScores.get(neighborId);
+            const pathEntry = { via: current.id, depth: current.depth + 1, confidence: decayedConfidence };
+
+            if (existing) {
+              existing.paths.push(pathEntry);
+              const allProbs = existing.paths.map((p) => p.confidence);
+              existing.bestScore = noisyOr(allProbs);
+            } else {
+              nodeScores.set(neighborId, { paths: [pathEntry], bestScore: decayedConfidence });
+              if (!visited.has(neighborId)) {
+                visited.add(neighborId);
+                queue.push({ id: neighborId, depth: current.depth + 1 });
+              }
+            }
           }
         }
 
-        console.log(`Probabilistic impact for "${symbolName}" (decay: ${opts.decay ?? 'linear'}):`);
-        const sorted = [...nodeScores].filter(([k]) => k !== symbolName).sort((a, b) => b[1].score - a[1].score);
-        for (const [name, { score }] of sorted) {
+        console.log(`Probabilistic impact for "${symbolName}" (decay: ${schedule}, maxDepth: ${maxDepth}):`);
+        const sorted = [...nodeScores]
+          .filter(([id]) => id !== targetId)
+          .map(([id, entry]) => {
+            const node = graph.getNode(id);
+            return { name: node?.properties.name ?? id, score: Math.round(entry.bestScore * 1000) / 1000, paths: entry.paths.length };
+          })
+          .sort((a, b) => b.score - a.score);
+
+        for (const { name, score, paths } of sorted) {
           const cat = score >= 0.8 ? 'DIRECT' : score >= 0.4 ? 'TRANSITIVE' : 'LOW-RISK';
-          console.log(`  [${cat}] ${name} (confidence: ${score.toFixed(3)})`);
+          const pathInfo = paths > 1 ? ` (${paths} paths)` : '';
+          console.log(`  [${cat}] ${name} (confidence: ${score.toFixed(3)})${pathInfo}`);
         }
-        if (sorted.length === 0) console.log('  (no directly connected nodes)');
+        if (sorted.length === 0) console.log('  (no connected nodes)');
       } else {
         let found = 0;
         for (const node of graph.iterNodes()) {

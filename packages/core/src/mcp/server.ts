@@ -30,6 +30,7 @@ import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOpt
 // #461: Graphlet-based structural analysis
 import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
 import type { CommunityInfo } from '../analysis/graphlet/index.js';
+import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -165,43 +166,6 @@ function boostResults<T extends { name: string; filePath: string; score: number 
     result.score *= (1 + Math.min(boost, 0.5)); // cap at 50% boost
   }
   results.sort((a, b) => b.score - a.score);
-}
-
-// #806: Confidence decay factors per edge type for probabilistic impact analysis
-const EDGE_DECAY_FACTORS: Record<string, number> = {
-  CALLS: 0.9,
-  IMPORTS: 0.7,
-  EXTENDS: 0.8,
-  IMPLEMENTS: 0.85,
-  USES: 0.6,
-  ACCESSES: 0.65,
-  CONTAINS: 0.95,
-  DEFINES: 0.95,
-  QUERIES: 0.75,
-  ROUTES: 0.7,
-  MEMBER_OF: 0.3,
-  ENTRY_POINT_OF: 0.4,
-  HAS_PROPERTY: 0.5,
-  CHAINABLE_TO: 0.7,
-  CO_CHANGES: 0.8,
-  SEMANTICALLY_SIMILAR: 0.6,
-};
-
-// #806: Decay the confidence score based on depth and schedule
-function applyDecay(baseConfidence: number, depth: number, schedule: 'linear' | 'exponential' | 'logarithmic'): number {
-  if (schedule === 'exponential') {
-    return baseConfidence * Math.exp(-0.3 * (depth - 1));
-  }
-  if (schedule === 'logarithmic') {
-    return baseConfidence / Math.log2(depth + 1);
-  }
-  // linear (default): same penalty each hop
-  return baseConfidence;
-}
-
-// #806: Noisy-OR fusion — combine multiple path probabilities
-function noisyOr(probs: number[]): number {
-  return 1 - probs.reduce((acc, p) => acc * (1 - p), 1);
 }
 
 // ── Backend ────────────────────────────────────────────────────────────────
