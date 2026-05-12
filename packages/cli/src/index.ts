@@ -32,6 +32,7 @@ import {
   generateWiki,
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+  detectAntiPatterns,
   migrateFromGitNexus,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
@@ -1102,6 +1103,75 @@ program
       for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
     }
     console.log();
+  });
+
+// ── detect-smells ──────────────────────────────────────────────────────────
+program
+  .command('detect-smells [repoPath]')
+  .description('Detect architecture smells in the knowledge graph (cycles, god modules, unstable deps, meshes)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output as JSON')
+  .option('--fan-in <number>', 'Fan-in threshold for hub detection')
+  .option('--fan-out <number>', 'Fan-out threshold for hub detection')
+  .option('--density <number>', 'Density threshold for mesh detection (0-1)')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean; fanIn?: string; fanOut?: string; density?: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+    const store = createSqliteStore(dbPath);
+    const graph = store.loadGraph();
+    store.close();
+    const options: any = {};
+    if (opts.fanIn) options.fanInThreshold = Number(opts.fanIn);
+    if (opts.fanOut) options.fanOutThreshold = Number(opts.fanOut);
+    if (opts.density) options.densityThreshold = Number(opts.density);
+    const results = detectAntiPatterns(graph, options);
+    if (opts.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    console.log('\n=== Architecture Smells ===\n');
+    if (results.sccs?.length) {
+      console.log(`Cyclic Dependencies: ${results.sccs.length} cycle(s) found`);
+      for (const scc of results.sccs) {
+        console.log(`  Cycle #${scc.id}: ${scc.size} nodes — ${scc.nodeIds.slice(0, 5).join(', ')}${scc.nodeIds.length > 5 ? '...' : ''}`);
+      }
+      console.log();
+    }
+    if (results.hubs?.length) {
+      console.log(`Hub-like Modules: ${results.hubs.length} detected`);
+      for (const hub of results.hubs) {
+        console.log(`  ${hub.nodeId} — fanIn: ${hub.fanIn}, fanOut: ${hub.fanOut}, classification: ${hub.classification}`);
+      }
+      console.log();
+    }
+    if (results.meshes?.length) {
+      console.log(`Dependency Meshes: ${results.meshes.length} detected`);
+      for (const mesh of results.meshes) {
+        console.log(`  Mesh: ${mesh.nodeIds.length} nodes, density: ${mesh.density.toFixed(3)}, anchors: ${mesh.acyclicAnchors.length}`);
+      }
+      console.log();
+    }
+    if (results.cutVertices?.length) {
+      console.log(`Cut Vertices (SPoF): ${results.cutVertices.length} detected`);
+      for (const cv of results.cutVertices) {
+        console.log(`  ${cv.nodeId} — would split graph into ${cv.componentCountAfterRemoval} components`);
+      }
+      console.log();
+    }
+    if (results.bridges?.length) {
+      console.log(`Bridge Edges: ${results.bridges.length} detected`);
+      for (const bridge of results.bridges.slice(0, 10)) {
+        console.log(`  ${bridge.sourceId} → ${bridge.targetId}`);
+      }
+      if (results.bridges.length > 10) console.log(`  ... and ${results.bridges.length - 10} more`);
+      console.log();
+    }
+    if (!results.sccs?.length && !results.hubs?.length && !results.meshes?.length) {
+      console.log('No architecture smells detected.');
+    }
   });
 
 // ── ingest-coverage (#463) ──────────────────────────────────────────────────

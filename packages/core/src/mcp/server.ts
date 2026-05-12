@@ -24,7 +24,7 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
@@ -1706,12 +1706,13 @@ Algorithms:
 - pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
 - betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
 - shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+- architecture_smells: Detect architecture anti-patterns (cyclic dependencies, god modules, unstable deps, dependency meshes, cut vertices, bridge edges).
 
 The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCESS synthetic edges).`,
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1796,6 +1797,27 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'architecture_smells') {
+        const results = architectureSmells(adjList);
+        const output: any = {
+          algorithm: 'architecture_smells',
+          summary: {
+            cycles: results.sccs?.length ?? 0,
+            cutVertices: results.cutVertices?.length ?? 0,
+            bridges: results.bridges?.length ?? 0,
+            hubs: results.hubs?.length ?? 0,
+            meshes: results.meshes?.length ?? 0,
+          },
+        };
+        if (results.sccs?.length) output.sccs = results.sccs;
+        if (results.hubs?.length) output.hubs = results.hubs;
+        if (results.martinMetrics?.length) output.martinMetrics = results.martinMetrics;
+        if (results.meshes?.length) output.meshes = results.meshes;
+        if (results.cutVertices?.length) output.cutVertices = results.cutVertices;
+        if (results.bridges?.length) output.bridges = results.bridges;
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown algorithm: ${algorithm}` }) }] };
