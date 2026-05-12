@@ -24,7 +24,7 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath, architectureSmells } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
@@ -1828,13 +1828,14 @@ Algorithms:
 - pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
 - betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
 - shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+- resilience: Detect single points of failure (cut vertices) and critical dependency bridges. Returns articulation points and bridge edges.
 - architecture_smells: Detect architecture anti-patterns (cyclic dependencies, god modules, unstable deps, dependency meshes, cut vertices, bridge edges).
 
 The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCESS synthetic edges).`,
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'architecture_smells'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1919,6 +1920,50 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'resilience') {
+        const cutVertices = detectCutVertices(adjList);
+        const bridges = detectBridges(adjList);
+
+        // Resolve node names for readability (staging API: CutVertexResult.nodeId, BridgeResult.sourceId/targetId)
+        const namedCutVertices = cutVertices.map((cv) => {
+          const node = graph.getNode(cv.nodeId);
+          return { id: cv.nodeId, name: node?.properties.name ?? cv.nodeId };
+        });
+
+        const namedBridges = bridges.map((b) => {
+          const srcNode = graph.getNode(b.sourceId);
+          const tgtNode = graph.getNode(b.targetId);
+          return {
+            source: { id: b.sourceId, name: srcNode?.properties.name ?? b.sourceId },
+            target: { id: b.targetId, name: tgtNode?.properties.name ?? b.targetId },
+          };
+        });
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              algorithm: 'resilience',
+              analysis: {
+                cutVertices: {
+                  count: cutVertices.length,
+                  nodes: namedCutVertices,
+                  description: 'Nodes whose removal disconnects the graph (single points of failure)',
+                },
+                bridgeEdges: {
+                  count: bridges.length,
+                  edges: namedBridges,
+                  description: 'Edges whose removal disconnects the graph (critical dependency links)',
+                },
+                robustnessSummary: cutVertices.length === 0 && bridges.length === 0
+                  ? 'The graph is biconnected — no single point of failure detected.'
+                  : `Found ${cutVertices.length} cut vertices (SPoF) and ${bridges.length} bridge edges.`,
+              },
+            }, null, 2),
+          }],
+        };
       }
 
       if (algorithm === 'architecture_smells') {

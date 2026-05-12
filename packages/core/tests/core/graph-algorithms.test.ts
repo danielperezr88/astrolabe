@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pageRank, betweennessCentrality, shortestPath } from '../../src/core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, detectCutVertices, detectBridges } from '../../src/core/graph-algorithms.js';
 
 // ── PageRank Tests ──────────────────────────────────────────────────────────
 
@@ -192,5 +192,127 @@ describe('shortestPath', () => {
     const path = shortestPath(adj, 'A', 'Z');
 
     expect(path).toBeNull();
+  });
+});
+
+// ── Cut Vertices (Articulation Points) Tests ────────────────────────────────
+
+describe('detectCutVertices', () => {
+  it('detects the middle node as cut vertex in a linear chain A-B-C', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['C']],
+      ['C', []],
+    ]);
+    const result = detectCutVertices(adj);
+    // B is the only cut vertex — removing it disconnects A from C
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('B');
+    expect(ids).not.toContain('A');
+    expect(ids).not.toContain('C');
+  });
+
+  it('returns empty array for a triangle (fully connected 3-cycle)', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['A', 'C']],
+      ['C', ['A', 'B']],
+    ]);
+    const result = detectCutVertices(adj);
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for empty graph', () => {
+    expect(detectCutVertices(new Map())).toEqual([]);
+  });
+
+  it('identifies hub as cut vertex in a star graph', () => {
+    // Hub connects all leaves; leaves only connect to hub
+    const adj = new Map<string, string[]>([
+      ['Hub', ['A', 'B', 'C']],
+      ['A', ['Hub']],
+      ['B', ['Hub']],
+      ['C', ['Hub']],
+    ]);
+    const result = detectCutVertices(adj);
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('Hub');
+    expect(ids).not.toContain('A');
+  });
+
+  it('detects cut vertices in a dumbbell graph', () => {
+    // A-B-C-D-E where C connects two triangles: (A,B,C) and (C,D,E)
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['A', 'C']],
+      ['C', ['A', 'B', 'D', 'E']],
+      ['D', ['C', 'E']],
+      ['E', ['C', 'D']],
+    ]);
+    const result = detectCutVertices(adj);
+    // C is the only cut vertex connecting the two triangles
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('C');
+    expect(result).toHaveLength(1);
+  });
+
+  it('returns empty for a single isolated node', () => {
+    const adj = new Map<string, string[]>([['A', []]]);
+    expect(detectCutVertices(adj)).toEqual([]);
+  });
+});
+
+// ── Bridge Edges Tests ──────────────────────────────────────────────────────
+
+describe('detectBridges', () => {
+  it('detects bridges in a linear chain A-B-C', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['C']],
+      ['C', []],
+    ]);
+    const result = detectBridges(adj);
+    // Both edges A-B and B-C are bridges in a chain
+    expect(result).toHaveLength(2);
+  });
+
+  it('returns empty array for a triangle (no bridges)', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['A', 'C']],
+      ['C', ['A', 'B']],
+    ]);
+    const result = detectBridges(adj);
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for empty graph', () => {
+    expect(detectBridges(new Map())).toEqual([]);
+  });
+
+  it('detects bridge in a simple two-node graph', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['A']],
+    ]);
+    const result = detectBridges(adj);
+    expect(result).toHaveLength(1);
+    expect(result[0].sourceId).toBe('A');
+    expect(result[0].targetId).toBe('B');
+  });
+
+  it('detects the bridge edge in a dumbbell graph', () => {
+    // Two triangles connected by single edge C-D
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['A', 'C']],
+      ['C', ['A', 'B', 'D']],
+      ['D', ['C', 'E', 'F']],
+      ['E', ['D', 'F']],
+      ['F', ['D', 'E']],
+    ]);
+    const result = detectBridges(adj);
+    expect(result).toHaveLength(1);
+    // Edge C-D is the only bridge
   });
 });

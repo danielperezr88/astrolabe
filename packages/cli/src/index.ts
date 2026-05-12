@@ -34,6 +34,7 @@ import {
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
   detectAntiPatterns,
   migrateFromGitNexus,
+  detectCutVertices, detectBridges,
   computeGraphCoverageMetrics,
   EDGE_DECAY_FACTORS, applyDecay, noisyOr,
 } from '@astrolabe-dev/core';
@@ -1467,6 +1468,105 @@ program
         if (vulnReport) {
           console.log('Dependency Vulnerabilities:');
           console.log(JSON.stringify(vulnReport, null, 2));
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── resilience (#805) ─────────────────────────────────────────────────────────
+program
+  .command('resilience [repoPath]')
+  .description('Analyze graph resilience — detect single points of failure (SPoF) and critical edges')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges (same as MCP handler)
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const cutVertices = detectCutVertices(adjList);
+      const bridges = detectBridges(adjList);
+
+      // Resolve names (staging API: CutVertexResult.nodeId, BridgeResult.sourceId/targetId)
+      const namedCutVertices = cutVertices.map((cv) => {
+        const node = graph.getNode(cv.nodeId);
+        return { id: cv.nodeId, name: node?.properties.name ?? cv.nodeId };
+      });
+
+      const namedBridges = bridges.map((b) => {
+        const srcNode = graph.getNode(b.sourceId);
+        const tgtNode = graph.getNode(b.targetId);
+        return {
+          source: { id: b.sourceId, name: srcNode?.properties.name ?? b.sourceId },
+          target: { id: b.targetId, name: tgtNode?.properties.name ?? b.targetId },
+        };
+      });
+
+      const nodeCount = adjList.size;
+      const edgeCount = Array.from(adjList.values()).reduce((s, t) => s + t.length, 0);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          nodeCount,
+          edgeCount,
+          cutVertices: { count: cutVertices.length, nodes: namedCutVertices },
+          bridgeEdges: { count: bridges.length, edges: namedBridges },
+          isBiconnected: cutVertices.length === 0 && bridges.length === 0,
+        }, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Graph Resilience Analysis ===`);
+      console.log(`Nodes: ${nodeCount} | Edges: ${edgeCount}`);
+      console.log();
+
+      if (cutVertices.length === 0 && bridges.length === 0) {
+        console.log('\u2713 The graph is biconnected \u2014 no single points of failure detected.');
+      } else {
+        if (cutVertices.length > 0) {
+          console.log(`--- Single Points of Failure (${cutVertices.length} cut vertices) ---`);
+          console.log('These nodes, if removed, would disconnect the dependency graph:');
+          for (const n of namedCutVertices.slice(0, 20)) {
+            console.log(`  \u26A0  ${n.name}`);
+          }
+          if (namedCutVertices.length > 20) {
+            console.log(`  ... and ${namedCutVertices.length - 20} more`);
+          }
+          console.log();
+        }
+
+        if (bridges.length > 0) {
+          console.log(`--- Critical Dependency Bridges (${bridges.length} bridge edges) ---`);
+          console.log('These edges are the ONLY connection between subsystems:');
+          for (const b of namedBridges.slice(0, 20)) {
+            console.log(`  \u26A1 ${b.source.name} \u2192 ${b.target.name}`);
+          }
+          if (namedBridges.length > 20) {
+            console.log(`  ... and ${namedBridges.length - 20} more`);
+          }
+          console.log();
         }
       }
     } finally {

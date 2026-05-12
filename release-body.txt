@@ -1,0 +1,18 @@
+## Staging to Main Release
+
+Promoting staging to main for v1.1.0 release. Contains 9 feature merges since v1.0.9.
+
+### Features
+- ACCESSES edges for field/property read-write tracking (#750)
+- Property visibility/static metadata (#751)
+- Cross-file Property type propagation (#766)
+- ORM query detection - Prisma/Supabase QUERIES edges (#756)
+- timeoutMs parameter for impact analysis (#753)
+- 3-tier confidence scoring for CALLS edges (#757)
+- Group CLI contracts, query, and sync subcommands (#758)
+- Index CLI command to register existing analysis (#759)
+- Expand AGENTS.md generation with full MCP tools + --no-stats (#760)
+
+### Pipeline
+- RC: v1.0.0-rc.46 validated
+- Merge will trigger release.yml: integration tests - stable Docker - GitHub release - npm publish
