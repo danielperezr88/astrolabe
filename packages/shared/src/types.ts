@@ -178,7 +178,8 @@ export type RelationshipType =
   | 'USES_FRAMEWORK'
   | 'RETURNS_TYPE'
   | 'DECLARES_TYPE'
-  | 'CHAINABLE_TO';
+  | 'CHAINABLE_TO'
+  | 'SEMANTICALLY_SIMILAR';
 
 // ── Evidence for edge provenance ───────────────────────────────────────────
 

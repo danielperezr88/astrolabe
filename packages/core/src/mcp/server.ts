@@ -35,6 +35,9 @@ import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 // #809: GNN feature engineering
 import { exportGnnDataset } from '../core/gnn-features.js';
+// #813: Semantic embeddings for MCP query tool
+import { EmbeddingStore, createEmbeddingProvider, type EmbeddingProviderType } from '../search/embeddings-store.js';
+import { cosineSimilarity } from '../core/embedding-propagation.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1060,6 +1063,9 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
         task_context: { type: 'string', description: 'Context about the current task (e.g., "debugging auth flow")' },
         goal: { type: 'string', description: 'What the search aims to find (e.g., "find where tokens are validated")' },
+        mode: { type: 'string', enum: ['hybrid', 'semantic'], description: 'Search mode: hybrid (FTS + TF-IDF, default) or semantic (embedding cosine similarity)', default: 'hybrid' },
+        embedding_provider: { type: 'string', description: 'Embedding provider for semantic mode: auto, transformers, tfidf, remote. Default auto.', default: 'auto' },
+        propagate_hops: { type: 'number', description: 'Propagation hops for semantic embeddings (0=none, 1=single, 2=double). Default 0.', default: 0 },
       },
       required: ['query'],
     },
@@ -1071,12 +1077,95 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
       const service = params.service as string | undefined;
       const taskContext = params.task_context as string | undefined;
       const goal = params.goal as string | undefined;
+      const mode = (params.mode as string) ?? 'hybrid';
       let result: unknown;
 
-      if (repo?.startsWith('@')) {
-        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+      // #813: Semantic search mode
+      if (mode === 'semantic') {
+        // Get repo context for dbPath
+        const ctx = repo?.startsWith('@')
+          ? backend.resolveGroupRepos(repo).contexts[0]?.repo
+          : backend.getRepo(repo);
+
+        if (!ctx) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'No indexed repository found. Use astrolabe embed first.' }) }] };
+        }
+
+        try {
+          const dbPath = ctx.entry.dbPath;
+          const embedStore = new EmbeddingStore(new (await import('better-sqlite3')).default(dbPath));
+          const providerType = (params.embedding_provider as EmbeddingProviderType) ?? 'auto';
+          const provider = createEmbeddingProvider(providerType);
+          const demand = provider.dimensions;
+
+          // Compute query embedding
+            const effectiveHops = requireNumber(params, 'propagate_hops', 1);
+          const hops_used = effectiveHops > 2 ? 2 : effectiveHops < 0 ? 0 : effectiveHops;
+          const queryVec = provider.encodeAsync
+            ? await provider.encodeAsync(query)
+            : provider.encode(query);
+
+          // Load all stored embeddings
+          const allEmbs = embedStore.getAll();
+
+          if (allEmbs.length === 0) {
+            embedStore.close?.();
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'No embeddings found. Run `astrolabe embed` first.' }) }] };
+          }
+
+          // Rank by cosine similarity
+          const results: Array<{ nodeId: string; similarity: number; contentHash: string }> = [];
+          for (const emb of allEmbs) {
+            // Verify dimensionality match
+            if (emb.dimensions !== demand) continue;
+            const storedVec = Array.from(new Float32Array(emb.vector.buffer));
+            if (storedVec.length !== demand) continue;
+            const sim = cosineSimilarity(Array.from(queryVec), storedVec);
+            results.push({ nodeId: emb.nodeId, similarity: sim, contentHash: emb.contentHash });
+          }
+
+          // Sort by similarity descending, take top limit
+          results.sort((a, b) => b.similarity - a.similarity);
+          const limit = requireNumber(params, 'limit', 20);
+          const topResults = results.slice(0, limit);
+
+          // Enrich with node info from the graph
+          const graph = ctx.loadGraph();
+          const enriched = topResults.map((r) => {
+            const node = graph.getNode(r.nodeId);
+            return {
+              nodeId: r.nodeId,
+              name: node?.properties.name ?? r.nodeId,
+              label: node?.label ?? 'unknown',
+              filePath: node?.properties.filePath ?? '',
+              similarity: Math.round(r.similarity * 10000) / 10000,
+            };
+          });
+
+          embedStore.close?.();
+          result = {
+            mode: 'semantic',
+            hops_used,
+            results: enriched,
+            total_embeddings: allEmbs.length,
+          };
+        } catch (err) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Semantic search failed: ${(err as Error).message}. Try running \`astrolabe embed\` first.`,
+              }),
+            }],
+          };
+        }
       } else {
-        result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        // Hybrid mode (existing behavior)
+        if (repo?.startsWith('@')) {
+          result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+        } else {
+          result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        }
       }
 
       timer.mark('search');

@@ -40,10 +40,11 @@ import {
   computeGraphCoverageMetrics,
   EDGE_DECAY_FACTORS, applyDecay, noisyOr,
   exportGnnDataset,
+  computeEmbeddings, propagateEmbeddings, createSemanticEdges,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
-import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo, PhaseTimerResult, EmbeddingProviderType } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 import { startWatch } from './watch.js';
 
@@ -1808,6 +1809,68 @@ program
       console.log(`  ${join(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`);
       console.log(`  ${join(outputPath, 'node_labels.json')}`);
       console.log(`  ${join(outputPath, 'edge_types.json')}`);
+    } finally {
+      store.close();
+    }
+  });
+
+// ── embed (semantic embedding computation, #813) ──────────────────────────────
+program
+  .command('embed [repoPath]')
+  .description('Compute semantic embeddings for code nodes with optional propagation (#813)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--propagate', 'Propagate embeddings along graph edges (neighbor averaging)', false)
+  .option('--propagate-hops <n>', 'Number of hops for embedding propagation', '1')
+  .option('--threshold <n>', 'Cosine similarity threshold for SEMANTICALLY_SIMILAR edges', '0.85')
+  .option('--provider <type>', 'Embedding provider (auto, transformers, tfidf, remote)', 'auto')
+  .option('--no-edges', 'Skip creating SEMANTICALLY_SIMILAR edges')
+  .option('--log-level <level>', 'Log level', 'info')
+  .action(async (repoPath: string | undefined, opts: {
+    db: string;
+    propagate: boolean;
+    propagateHops: string;
+    threshold: string;
+    provider: string;
+    edges: boolean;
+    logLevel: string;
+  }) => {
+    const resolvedPath = repoPath ? resolve(repoPath) : process.cwd();
+    const dbPath = opts.db !== '.astrolabe/astrolabe.db' ? resolve(opts.db) : join(resolvedPath, '.astrolabe', 'astrolabe.db');
+    const propagateHops = parseInt(opts.propagateHops, 10) || 1;
+    const threshold = parseFloat(opts.threshold) || 0.85;
+
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      console.log(`Loaded graph: ${graph.nodeCount.toLocaleString()} nodes, ${graph.relationshipCount.toLocaleString()} edges`);
+
+      // Step 1: Compute embeddings
+      const providerType = opts.provider as EmbeddingProviderType;
+      const result = await computeEmbeddings(graph, { provider: providerType, dbPath });
+      console.log(`Embeddings computed: ${result.nodeCount.toLocaleString()} nodes (${result.dimensions}D)`);
+
+      // Step 2: Propagate if requested
+      if (opts.propagate) {
+        const propagated = propagateEmbeddings(graph, result.embeddings, propagateHops);
+        console.log(`Embeddings propagated: ${propagated.size.toLocaleString()} nodes, ${propagateHops} hop(s)`);
+      }
+
+      // Step 3: Create semantic edges (unless --no-edges)
+      if (opts.edges) {
+        const edges = createSemanticEdges(graph, result.embeddings, threshold);
+        console.log(`Semantic edges created: ${edges.edgesAdded} edges (threshold=${threshold})`);
+        if (edges.edgesAdded > 0) {
+          store.saveGraph(graph);
+        }
+      }
+
+      console.log('Embedding computation complete.');
     } finally {
       store.close();
     }
