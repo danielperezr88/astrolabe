@@ -81,3 +81,7 @@ export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } fr
 export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analysis/graphlet/index.js';
 export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
 export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
+// #806: Probabilistic impact analysis
+export { EDGE_DECAY_FACTORS, applyDecay, noisyOr, type DecaySchedule } from './analysis/impact-decay.js';
+// #808: Architecture anti-pattern detection
+export { detectAntiPatterns, type ArchitectureSmellsResult } from './analysis/anti-pattern/index.js';

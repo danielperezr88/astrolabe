@@ -24,7 +24,7 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
@@ -32,6 +32,7 @@ import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHea
 import type { CommunityInfo } from '../analysis/graphlet/index.js';
 // #811: Graph-based coverage metrics
 import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.js';
+import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -501,7 +502,7 @@ class LocalBackend {
     return { match_count: results.length, matches: results, siblingWarning };
   }
 
-  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000, targetUid?: string, kind?: string, filePath?: string) {
+  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000, targetUid?: string, kind?: string, filePath?: string, mode: 'binary' | 'probabilistic' = 'binary', decaySchedule: 'linear' | 'exponential' | 'logarithmic' = 'linear') {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
@@ -591,27 +592,131 @@ class LocalBackend {
     let truncated = false;
     const deadline = Date.now() + Math.min(timeoutMs, 3_600_000);
 
+    // #806: Probabilistic mode — track accumulated confidence per node across multiple paths
+    const probabilisticResults: Array<{ id: string; name: string; type: string; filePath: string; score: number; paths: Array<{ via: string; depth: number; confidence: number }>; category: string }> = [];
+    const nodeScores = new Map<string, { paths: Array<{ via: string; depth: number; confidence: number }>; bestScore: number; bestDepth: number }>();
+
+    // If probabilistic mode, build adj index without confidence filtering
+    let probAdj: Map<string, Array<{ neighborId: string; type: string; confidence: number }>> | null = null;
+    if (mode === 'probabilistic') {
+      probAdj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS') continue;
+        if (direction === 'upstream') {
+          let bucket = probAdj.get(rel.targetId);
+          if (!bucket) { bucket = []; probAdj.set(rel.targetId, bucket); }
+          bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence });
+        } else {
+          let bucket = probAdj.get(rel.sourceId);
+          if (!bucket) { bucket = []; probAdj.set(rel.sourceId, bucket); }
+          bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence });
+        }
+      }
+    }
+
     while (queue.length > 0 && affected.length < MAX_IMPACT_RESULTS) {
       if (Date.now() >= deadline) { truncated = true; break; }
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
-      const neighbors = adj.get(current.id) ?? [];
-      for (const { neighborId, type, confidence } of neighbors) {
-        if (visited.has(neighborId)) continue;
-        if (affected.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
-        visited.add(neighborId);
-        const node = graph.getNode(neighborId);
-        queue.push({ id: neighborId, depth: current.depth + 1 });
-        affected.push({
-          depth: current.depth + 1,
-          name: node?.properties.name ?? neighborId,
-          type: node?.label ?? 'unknown',
-          filePath: (node?.properties.filePath as string) ?? '',
-          relationType: type,
-          confidence,
+      const neighbors = mode === 'probabilistic'
+        ? (probAdj!.get(current.id) ?? [])
+        : (adj.get(current.id) ?? []);
+
+      if (mode === 'probabilistic') {
+        // #806: Probabilistic BFS with confidence decay and Noisy-OR fusion
+        for (const { neighborId, type, confidence } of neighbors) {
+          if (neighborId === targetNode.id) continue;
+          if (probabilisticResults.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
+
+          const edgeDecay = EDGE_DECAY_FACTORS[type] ?? 0.7;
+          const parentEntry = nodeScores.get(current.id);
+          const parentConfidence = parentEntry?.bestScore ?? 1.0;
+          let decayedConfidence = parentConfidence * edgeDecay * Math.max(confidence, 0.1);
+          decayedConfidence = applyDecay(decayedConfidence, current.depth + 1, decaySchedule);
+
+          const existing = nodeScores.get(neighborId);
+          const pathEntry = { via: current.id, depth: current.depth + 1, confidence: decayedConfidence };
+
+          if (existing) {
+            // Noisy-OR: accumulate multi-path evidence
+            existing.paths.push(pathEntry);
+            const allProbs = existing.paths.map((p) => p.confidence);
+            existing.bestScore = noisyOr(allProbs);
+            existing.bestDepth = Math.min(existing.bestDepth, current.depth + 1);
+          } else {
+            nodeScores.set(neighborId, {
+              paths: [pathEntry],
+              bestScore: decayedConfidence,
+              bestDepth: current.depth + 1,
+            });
+            // Enqueue for further traversal
+            if (current.depth + 1 < maxDepth) {
+              queue.push({ id: neighborId, depth: current.depth + 1 });
+            }
+          }
+        }
+      } else {
+        // Binary mode (original)
+        for (const { neighborId, type, confidence } of neighbors) {
+          if (visited.has(neighborId)) continue;
+          if (affected.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
+          visited.add(neighborId);
+          const node = graph.getNode(neighborId);
+          queue.push({ id: neighborId, depth: current.depth + 1 });
+          affected.push({
+            depth: current.depth + 1,
+            name: node?.properties.name ?? neighborId,
+            type: node?.label ?? 'unknown',
+            filePath: (node?.properties.filePath as string) ?? '',
+            relationType: type,
+            confidence,
+          });
+        }
+      }
+    }
+
+    // #806: Build ranked output for probabilistic mode
+    if (mode === 'probabilistic') {
+      for (const [id, entry] of nodeScores) {
+        const node = graph.getNode(id);
+        if (!node) continue;
+        probabilisticResults.push({
+          id,
+          name: (node.properties.name as string) ?? id,
+          type: node.label ?? 'unknown',
+          filePath: (node.properties.filePath as string) ?? '',
+          score: Math.round(entry.bestScore * 1000) / 1000,
+          paths: entry.paths.map((p) => ({
+            via: p.via,
+            depth: p.depth,
+            confidence: Math.round(p.confidence * 1000) / 1000,
+          })),
+          category: '',
         });
       }
+      // Sort by score descending
+      probabilisticResults.sort((a, b) => b.score - a.score);
+      // Categorize by score
+      for (const r of probabilisticResults) {
+        if (r.score >= 0.8) r.category = 'direct';
+        else if (r.score >= 0.4) r.category = 'transitive';
+        else r.category = 'low-risk';
+      }
+      return {
+        target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
+        direction,
+        mode: 'probabilistic' as const,
+        decaySchedule,
+        affected_count: probabilisticResults.length,
+        truncated,
+        results: probabilisticResults.slice(0, 100),
+        summary: {
+          direct: probabilisticResults.filter((r) => r.category === 'direct').length,
+          transitive: probabilisticResults.filter((r) => r.category === 'transitive').length,
+          lowRisk: probabilisticResults.filter((r) => r.category === 'low-risk').length,
+        },
+      };
     }
 
     // Group by depth with risk levels
@@ -1043,6 +1148,8 @@ service: monorepo path prefix filter (only active in group mode).`,
         targetUid: { type: 'string', description: 'Exact node ID for zero-ambiguity lookup (skips name resolution)' },
         kind: { type: 'string', description: 'Node label filter for disambiguation when target name is ambiguous' },
         file_path: { type: 'string', description: 'File path filter for disambiguation' },
+        mode: { type: 'string', description: 'Impact scoring mode: binary (current) or probabilistic (confidence decay with Noisy-OR fusion)', enum: ['binary', 'probabilistic'] },
+        decaySchedule: { type: 'string', description: 'Decay schedule for probabilistic mode (default: linear)', enum: ['linear', 'exponential', 'logarithmic'] },
       },
       required: ['target', 'direction'],
     },
@@ -1056,6 +1163,8 @@ service: monorepo path prefix filter (only active in group mode).`,
       const targetUid = params.targetUid as string | undefined;
       const kind = params.kind as string | undefined;
       const filePath = params.file_path as string | undefined;
+      const mode = (params.mode as string) ?? 'binary';
+      const decaySchedule = (params.decaySchedule as string) ?? 'linear';
       let result: unknown;
 
       if (repo?.startsWith('@') && crossDepth > 0) {
@@ -1075,6 +1184,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
 
         // Cross-repo fan-out via contract links
@@ -1111,6 +1222,11 @@ service: monorepo path prefix filter (only active in group mode).`,
                     requireNumber(params, 'maxDepth', 3),
                     requireNumber(params, 'minConfidence', 0.3),
                     timeoutMs,
+                    undefined,
+                    undefined,
+                    undefined,
+                    mode as 'binary' | 'probabilistic',
+                    decaySchedule as 'linear' | 'exponential' | 'logarithmic',
                   );
                   crossResults.push({ repo: targetRepo, contract: link.contractType, link, result: crossResult });
                 } catch { /* skip unreachable repos */ }
@@ -1140,6 +1256,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
       } else {
         result = backend.impact(
@@ -1152,6 +1270,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
       }
 
@@ -1708,12 +1828,13 @@ Algorithms:
 - pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
 - betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
 - shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+- architecture_smells: Detect architecture anti-patterns (cyclic dependencies, god modules, unstable deps, dependency meshes, cut vertices, bridge edges).
 
 The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCESS synthetic edges).`,
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1798,6 +1919,27 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'architecture_smells') {
+        const results = architectureSmells(adjList);
+        const output: any = {
+          algorithm: 'architecture_smells',
+          summary: {
+            cycles: results.sccs?.length ?? 0,
+            cutVertices: results.cutVertices?.length ?? 0,
+            bridges: results.bridges?.length ?? 0,
+            hubs: results.hubs?.length ?? 0,
+            meshes: results.meshes?.length ?? 0,
+          },
+        };
+        if (results.sccs?.length) output.sccs = results.sccs;
+        if (results.hubs?.length) output.hubs = results.hubs;
+        if (results.martinMetrics?.length) output.martinMetrics = results.martinMetrics;
+        if (results.meshes?.length) output.meshes = results.meshes;
+        if (results.cutVertices?.length) output.cutVertices = results.cutVertices;
+        if (results.bridges?.length) output.bridges = results.bridges;
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown algorithm: ${algorithm}` }) }] };
