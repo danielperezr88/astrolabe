@@ -206,9 +206,10 @@ describe('detectCutVertices', () => {
     ]);
     const result = detectCutVertices(adj);
     // B is the only cut vertex — removing it disconnects A from C
-    expect(result).toContain('B');
-    expect(result).not.toContain('A');
-    expect(result).not.toContain('C');
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('B');
+    expect(ids).not.toContain('A');
+    expect(ids).not.toContain('C');
   });
 
   it('returns empty array for a triangle (fully connected 3-cycle)', () => {
@@ -234,8 +235,9 @@ describe('detectCutVertices', () => {
       ['C', ['Hub']],
     ]);
     const result = detectCutVertices(adj);
-    expect(result).toContain('Hub');
-    expect(result).not.toContain('A');
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('Hub');
+    expect(ids).not.toContain('A');
   });
 
   it('detects cut vertices in a dumbbell graph', () => {
@@ -249,7 +251,8 @@ describe('detectCutVertices', () => {
     ]);
     const result = detectCutVertices(adj);
     // C is the only cut vertex connecting the two triangles
-    expect(result).toContain('C');
+    const ids = result.map((r) => r.nodeId);
+    expect(ids).toContain('C');
     expect(result).toHaveLength(1);
   });
 
@@ -294,8 +297,8 @@ describe('detectBridges', () => {
     ]);
     const result = detectBridges(adj);
     expect(result).toHaveLength(1);
-    expect(result[0].source).toBe('A');
-    expect(result[0].target).toBe('B');
+    expect(result[0].sourceId).toBe('A');
+    expect(result[0].targetId).toBe('B');
   });
 
   it('detects the bridge edge in a dumbbell graph', () => {
