@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import type { KnowledgeGraph, GraphNode, GraphRelationship } from '../core/types.js';
 import { createKnowledgeGraph } from '../core/graph.js';
 import { createLogger } from '../logging/index.js';
+import type { SnapshotData, SnapshotDiff } from '../core/graph-evolution.js';
 
 const log = createLogger({ level: 'debug' });
 
@@ -103,6 +104,15 @@ export interface SqliteStore {
   /** Quick count of persisted relationships. */
   getRelationshipCount(): number;
 
+  /** Save a snapshot of graph metrics for temporal evolution tracking (#807). */
+  saveSnapshot(data: SnapshotData): void;
+
+  /** Load snapshots, optionally filtered by timestamp range. */
+  loadSnapshots(since?: string, until?: string): SnapshotData[];
+
+  /** Compute a diff between two snapshots by ID. */
+  diffSnapshots(fromId: string, toId: string): SnapshotDiff | null;
+
   /** Close the database connection. */
   close(): void;
 }
@@ -141,6 +151,27 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);
   CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
   CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(type);
+
+  CREATE TABLE IF NOT EXISTS snapshots (
+    id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    commit_sha TEXT NOT NULL DEFAULT 'unknown',
+    branch TEXT NOT NULL DEFAULT 'unknown',
+    node_count INTEGER NOT NULL DEFAULT 0,
+    edge_count INTEGER NOT NULL DEFAULT 0,
+    community_count INTEGER NOT NULL DEFAULT 0,
+    modularity REAL NOT NULL DEFAULT 0,
+    avg_pagerank_max REAL NOT NULL DEFAULT 0,
+    avg_betweenness_max REAL NOT NULL DEFAULT 0,
+    health_score REAL NOT NULL DEFAULT 0,
+    cohesion REAL NOT NULL DEFAULT 0,
+    complexity REAL NOT NULL DEFAULT 0,
+    cycle_count INTEGER NOT NULL DEFAULT 0,
+    hub_count INTEGER NOT NULL DEFAULT 0,
+    unstable_dep_count INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp);
 `;
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -179,6 +210,28 @@ export function createSqliteStore(dbPath: string): SqliteStore {
   const allRels = db.prepare(
     'SELECT id, source_id, target_id, type, confidence, reason, step, evidence FROM relationships',
   );
+
+  // ── Snapshot prepared statements (#807) ───────────────────────────
+  const insertSnapshot = db.prepare(
+    `INSERT OR REPLACE INTO snapshots
+       (id, timestamp, commit_sha, branch, node_count, edge_count, community_count,
+        modularity, avg_pagerank_max, avg_betweenness_max, health_score,
+        cohesion, complexity, cycle_count, hub_count, unstable_dep_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const getSnapshots = db.prepare(
+    'SELECT * FROM snapshots WHERE (? IS NULL OR timestamp >= ?) AND (? IS NULL OR timestamp <= ?) ORDER BY timestamp ASC',
+  );
+  const getSnapshotById = db.prepare('SELECT * FROM snapshots WHERE id = ?');
+
+  // ── Snapshot row type ─────────────────────────────────────────────
+  interface SnapshotRow {
+    id: string; timestamp: string; commit_sha: string; branch: string;
+    node_count: number; edge_count: number; community_count: number;
+    modularity: number; avg_pagerank_max: number; avg_betweenness_max: number;
+    health_score: number; cohesion: number; complexity: number;
+    cycle_count: number; hub_count: number; unstable_dep_count: number;
+  }
 
   // ── Public API ─────────────────────────────────────────────────────────
 
@@ -277,6 +330,60 @@ export function createSqliteStore(dbPath: string): SqliteStore {
     getRelationshipCount(): number {
       const row = countRels.get() as { cnt: number };
       return row.cnt;
+    },
+
+    saveSnapshot(data: SnapshotData): void {
+      withRetrySync(() => insertSnapshot.run(
+        data.id, data.timestamp, data.commitSha, data.branch,
+        data.nodeCount, data.edgeCount, data.communityCount,
+        data.modularity, data.avgPagerankMax, data.avgBetweennessMax,
+        data.healthScore, data.cohesion, data.complexity,
+        data.cycleCount, data.hubCount, data.unstableDepCount,
+      ));
+    },
+
+    loadSnapshots(since?: string, until?: string): SnapshotData[] {
+      const rows = getSnapshots.all(since ?? null, since ?? null, until ?? null, until ?? null) as Array<{
+        id: string; timestamp: string; commit_sha: string; branch: string;
+        node_count: number; edge_count: number; community_count: number;
+        modularity: number; avg_pagerank_max: number; avg_betweenness_max: number;
+        health_score: number; cohesion: number; complexity: number;
+        cycle_count: number; hub_count: number; unstable_dep_count: number;
+      }>;
+      return rows.map((r) => ({
+        id: r.id,
+        timestamp: r.timestamp,
+        commitSha: r.commit_sha,
+        branch: r.branch,
+        nodeCount: r.node_count,
+        edgeCount: r.edge_count,
+        communityCount: r.community_count,
+        modularity: r.modularity,
+        avgPagerankMax: r.avg_pagerank_max,
+        avgBetweennessMax: r.avg_betweenness_max,
+        healthScore: r.health_score,
+        cohesion: r.cohesion,
+        complexity: r.complexity,
+        cycleCount: r.cycle_count,
+        hubCount: r.hub_count,
+        unstableDepCount: r.unstable_dep_count,
+      }));
+    },
+
+    diffSnapshots(fromId: string, toId: string): SnapshotDiff | null {
+      const from = getSnapshotById.get(fromId) as SnapshotRow | undefined;
+      const to = getSnapshotById.get(toId) as SnapshotRow | undefined;
+      if (!from || !to) return null;
+
+      return {
+        nodesAdded: to.node_count - from.node_count,
+        nodesRemoved: Math.max(0, from.node_count - to.node_count),
+        edgesAdded: to.edge_count - from.edge_count,
+        edgesRemoved: Math.max(0, from.edge_count - to.edge_count),
+        healthDelta: Math.round((to.health_score - from.health_score) * 100) / 100,
+        newCycles: Math.max(0, to.cycle_count - from.cycle_count),
+        resolvedCycles: Math.max(0, from.cycle_count - to.cycle_count),
+      };
     },
 
     close(): void {

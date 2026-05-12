@@ -38,6 +38,8 @@ import { exportGnnDataset } from '../core/gnn-features.js';
 // #813: Semantic embeddings for MCP query tool
 import { EmbeddingStore, createEmbeddingProvider, type EmbeddingProviderType } from '../search/embeddings-store.js';
 import { cosineSimilarity } from '../core/embedding-propagation.js';
+// #807: Temporal graph evolution
+import { detectTrends } from '../core/graph-evolution.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -2834,6 +2836,79 @@ Writes nodes.csv (or .json), edges.csv (or .json), node_labels.json, and edge_ty
       ];
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #807: Temporal graph evolution — snapshots, diffs, and trend detection
+  'astrolabe.graph_evolution': {
+    name: 'astrolabe.graph_evolution',
+    description: `Temporal graph evolution — view snapshots of architecture health over time, detect improving/degrading trends, and diff any two snapshots.
+
+Returns snapshots filtered by date range, a trend summary (health direction, slope, confidence), and per-metric summaries.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (omit if only one indexed)' },
+        since: { type: 'string', description: 'ISO 8601 start date for snapshot range (optional)' },
+        until: { type: 'string', description: 'ISO 8601 end date for snapshot range (optional)' },
+      },
+      required: [],
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const store = ctx.store;
+
+      const since = params.since as string | undefined;
+      const until = params.until as string | undefined;
+
+      const snapshots = store.loadSnapshots(since, until);
+      const trend = detectTrends(snapshots);
+
+      // Detect cohesion/coupling trend if enough snapshots
+      let couplingDirection: string = 'stable';
+      if (snapshots.length >= 2) {
+        const firstCohesion = snapshots[0].cohesion;
+        const lastCohesion = snapshots[snapshots.length - 1].cohesion;
+        const cohesionDelta = lastCohesion - firstCohesion;
+        couplingDirection = cohesionDelta > 0.05 ? 'decoupling' : cohesionDelta < -0.05 ? 'tightening' : 'stable';
+      }
+
+      // Build trend summary
+      const trendSummary = {
+        health: {
+          direction: trend.direction,
+          slope: trend.slope,
+          confidence: trend.confidence,
+        },
+        coupling: {
+          direction: couplingDirection,
+        },
+        communities: snapshots.length > 0 ? snapshots[snapshots.length - 1].communityCount : 0,
+      };
+
+      const output = {
+        repo: ctx.entry.name,
+        snapshotCount: snapshots.length,
+        snapshots: snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          modularity: Math.round(s.modularity * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        })),
+        trend_summary: trendSummary,
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
     },
   },
 };
