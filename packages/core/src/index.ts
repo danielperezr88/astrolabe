@@ -81,3 +81,5 @@ export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/in
 export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
 // #806: Probabilistic impact analysis
 export { EDGE_DECAY_FACTORS, applyDecay, noisyOr, type DecaySchedule } from './analysis/impact-decay.js';
+// #808: Architecture anti-pattern detection
+export { detectAntiPatterns, type ArchitectureSmellsResult } from './analysis/anti-pattern/index.js';
