@@ -262,3 +262,152 @@ function hasTarget(adjList: Map<string, string[]>, nodeId: string): boolean {
   }
   return false;
 }
+
+// ── Cut Vertices (Articulation Points) ──────────────────────────────────────
+
+/**
+ * Tarjan DFS low-link algorithm for articulation points (cut vertices).
+ * Operates on an undirected view of the directed adjacency list.
+ *
+ * A cut vertex is a node whose removal disconnects the graph — a single point
+ * of failure in a dependency graph.
+ */
+export function detectCutVertices(adjList: Map<string, string[]>): string[] {
+  if (adjList.size === 0) return [];
+
+  // Build undirected adjacency list
+  const undirected = new Map<string, Set<string>>();
+  for (const [node, neighbors] of adjList) {
+    let set = undirected.get(node);
+    if (!set) { set = new Set(); undirected.set(node, set); }
+    for (const neighbor of neighbors) {
+      set.add(neighbor);
+      let neighborSet = undirected.get(neighbor);
+      if (!neighborSet) { neighborSet = new Set(); undirected.set(neighbor, neighborSet); }
+      neighborSet.add(node);
+    }
+  }
+
+  const visited = new Set<string>();
+  const disc = new Map<string, number>();
+  const low = new Map<string, number>();
+  const parent = new Map<string, string | null>();
+  const cutVertices = new Set<string>();
+  let time = 0;
+
+  function dfs(u: string): void {
+    visited.add(u);
+    time++;
+    disc.set(u, time);
+    low.set(u, time);
+
+    let children = 0;
+    const neighbors = undirected.get(u) ?? new Set<string>();
+
+    for (const v of neighbors) {
+      if (!visited.has(v)) {
+        children++;
+        parent.set(v, u);
+        dfs(v);
+
+        // Update low-link value of u
+        low.set(u, Math.min(low.get(u)!, low.get(v)!));
+
+        // Non-root cut vertex check: no back edge from v's subtree to an ancestor of u
+        if (parent.get(u) !== null && low.get(v)! >= disc.get(u)!) {
+          cutVertices.add(u);
+        }
+      } else if (v !== parent.get(u)) {
+        // Back edge — update low value with discovery time of v
+        low.set(u, Math.min(low.get(u)!, disc.get(v)!));
+      }
+    }
+
+    // Root cut vertex check: more than one child in DFS tree
+    if (parent.get(u) === null && children > 1) {
+      cutVertices.add(u);
+    }
+  }
+
+  // Visit all nodes (handles disconnected components)
+  for (const node of undirected.keys()) {
+    if (!visited.has(node)) {
+      parent.set(node, null);
+      dfs(node);
+    }
+  }
+
+  return Array.from(cutVertices);
+}
+
+// ── Bridge Edges ────────────────────────────────────────────────────────────
+
+/**
+ * Modified Tarjan DFS for bridge edges.  Operates on an undirected view of
+ * the directed adjacency list.
+ *
+ * A bridge edge is an edge whose removal disconnects the graph — a critical
+ * dependency link between subsystems.
+ */
+export function detectBridges(
+  adjList: Map<string, string[]>,
+): Array<{ source: string; target: string }> {
+  if (adjList.size === 0) return [];
+
+  // Build undirected adjacency list
+  const undirected = new Map<string, Set<string>>();
+  for (const [node, neighbors] of adjList) {
+    let set = undirected.get(node);
+    if (!set) { set = new Set(); undirected.set(node, set); }
+    for (const neighbor of neighbors) {
+      set.add(neighbor);
+      let neighborSet = undirected.get(neighbor);
+      if (!neighborSet) { neighborSet = new Set(); undirected.set(neighbor, neighborSet); }
+      neighborSet.add(node);
+    }
+  }
+
+  const visited = new Set<string>();
+  const disc = new Map<string, number>();
+  const low = new Map<string, number>();
+  const parent = new Map<string, string | null>();
+  const bridges: Array<{ source: string; target: string }> = [];
+  let time = 0;
+
+  function dfs(u: string): void {
+    visited.add(u);
+    time++;
+    disc.set(u, time);
+    low.set(u, time);
+
+    const neighbors = undirected.get(u) ?? new Set<string>();
+
+    for (const v of neighbors) {
+      if (!visited.has(v)) {
+        parent.set(v, u);
+        dfs(v);
+
+        // Update low-link value of u
+        low.set(u, Math.min(low.get(u)!, low.get(v)!));
+
+        // Bridge condition: no back edge from v's subtree to u or its ancestors
+        if (low.get(v)! > disc.get(u)!) {
+          bridges.push({ source: u, target: v });
+        }
+      } else if (v !== parent.get(u)) {
+        // Back edge — update low value with discovery time of v
+        low.set(u, Math.min(low.get(u)!, disc.get(v)!));
+      }
+    }
+  }
+
+  // Visit all nodes (handles disconnected components)
+  for (const node of undirected.keys()) {
+    if (!visited.has(node)) {
+      parent.set(node, null);
+      dfs(node);
+    }
+  }
+
+  return bridges;
+}
