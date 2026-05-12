@@ -24,7 +24,7 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, computeSpectralMetrics, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
@@ -1835,7 +1835,7 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'spectral_analysis', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1920,6 +1920,59 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'spectral_analysis') {
+        // Build optional community map from Community nodes + MEMBER_OF edges
+        const communityMap = new Map<string, string[]>();
+        for (const node of graph.iterNodes()) {
+          if (node.label === 'Community') {
+            communityMap.set(
+              (node.properties.name as string) ?? node.id,
+              [],
+            );
+          }
+        }
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type === 'MEMBER_OF') {
+            const commNode = graph.getNode(rel.targetId);
+            if (commNode && commNode.label === 'Community') {
+              const name = (commNode.properties.name as string) ?? commNode.id;
+              let members = communityMap.get(name);
+              if (!members) { members = []; communityMap.set(name, members); }
+              members.push(rel.sourceId);
+            }
+          }
+        }
+
+        const metrics = computeSpectralMetrics(adjList, communityMap.size > 0 ? communityMap : undefined);
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              algorithm: 'spectral_analysis',
+              metrics: {
+                nodeCount: metrics.nodeCount,
+                edgeCount: metrics.edgeCount,
+                density: Math.round(metrics.density * 10000) / 10000,
+                degreeEntropy: Math.round(metrics.degreeEntropy * 1000) / 1000,
+                avgDegree: Math.round(metrics.avgDegree * 100) / 100,
+                maxDegree: metrics.maxDegree,
+                flowHierarchy: Math.round(metrics.flowHierarchy * 10000) / 10000,
+                modularityQ: Math.round(metrics.modularityQ * 10000) / 10000,
+                topology: metrics.topologyType,
+                topologyConfidence: Math.round(metrics.topologyConfidence * 100) / 100,
+              },
+              interpretation: {
+                density: metrics.density < 0.1 ? 'Sparse graph — loosely coupled architecture' : metrics.density > 0.3 ? 'Dense graph — tightly coupled architecture' : 'Moderately connected',
+                degreeEntropy: metrics.degreeEntropy < 1 ? 'Uniform degree distribution' : metrics.degreeEntropy > 3 ? 'Highly skewed degree distribution (hub-centric)' : 'Moderately diverse degrees',
+                flowHierarchy: metrics.flowHierarchy > 0.7 ? 'Highly hierarchical — clear dependency direction' : metrics.flowHierarchy < 0.3 ? 'Cyclic — strong bidirectional coupling' : 'Mixed hierarchy',
+                modularityQ: metrics.modularityQ > 0.5 ? 'Well-modularized' : metrics.modularityQ > 0.3 ? 'Moderately modular' : 'Low modularity',
+              },
+            }, null, 2),
+          }],
+        };
       }
 
       if (algorithm === 'resilience') {

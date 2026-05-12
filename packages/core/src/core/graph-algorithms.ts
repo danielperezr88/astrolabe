@@ -324,6 +324,197 @@ function hasTarget(adjList: Map<string, string[]>, nodeId: string): boolean {
   return false;
 }
 
+// ── Spectral / Entropy Metrics (#812) ────────────────────────────────────────
+
+export interface SpectralMetrics {
+  nodeCount: number;
+  edgeCount: number;
+  density: number;
+  degreeEntropy: number;
+  avgDegree: number;
+  maxDegree: number;
+  flowHierarchy: number;
+  modularityQ: number;
+  topologyType: 'tree-like' | 'star-like' | 'mesh-like' | 'hybrid';
+  topologyConfidence: number;
+}
+
+/**
+ * Compute spectral graph metrics from a directed adjacency list.
+ *
+ * Metrics include density, degree entropy, flow hierarchy (via Kahn's
+ * algorithm), optional Newman-Girvan modularity Q, and topology classification.
+ *
+ * @param adjList  Directed adjacency list (every node is a key)
+ * @param communities  Optional community→members map for modularity Q
+ */
+export function computeSpectralMetrics(
+  adjList: Map<string, string[]>,
+  communities?: Map<string, string[]>,
+): SpectralMetrics {
+  const nodes = Array.from(adjList.keys());
+  const nodeCount = nodes.length;
+
+  // ── edgeCount ──────────────────────────────────────────────────────────
+  let edgeCount = 0;
+  for (const targets of adjList.values()) {
+    edgeCount += targets.length;
+  }
+
+  // ── density ────────────────────────────────────────────────────────────
+  const density =
+    nodeCount > 1
+      ? Math.min(1, edgeCount / (nodeCount * (nodeCount - 1)))
+      : 0;
+
+  // ── degree distribution & entropy ──────────────────────────────────────
+  const degreeCounts = new Map<number, number>();
+  let maxDegree = 0;
+  for (const node of nodes) {
+    const deg = adjList.get(node)?.length ?? 0;
+    degreeCounts.set(deg, (degreeCounts.get(deg) ?? 0) + 1);
+    if (deg > maxDegree) maxDegree = deg;
+  }
+
+  let degreeEntropy = 0;
+  if (nodeCount > 0) {
+    for (const count of degreeCounts.values()) {
+      const p = count / nodeCount;
+      if (p > 0) degreeEntropy -= p * Math.log2(p);
+    }
+  }
+
+  const avgDegree = nodeCount > 0 ? edgeCount / nodeCount : 0;
+
+  // ── flow hierarchy (Kahn's algorithm) ──────────────────────────────────
+  // Compute in-degree for all nodes
+  const inDegree = new Map<string, number>();
+  for (const node of nodes) inDegree.set(node, 0);
+  for (const targets of adjList.values()) {
+    for (const tgt of targets) {
+      inDegree.set(tgt, (inDegree.get(tgt) ?? 0) + 1);
+    }
+  }
+
+  // Queue nodes with 0 in-degree
+  const queue: string[] = [];
+  const inAcyclic = new Set<string>();
+  for (const node of nodes) {
+    if (inDegree.get(node) === 0) {
+      queue.push(node);
+      inAcyclic.add(node);
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const neighbor of adjList.get(current) ?? []) {
+      const newIndeg = (inDegree.get(neighbor) ?? 1) - 1;
+      inDegree.set(neighbor, newIndeg);
+      if (newIndeg === 0 && !inAcyclic.has(neighbor)) {
+        inAcyclic.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  // Count hierarchical edges (edge source is in the acyclic subgraph)
+  let hierarchicalEdges = 0;
+  for (const [src, targets] of adjList) {
+    if (inAcyclic.has(src)) {
+      hierarchicalEdges += targets.length;
+    }
+  }
+
+  const flowHierarchy = edgeCount > 0 ? hierarchicalEdges / edgeCount : 0;
+
+  // ── modularity Q (Newman-Girvan) ───────────────────────────────────────
+  let modularityQ = 0;
+  if (communities && communities.size > 0 && edgeCount > 0) {
+    // Build degree map
+    const degree = new Map<string, number>();
+    for (const node of nodes) {
+      degree.set(node, adjList.get(node)?.length ?? 0);
+    }
+    // Also account for incoming edges (undirected modularity view)
+    for (const targets of adjList.values()) {
+      for (const tgt of targets) {
+        degree.set(tgt, (degree.get(tgt) ?? 0) + 1);
+      }
+    }
+
+    const twoM = 2 * edgeCount;
+
+    // Build community lookup: nodeId → communityId
+    const nodeToCommunity = new Map<string, string>();
+    for (const [commId, members] of communities) {
+      for (const member of members) {
+        nodeToCommunity.set(member, commId);
+      }
+    }
+
+    // Only consider nodes present in the graph
+    for (const node of nodes) {
+      if (!nodeToCommunity.has(node)) {
+        // unassigned node gets its own community
+        nodeToCommunity.set(node, '_unassigned_' + node);
+      }
+    }
+
+    // Q = (1/2m) * Σ_ij [A_ij - (k_i * k_j)/(2m)] * δ(c_i, c_j)
+    let qAcc = 0;
+    for (const [src, targets] of adjList) {
+      const ki = degree.get(src) ?? 0;
+      const ci = nodeToCommunity.get(src) ?? '';
+      for (const tgt of targets) {
+        const kj = degree.get(tgt) ?? 0;
+        const cj = nodeToCommunity.get(tgt) ?? '';
+        if (ci === cj) {
+          qAcc += 1 - (ki * kj) / twoM;
+        }
+      }
+    }
+
+    modularityQ = qAcc / twoM;
+  }
+
+  // ── topology classification ────────────────────────────────────────────
+  let topologyType: SpectralMetrics['topologyType'] = 'hybrid';
+  let topologyConfidence = 0.5;
+
+  // Star-like: single hub connects to >50% of nodes, low avg degree
+  if (nodeCount > 1 && maxDegree >= nodeCount * 0.5 && avgDegree < 3) {
+    topologyType = 'star-like';
+    topologyConfidence = maxDegree >= nodeCount * 0.8 ? 0.9 : 0.7;
+  }
+  // Tree-like: at most V-1 edges (sparse) OR density < 0.1
+  if (nodeCount > 1) {
+    const isSparse = edgeCount <= nodeCount - 1 || density < 0.1;
+    if (isSparse && topologyType !== 'star-like') {
+      topologyType = 'tree-like';
+      topologyConfidence = edgeCount <= nodeCount - 1 ? 0.9 : 0.7;
+    }
+  }
+  // Mesh-like: density > 0.3 AND avg degree > 5
+  if (density > 0.3 && avgDegree > 5) {
+    topologyType = 'mesh-like';
+    topologyConfidence = density > 0.5 ? 0.9 : 0.7;
+  }
+
+  return {
+    nodeCount,
+    edgeCount,
+    density,
+    degreeEntropy,
+    avgDegree,
+    maxDegree,
+    flowHierarchy,
+    modularityQ,
+    topologyType,
+    topologyConfidence,
+  };
+}
+
 // ── Tarjan's SCC ────────────────────────────────────────────────────────────
 
 /**

@@ -81,6 +81,8 @@ export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } fr
 export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analysis/graphlet/index.js';
 export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
 export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
+// #812: Spectral graph analysis
+export { computeSpectralMetrics, type SpectralMetrics } from './core/graph-algorithms.js';
 // #805: Graph resilience analysis
 export { detectCutVertices, detectBridges } from './core/graph-algorithms.js';
 // #806: Probabilistic impact analysis
