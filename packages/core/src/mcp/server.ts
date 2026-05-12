@@ -33,6 +33,8 @@ import type { CommunityInfo } from '../analysis/graphlet/index.js';
 // #811: Graph-based coverage metrics
 import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.js';
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
+// #809: GNN feature engineering
+import { exportGnnDataset } from '../core/gnn-features.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -2656,6 +2658,59 @@ Returns:
         lines.push('');
         lines.push('These symbols have no test coverage but are heavily depended upon. Prioritize adding tests for them.');
       }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #809: GNN node classification feature engineering and dataset export
+  'astrolabe.gnn_export': {
+    name: 'astrolabe.gnn_export',
+    description: `Export GNN-ready feature vectors and dataset from the knowledge graph for graph neural network training (#809).
+
+Feature vectors include:
+- Node features: one-hot label encoding (37 labels), degree in/out, PageRank, betweenness centrality, community ID, code metrics (param count, async, static, abstract, lines, nesting)
+- Edge features: one-hot type encoding (26 types), confidence score, cross-community flag
+- Optional: 384-D embedding vectors from the SQLite embedding store
+
+Writes nodes.csv (or .json), edges.csv (or .json), node_labels.json, and edge_types.json to the specified output directory.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        output_path: { type: 'string', description: 'Output directory path for exported files (default: .astrolabe/gnn-dataset/)' },
+        format: { type: 'string', description: 'Output format: csv or json (default: csv)' },
+        include_embeddings: { type: 'boolean', description: 'Include 384-D embedding vectors in node features (default: false)' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      const outputPath = (params.output_path as string) || '.astrolabe/gnn-dataset/';
+      const format = ((params.format === 'json' ? 'json' : 'csv') as 'csv' | 'json');
+      const includeEmbeddings = params.include_embeddings === true;
+
+      const result = exportGnnDataset(graph, outputPath, {
+        dbPath: ctx.entry.dbPath,
+        format,
+        includeEmbeddings,
+      });
+
+      const lines = [
+        `GNN dataset exported to: ${result.exportPath}`,
+        `  Nodes: ${result.nodeCount.toLocaleString()}`,
+        `  Edges: ${result.edgeCount.toLocaleString()}`,
+        `  Feature dimensions: ${result.featureDimensions}`,
+        `  Format: ${format}`,
+        `  Embeddings: ${includeEmbeddings ? 'included' : 'not included'}`,
+        '',
+        `Output files:`,
+        `  ${pathJoin(outputPath, format === 'json' ? 'nodes.json' : 'nodes.csv')}`,
+        `  ${pathJoin(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`,
+        `  ${pathJoin(outputPath, 'node_labels.json')}`,
+        `  ${pathJoin(outputPath, 'edge_types.json')}`,
+      ];
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },

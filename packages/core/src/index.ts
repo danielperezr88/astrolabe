@@ -89,3 +89,6 @@ export { detectCutVertices, detectBridges } from './core/graph-algorithms.js';
 export { EDGE_DECAY_FACTORS, applyDecay, noisyOr, type DecaySchedule } from './analysis/impact-decay.js';
 // #808: Architecture anti-pattern detection
 export { detectAntiPatterns, type ArchitectureSmellsResult } from './analysis/anti-pattern/index.js';
+// #809: GNN node classification feature engineering
+export { extractNodeFeatures, extractEdgeFeatures, exportGnnDataset, nodeLabelOneHot, NODE_LABELS, EDGE_TYPES } from './core/gnn-features.js';
+export type { GnnNodeFeatures, GnnEdgeFeatures, GnnExportOptions } from './core/gnn-features.js';
