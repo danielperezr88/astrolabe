@@ -572,7 +572,9 @@ program
   .command('impact <symbol-name>')
   .description('Show code impact analysis for a symbol')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
-  .action((symbolName: string, opts: { db: string }) => {
+  .option('--probabilistic', 'Use probabilistic confidence-decay scoring')
+  .option('--decay <schedule>', 'Decay schedule for probabilistic mode', 'linear')
+  .action((symbolName: string, opts: { db: string; probabilistic?: boolean; decay?: string }) => {
     const store = createSqliteStore(opts.db);
     try {
       const graph = store.loadGraph();
@@ -588,19 +590,57 @@ program
         bucket.push({ neighborId: rel.sourceId, type: rel.type, direction: 'incoming' });
       }
 
-      let found = 0;
-      for (const node of graph.iterNodes()) {
-        if (node.properties.name === symbolName) {
-          found++;
-          console.log(`${node.label}: ${node.id}`);
-          const neighbors = adj.get(node.id) ?? [];
-          for (const { neighborId, type, direction } of neighbors) {
+      if (opts.probabilistic) {
+        // #806: Probabilistic mode — simple confidence-decay visualization
+        const decaySchedules: Record<string, (c: number, d: number) => number> = {
+          linear: (c) => c,
+          exponential: (c, d) => c * Math.exp(-0.3 * (d - 1)),
+          logarithmic: (c, d) => c / Math.log2(d + 1),
+        };
+        const schedule = decaySchedules[opts.decay ?? 'linear'] ?? decaySchedules.linear;
+        const EDGE_DECAY: Record<string, number> = {
+          CALLS: 0.9, IMPORTS: 0.7, EXTENDS: 0.8, IMPLEMENTS: 0.85,
+          USES: 0.6, ACCESSES: 0.65, CONTAINS: 0.95, DEFINES: 0.95,
+          QUERIES: 0.75, ROUTES: 0.7, MEMBER_OF: 0.3, ENTRY_POINT_OF: 0.4,
+          HAS_PROPERTY: 0.5, CHAINABLE_TO: 0.7, CO_CHANGES: 0.8, SEMANTICALLY_SIMILAR: 0.6,
+        };
+
+        const nodeScores = new Map<string, { score: number; paths: string[] }>();
+        nodeScores.set(symbolName, { score: 1.0, paths: [] });
+
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name !== symbolName) continue;
+          for (const { neighborId, type } of (adj.get(node.id) ?? [])) {
             const other = graph.getNode(neighborId);
-            console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+            if (!other) continue;
+            const decay = EDGE_DECAY[type] ?? 0.7;
+            const score = Math.round(schedule(decay, 1) * 1000) / 1000;
+            nodeScores.set(other.properties.name ?? neighborId, { score, paths: [type] });
           }
         }
+
+        console.log(`Probabilistic impact for "${symbolName}" (decay: ${opts.decay ?? 'linear'}):`);
+        const sorted = [...nodeScores].filter(([k]) => k !== symbolName).sort((a, b) => b[1].score - a[1].score);
+        for (const [name, { score }] of sorted) {
+          const cat = score >= 0.8 ? 'DIRECT' : score >= 0.4 ? 'TRANSITIVE' : 'LOW-RISK';
+          console.log(`  [${cat}] ${name} (confidence: ${score.toFixed(3)})`);
+        }
+        if (sorted.length === 0) console.log('  (no directly connected nodes)');
+      } else {
+        let found = 0;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === symbolName) {
+            found++;
+            console.log(`${node.label}: ${node.id}`);
+            const neighbors = adj.get(node.id) ?? [];
+            for (const { neighborId, type, direction } of neighbors) {
+              const other = graph.getNode(neighborId);
+              console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+            }
+          }
+        }
+        if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
       }
-      if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
     } finally { store.close(); }
   });
 
