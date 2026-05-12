@@ -33,6 +33,7 @@ import {
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
   migrateFromGitNexus,
+  computeGraphCoverageMetrics,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -1313,6 +1314,64 @@ program
           console.log(JSON.stringify(vulnReport, null, 2));
         }
       }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── test-coverage (#811) ─────────────────────────────────────────────────────
+program
+  .command('test-coverage [repoPath]')
+  .description('Analyze test coverage using graph structure — per-community metrics and gap prioritization (#811)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      const metrics = computeGraphCoverageMetrics(graph);
+
+      if (opts.json) {
+        console.log(JSON.stringify(metrics, null, 2));
+        return;
+      }
+
+      if (metrics.totalFunctionNodes === 0) {
+        console.log('No function nodes found. Run `astrolabe analyze` first.');
+        return;
+      }
+
+      console.log(`\n=== Test Coverage Analysis (Graph-Aware) ===`);
+      console.log(`\nOverall:`);
+      console.log(`  Node coverage: ${metrics.overallNodeCoveragePercent.toFixed(1)}% (${metrics.coveredFunctionNodes} covered / ${metrics.partialFunctionNodes} partial / ${metrics.uncoveredFunctionNodes} uncovered of ${metrics.totalFunctionNodes} total)`);
+      console.log(`  Edge coverage: ${metrics.overallEdgeCoveragePercent.toFixed(1)}% (${metrics.coveredCallEdges} covered / ${metrics.totalCallEdges} total call edges)`);
+
+      console.log(`\n--- Per-Community Coverage (${metrics.communities.length} communities) ---`);
+      for (const c of metrics.communities) {
+        const bar = '█'.repeat(Math.round(c.nodeCoveragePercent / 10)) + '░'.repeat(10 - Math.round(c.nodeCoveragePercent / 10));
+        console.log(`  ${c.communityName}: ${bar} ${c.nodeCoveragePercent.toFixed(0)}% nodes`);
+        for (const gap of c.topGaps.slice(0, 3)) {
+          console.log(`    ⚠  ${gap.label}:${gap.name} (impact: ${gap.impact})`);
+        }
+      }
+
+      if (metrics.topUntestedHighImpact.length > 0) {
+        console.log(`\n--- Top Untested High-Impact Symbols ---`);
+        for (const gap of metrics.topUntestedHighImpact.slice(0, 15)) {
+          console.log(`  ⚠  [${gap.community}] ${gap.label}:${gap.name} — ${gap.impact} dependents`);
+        }
+        if (metrics.topUntestedHighImpact.length > 15) {
+          console.log(`  ... and ${metrics.topUntestedHighImpact.length - 15} more`);
+        }
+      }
+
+      console.log();
     } finally {
       store.close();
     }

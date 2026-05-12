@@ -39,6 +39,8 @@ export { parseLcov, parseIstanbul, parseCobertura, parseCoverageReport, detectFo
 export type { CoverageReport, FileCoverage } from './analysis/coverage/parser.js';
 export type { CoverageScanOutput } from './analysis/phases/coverage.js';
 export { annotateGraphWithCoverage } from './analysis/phases/coverage.js';
+// #811: Graph-based coverage metrics
+export { computeGraphCoverageMetrics, type GraphCoverageMetrics, type CommunityCoverage } from './analysis/coverage/graph-metrics.js';
 export { createSqliteStore, acquireDbLock } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
 export type { DbLock } from './persist/lock.js';
