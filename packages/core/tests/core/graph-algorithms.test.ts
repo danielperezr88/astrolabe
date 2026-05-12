@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pageRank, betweennessCentrality, shortestPath } from '../../src/core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, computeSpectralMetrics } from '../../src/core/graph-algorithms.js';
 
 // ── PageRank Tests ──────────────────────────────────────────────────────────
 
@@ -192,5 +192,110 @@ describe('shortestPath', () => {
     const path = shortestPath(adj, 'A', 'Z');
 
     expect(path).toBeNull();
+  });
+});
+
+// ── Spectral Metrics Tests (#812) ────────────────────────────────────────────
+
+describe('computeSpectralMetrics', () => {
+  it('computes correct density for a chain graph', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['C']],
+      ['C', ['D']],
+      ['D', []],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.nodeCount).toBe(4);
+    expect(metrics.edgeCount).toBe(3);
+    // density = 3 / (4*3) = 0.25
+    expect(metrics.density).toBeCloseTo(0.25, 2);
+  });
+
+  it('returns zero density for empty graph', () => {
+    const adj = new Map<string, string[]>();
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.nodeCount).toBe(0);
+    expect(metrics.edgeCount).toBe(0);
+    expect(metrics.density).toBe(0);
+  });
+
+  it('classifies tree-like topology for a simple tree', () => {
+    const adj = new Map<string, string[]>([
+      ['Root', ['A', 'B']],
+      ['A', ['A1', 'A2']],
+      ['B', []],
+      ['A1', []],
+      ['A2', []],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.topologyType).toBe('tree-like');
+    expect(metrics.topologyConfidence).toBeGreaterThan(0.5);
+  });
+
+  it('classifies star-like topology', () => {
+    const adj = new Map<string, string[]>([
+      ['Hub', ['A', 'B', 'C', 'D', 'E']],
+      ['A', ['Hub']],
+      ['B', ['Hub']],
+      ['C', ['Hub']],
+      ['D', ['Hub']],
+      ['E', ['Hub']],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.topologyType).toBe('star-like');
+  });
+
+  it('computes degree entropy for mixed degree graph', () => {
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C', 'D']],
+      ['B', ['C']],
+      ['C', []],
+      ['D', []],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.degreeEntropy).toBeGreaterThan(0);
+    expect(metrics.maxDegree).toBe(3);
+  });
+
+  it('computes flow hierarchy for acyclic graph as 1.0', () => {
+    // Pure DAG: A→B, A→C, B→D, C→D
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['D']],
+      ['C', ['D']],
+      ['D', []],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.flowHierarchy).toBeCloseTo(1.0, 1);
+  });
+
+  it('computes flow hierarchy for cyclic graph < 1.0', () => {
+    // Cycle: A→B→C→A
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['C']],
+      ['C', ['A']],
+    ]);
+    const metrics = computeSpectralMetrics(adj);
+    expect(metrics.flowHierarchy).toBeLessThan(1.0);
+  });
+
+  it('computes modularity Q when communities provided', () => {
+    // Two clear clusters: cluster1 {A,B} heavily interconnected, cluster2 {C,D} heavily interconnected
+    // Weak connection between clusters: B→C
+    const adj = new Map<string, string[]>([
+      ['A', ['B']],
+      ['B', ['A', 'C']],
+      ['C', ['D', 'B']],
+      ['D', ['C']],
+    ]);
+    const communities = new Map<string, string[]>([
+      ['cluster1', ['A', 'B']],
+      ['cluster2', ['C', 'D']],
+    ]);
+    const metrics = computeSpectralMetrics(adj, communities);
+    // Should show positive modularity (inter-cluster edges < intra-cluster)
+    expect(metrics.modularityQ).toBeGreaterThan(0);
   });
 });

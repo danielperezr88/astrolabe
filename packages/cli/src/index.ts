@@ -32,6 +32,7 @@ import {
   generateWiki,
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+  computeSpectralMetrics,
   migrateFromGitNexus,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
@@ -1313,6 +1314,62 @@ program
           console.log(JSON.stringify(vulnReport, null, 2));
         }
       }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── spectral (#812) ──────────────────────────────────────────────────────────
+program
+  .command('spectral [repoPath]')
+  .description('Spectral graph analysis — density, entropy, flow hierarchy, topology classification (#812)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const metrics = computeSpectralMetrics(adjList);
+
+      if (opts.json) {
+        console.log(JSON.stringify(metrics, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Spectral Graph Analysis ===`);
+      console.log(`Nodes: ${metrics.nodeCount} | Edges: ${metrics.edgeCount}`);
+      console.log();
+      console.log(`Density:         ${(metrics.density * 100).toFixed(2)}% (${metrics.density < 0.1 ? 'sparse/loosely coupled' : metrics.density > 0.3 ? 'dense/tightly coupled' : 'moderate'})`);
+      console.log(`Degree Entropy:  ${metrics.degreeEntropy.toFixed(3)} (${metrics.degreeEntropy < 1 ? 'uniform' : metrics.degreeEntropy > 3 ? 'hub-centric/skewed' : 'moderate diversity'})`);
+      console.log(`Avg Degree:      ${metrics.avgDegree.toFixed(1)}`);
+      console.log(`Max Degree:      ${metrics.maxDegree}`);
+      console.log(`Flow Hierarchy:  ${(metrics.flowHierarchy * 100).toFixed(1)}% acyclic (${metrics.flowHierarchy > 0.7 ? 'highly hierarchical' : metrics.flowHierarchy < 0.3 ? 'highly cyclic' : 'mixed'})`);
+      if (metrics.modularityQ > 0) {
+        console.log(`Modularity Q:    ${metrics.modularityQ.toFixed(4)} (${metrics.modularityQ > 0.5 ? 'well-modularized' : 'low modularity'})`);
+      }
+      console.log(`Topology:        ${metrics.topologyType} (confidence: ${metrics.topologyConfidence.toFixed(2)})`);
+      console.log();
     } finally {
       store.close();
     }
