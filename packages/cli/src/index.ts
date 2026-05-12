@@ -33,7 +33,11 @@ import {
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
   computeSpectralMetrics,
+  detectAntiPatterns,
   migrateFromGitNexus,
+  detectCutVertices, detectBridges,
+  computeGraphCoverageMetrics,
+  EDGE_DECAY_FACTORS, applyDecay, noisyOr,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -573,7 +577,9 @@ program
   .command('impact <symbol-name>')
   .description('Show code impact analysis for a symbol')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
-  .action((symbolName: string, opts: { db: string }) => {
+  .option('--probabilistic', 'Use probabilistic confidence-decay scoring')
+  .option('--decay <schedule>', 'Decay schedule for probabilistic mode', 'linear')
+  .action((symbolName: string, opts: { db: string; probabilistic?: boolean; decay?: string }) => {
     const store = createSqliteStore(opts.db);
     try {
       const graph = store.loadGraph();
@@ -589,19 +595,101 @@ program
         bucket.push({ neighborId: rel.sourceId, type: rel.type, direction: 'incoming' });
       }
 
-      let found = 0;
-      for (const node of graph.iterNodes()) {
-        if (node.properties.name === symbolName) {
-          found++;
-          console.log(`${node.label}: ${node.id}`);
-          const neighbors = adj.get(node.id) ?? [];
-          for (const { neighborId, type, direction } of neighbors) {
-            const other = graph.getNode(neighborId);
-            console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+      if (opts.probabilistic) {
+        // #806: Probabilistic multi-hop BFS with confidence decay and Noisy-OR fusion
+        const schedule = (opts.decay ?? 'linear') as 'linear' | 'exponential' | 'logarithmic';
+        const maxDepth = 3;
+
+        // Find the target node
+        let targetId: string | null = null;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === symbolName) { targetId = node.id; break; }
+        }
+        if (!targetId) {
+          console.log(`Symbol "${symbolName}" not found.`);
+          return;
+        }
+
+        // Pre-build adjacency with confidence (incoming + outgoing)
+        const probAdj = new Map<string, Array<{ neighborId: string; type: string; confidence: number; direction: 'outgoing' | 'incoming' }>>();
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type === 'STEP_IN_PROCESS') continue;
+          // outgoing: source → target
+          let bucket = probAdj.get(rel.sourceId);
+          if (!bucket) { bucket = []; probAdj.set(rel.sourceId, bucket); }
+          bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence, direction: 'outgoing' });
+          // incoming: target → source
+          bucket = probAdj.get(rel.targetId);
+          if (!bucket) { bucket = []; probAdj.set(rel.targetId, bucket); }
+          bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence, direction: 'incoming' });
+        }
+
+        // BFS with confidence decay
+        const nodeScores = new Map<string, { paths: Array<{ via: string; depth: number; confidence: number }>; bestScore: number }>();
+        nodeScores.set(targetId, { paths: [], bestScore: 1.0 });
+        const queue: Array<{ id: string; depth: number }> = [{ id: targetId, depth: 0 }];
+        const visited = new Set<string>([targetId]);
+
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (current.depth >= maxDepth) continue;
+
+          for (const { neighborId, type, confidence } of (probAdj.get(current.id) ?? [])) {
+            if (neighborId === targetId) continue;
+
+            const edgeDecay = EDGE_DECAY_FACTORS[type] ?? 0.7;
+            const parentEntry = nodeScores.get(current.id);
+            const parentConfidence = parentEntry?.bestScore ?? 1.0;
+            let decayedConfidence = parentConfidence * edgeDecay * Math.max(confidence, 0.1);
+            decayedConfidence = applyDecay(decayedConfidence, current.depth + 1, schedule);
+
+            const existing = nodeScores.get(neighborId);
+            const pathEntry = { via: current.id, depth: current.depth + 1, confidence: decayedConfidence };
+
+            if (existing) {
+              existing.paths.push(pathEntry);
+              const allProbs = existing.paths.map((p) => p.confidence);
+              existing.bestScore = noisyOr(allProbs);
+            } else {
+              nodeScores.set(neighborId, { paths: [pathEntry], bestScore: decayedConfidence });
+              if (!visited.has(neighborId)) {
+                visited.add(neighborId);
+                queue.push({ id: neighborId, depth: current.depth + 1 });
+              }
+            }
           }
         }
+
+        console.log(`Probabilistic impact for "${symbolName}" (decay: ${schedule}, maxDepth: ${maxDepth}):`);
+        const sorted = [...nodeScores]
+          .filter(([id]) => id !== targetId)
+          .map(([id, entry]) => {
+            const node = graph.getNode(id);
+            return { name: node?.properties.name ?? id, score: Math.round(entry.bestScore * 1000) / 1000, paths: entry.paths.length };
+          })
+          .sort((a, b) => b.score - a.score);
+
+        for (const { name, score, paths } of sorted) {
+          const cat = score >= 0.8 ? 'DIRECT' : score >= 0.4 ? 'TRANSITIVE' : 'LOW-RISK';
+          const pathInfo = paths > 1 ? ` (${paths} paths)` : '';
+          console.log(`  [${cat}] ${name} (confidence: ${score.toFixed(3)})${pathInfo}`);
+        }
+        if (sorted.length === 0) console.log('  (no connected nodes)');
+      } else {
+        let found = 0;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === symbolName) {
+            found++;
+            console.log(`${node.label}: ${node.id}`);
+            const neighbors = adj.get(node.id) ?? [];
+            for (const { neighborId, type, direction } of neighbors) {
+              const other = graph.getNode(neighborId);
+              console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+            }
+          }
+        }
+        if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
       }
-      if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
     } finally { store.close(); }
   });
 
@@ -1105,6 +1193,75 @@ program
     console.log();
   });
 
+// ── detect-smells ──────────────────────────────────────────────────────────
+program
+  .command('detect-smells [repoPath]')
+  .description('Detect architecture smells in the knowledge graph (cycles, god modules, unstable deps, meshes)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output as JSON')
+  .option('--fan-in <number>', 'Fan-in threshold for hub detection')
+  .option('--fan-out <number>', 'Fan-out threshold for hub detection')
+  .option('--density <number>', 'Density threshold for mesh detection (0-1)')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean; fanIn?: string; fanOut?: string; density?: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+    const store = createSqliteStore(dbPath);
+    const graph = store.loadGraph();
+    store.close();
+    const options: any = {};
+    if (opts.fanIn) options.fanInThreshold = Number(opts.fanIn);
+    if (opts.fanOut) options.fanOutThreshold = Number(opts.fanOut);
+    if (opts.density) options.densityThreshold = Number(opts.density);
+    const results = detectAntiPatterns(graph, options);
+    if (opts.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    console.log('\n=== Architecture Smells ===\n');
+    if (results.sccs?.length) {
+      console.log(`Cyclic Dependencies: ${results.sccs.length} cycle(s) found`);
+      for (const scc of results.sccs) {
+        console.log(`  Cycle #${scc.id}: ${scc.size} nodes — ${scc.nodeIds.slice(0, 5).join(', ')}${scc.nodeIds.length > 5 ? '...' : ''}`);
+      }
+      console.log();
+    }
+    if (results.hubs?.length) {
+      console.log(`Hub-like Modules: ${results.hubs.length} detected`);
+      for (const hub of results.hubs) {
+        console.log(`  ${hub.nodeId} — fanIn: ${hub.fanIn}, fanOut: ${hub.fanOut}, classification: ${hub.classification}`);
+      }
+      console.log();
+    }
+    if (results.meshes?.length) {
+      console.log(`Dependency Meshes: ${results.meshes.length} detected`);
+      for (const mesh of results.meshes) {
+        console.log(`  Mesh: ${mesh.nodeIds.length} nodes, density: ${mesh.density.toFixed(3)}, anchors: ${mesh.acyclicAnchors.length}`);
+      }
+      console.log();
+    }
+    if (results.cutVertices?.length) {
+      console.log(`Cut Vertices (SPoF): ${results.cutVertices.length} detected`);
+      for (const cv of results.cutVertices) {
+        console.log(`  ${cv.nodeId} — would split graph into ${cv.componentCountAfterRemoval} components`);
+      }
+      console.log();
+    }
+    if (results.bridges?.length) {
+      console.log(`Bridge Edges: ${results.bridges.length} detected`);
+      for (const bridge of results.bridges.slice(0, 10)) {
+        console.log(`  ${bridge.sourceId} → ${bridge.targetId}`);
+      }
+      if (results.bridges.length > 10) console.log(`  ... and ${results.bridges.length - 10} more`);
+      console.log();
+    }
+    if (!results.sccs?.length && !results.hubs?.length && !results.meshes?.length) {
+      console.log('No architecture smells detected.');
+    }
+  });
+
 // ── ingest-coverage (#463) ──────────────────────────────────────────────────
 program
   .command('ingest-coverage <report-file>')
@@ -1369,6 +1526,164 @@ program
         console.log(`Modularity Q:    ${metrics.modularityQ.toFixed(4)} (${metrics.modularityQ > 0.5 ? 'well-modularized' : 'low modularity'})`);
       }
       console.log(`Topology:        ${metrics.topologyType} (confidence: ${metrics.topologyConfidence.toFixed(2)})`);
+      console.log();
+    } finally {
+      store.close();
+    }
+  });
+
+// ── resilience (#805) ─────────────────────────────────────────────────────────
+program
+  .command('resilience [repoPath]')
+  .description('Analyze graph resilience — detect single points of failure (SPoF) and critical edges')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges (same as MCP handler)
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const cutVertices = detectCutVertices(adjList);
+      const bridges = detectBridges(adjList);
+
+      // Resolve names (staging API: CutVertexResult.nodeId, BridgeResult.sourceId/targetId)
+      const namedCutVertices = cutVertices.map((cv) => {
+        const node = graph.getNode(cv.nodeId);
+        return { id: cv.nodeId, name: node?.properties.name ?? cv.nodeId };
+      });
+
+      const namedBridges = bridges.map((b) => {
+        const srcNode = graph.getNode(b.sourceId);
+        const tgtNode = graph.getNode(b.targetId);
+        return {
+          source: { id: b.sourceId, name: srcNode?.properties.name ?? b.sourceId },
+          target: { id: b.targetId, name: tgtNode?.properties.name ?? b.targetId },
+        };
+      });
+
+      const nodeCount = adjList.size;
+      const edgeCount = Array.from(adjList.values()).reduce((s, t) => s + t.length, 0);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          nodeCount,
+          edgeCount,
+          cutVertices: { count: cutVertices.length, nodes: namedCutVertices },
+          bridgeEdges: { count: bridges.length, edges: namedBridges },
+          isBiconnected: cutVertices.length === 0 && bridges.length === 0,
+        }, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Graph Resilience Analysis ===`);
+      console.log(`Nodes: ${nodeCount} | Edges: ${edgeCount}`);
+      console.log();
+
+      if (cutVertices.length === 0 && bridges.length === 0) {
+        console.log('\u2713 The graph is biconnected \u2014 no single points of failure detected.');
+      } else {
+        if (cutVertices.length > 0) {
+          console.log(`--- Single Points of Failure (${cutVertices.length} cut vertices) ---`);
+          console.log('These nodes, if removed, would disconnect the dependency graph:');
+          for (const n of namedCutVertices.slice(0, 20)) {
+            console.log(`  \u26A0  ${n.name}`);
+          }
+          if (namedCutVertices.length > 20) {
+            console.log(`  ... and ${namedCutVertices.length - 20} more`);
+          }
+          console.log();
+        }
+
+        if (bridges.length > 0) {
+          console.log(`--- Critical Dependency Bridges (${bridges.length} bridge edges) ---`);
+          console.log('These edges are the ONLY connection between subsystems:');
+          for (const b of namedBridges.slice(0, 20)) {
+            console.log(`  \u26A1 ${b.source.name} \u2192 ${b.target.name}`);
+          }
+          if (namedBridges.length > 20) {
+            console.log(`  ... and ${namedBridges.length - 20} more`);
+          }
+          console.log();
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── test-coverage (#811) ─────────────────────────────────────────────────────
+program
+  .command('test-coverage [repoPath]')
+  .description('Analyze test coverage using graph structure — per-community metrics and gap prioritization (#811)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      const metrics = computeGraphCoverageMetrics(graph);
+
+      if (opts.json) {
+        console.log(JSON.stringify(metrics, null, 2));
+        return;
+      }
+
+      if (metrics.totalFunctionNodes === 0) {
+        console.log('No function nodes found. Run `astrolabe analyze` first.');
+        return;
+      }
+
+      console.log(`\n=== Test Coverage Analysis (Graph-Aware) ===`);
+      console.log(`\nOverall:`);
+      console.log(`  Node coverage: ${metrics.overallNodeCoveragePercent.toFixed(1)}% (${metrics.coveredFunctionNodes} covered / ${metrics.partialFunctionNodes} partial / ${metrics.uncoveredFunctionNodes} uncovered of ${metrics.totalFunctionNodes} total)`);
+      console.log(`  Edge coverage: ${metrics.overallEdgeCoveragePercent.toFixed(1)}% (${metrics.coveredCallEdges} covered / ${metrics.totalCallEdges} total call edges)`);
+
+      console.log(`\n--- Per-Community Coverage (${metrics.communities.length} communities) ---`);
+      for (const c of metrics.communities) {
+        const bar = '█'.repeat(Math.round(c.nodeCoveragePercent / 10)) + '░'.repeat(10 - Math.round(c.nodeCoveragePercent / 10));
+        console.log(`  ${c.communityName}: ${bar} ${c.nodeCoveragePercent.toFixed(0)}% nodes`);
+        for (const gap of c.topGaps.slice(0, 3)) {
+          console.log(`    ⚠  ${gap.label}:${gap.name} (impact: ${gap.impact})`);
+        }
+      }
+
+      if (metrics.topUntestedHighImpact.length > 0) {
+        console.log(`\n--- Top Untested High-Impact Symbols ---`);
+        for (const gap of metrics.topUntestedHighImpact.slice(0, 15)) {
+          console.log(`  ⚠  [${gap.community}] ${gap.label}:${gap.name} — ${gap.impact} dependents`);
+        }
+        if (metrics.topUntestedHighImpact.length > 15) {
+          console.log(`  ... and ${metrics.topUntestedHighImpact.length - 15} more`);
+        }
+      }
+
+      console.log();
       console.log();
     } finally {
       store.close();
