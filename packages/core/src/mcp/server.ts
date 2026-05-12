@@ -30,6 +30,8 @@ import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOpt
 // #461: Graphlet-based structural analysis
 import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
 import type { CommunityInfo } from '../analysis/graphlet/index.js';
+// #811: Graph-based coverage metrics
+import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.js';
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -2498,6 +2500,64 @@ DIAGRAM TYPES:
 
       lines.push('');
       lines.push('These symbols have no test coverage but are depended upon by multiple callers. Consider adding tests to reduce risk.');
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #811: Graph-based test coverage analysis
+  'astrolabe.test_coverage': {
+    name: 'astrolabe.test_coverage',
+    description: `Analyze test coverage using graph structure — per-community metrics, edge coverage, and gap prioritization. Requires coverage data to have been ingested via the ingest-coverage CLI command.
+
+Returns:
+- Overall node/edge coverage percentages
+- Per-community breakdown with top coverage gaps
+- Top untested high-impact symbols for prioritization`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const metrics = computeGraphCoverageMetrics(graph);
+
+      if (metrics.totalFunctionNodes === 0) {
+        return { content: [{ type: 'text', text: 'No function nodes found in the knowledge graph. Run `astrolabe analyze` first.' }] };
+      }
+
+      // Build text output
+      const lines: string[] = [
+        `=== Test Coverage Analysis (Graph-Aware) ===`,
+        '',
+        `Overall: ${metrics.overallNodeCoveragePercent.toFixed(1)}% node coverage (${metrics.coveredFunctionNodes} covered / ${metrics.partialFunctionNodes} partial / ${metrics.uncoveredFunctionNodes} uncovered of ${metrics.totalFunctionNodes} total)`,
+        `Calls edges: ${metrics.overallEdgeCoveragePercent.toFixed(1)}% edge coverage (${metrics.coveredCallEdges} covered / ${metrics.totalCallEdges} total)`,
+        '',
+      ];
+
+      // Per-community breakdown
+      lines.push(`--- Per-Community Coverage (${metrics.communities.length} communities) ---`);
+      for (const c of metrics.communities) {
+        const bar = '█'.repeat(Math.round(c.nodeCoveragePercent / 10)) + '░'.repeat(10 - Math.round(c.nodeCoveragePercent / 10));
+        lines.push(`  ${c.communityName}: ${bar} ${c.nodeCoveragePercent.toFixed(0)}% nodes, ${c.edgeCoveragePercent.toFixed(0)}% edges`);
+        for (const gap of c.topGaps) {
+          lines.push(`    ⚠ ${gap.label}:${gap.name} (impact: ${gap.impact})`);
+        }
+      }
+
+      // Top gaps
+      if (metrics.topUntestedHighImpact.length > 0) {
+        lines.push('');
+        lines.push('--- Top 20 Untested High-Impact Symbols ---');
+        for (const gap of metrics.topUntestedHighImpact) {
+          lines.push(`  ⚠ [${gap.community}] ${gap.label}:${gap.name} — ${gap.impact} dependents (${gap.filePath})`);
+        }
+        lines.push('');
+        lines.push('These symbols have no test coverage but are heavily depended upon. Prioritize adding tests for them.');
+      }
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
