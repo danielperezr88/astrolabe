@@ -262,3 +262,315 @@ function hasTarget(adjList: Map<string, string[]>, nodeId: string): boolean {
   }
   return false;
 }
+
+// ── Clone Detection (Weisfeiler-Lehman Graph Kernel) ────────────────────────
+
+/**
+ * Build a reverse adjacency map: for each node, which nodes point TO it.
+ * Not exported — used internally by detectClones().
+ */
+function buildReverseAdj(adjList: Map<string, string[]>): Map<string, string[]> {
+  const reverse = new Map<string, string[]>();
+  for (const node of adjList.keys()) reverse.set(node, []);
+  for (const [src, targets] of adjList) {
+    for (const tgt of targets) {
+      const bucket = reverse.get(tgt);
+      if (bucket) bucket.push(src);
+      else reverse.set(tgt, [src]);
+    }
+  }
+  return reverse;
+}
+
+/**
+ * Simple polynomial hash function for WL label generation.
+ * Not cryptographic — used for structural equivalence grouping.
+ */
+function wlHash(input: string): string {
+  let hash = 5381;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash * 33) + input.charCodeAt(i)) & 0x7FFFFFFF;
+  }
+  return hash.toString(16);
+}
+
+export interface ClonePair {
+  functionA: { id: string; name: string };
+  functionB: { id: string; name: string };
+  similarity: number;  // 0-1, Jaccard on feature vector
+  sharedNeighbors: number;
+}
+
+export interface CloneDetectionResult {
+  totalFunctions: number;
+  totalPairs: number;
+  clusters: CloneCluster[];
+  topPairs: ClonePair[];  // top 20 by similarity
+  summary: {
+    exactClones: number;    // similarity >= 0.95
+    nearMisses: number;     // 0.8-0.95
+    potentialClones: number; // 0.6-0.8
+  };
+}
+
+export interface CloneCluster {
+  clusterId: number;
+  memberCount: number;
+  members: Array<{ id: string; name: string }>;
+  avgSimilarity: number;
+  representativeFunction: string;
+}
+
+/**
+ * Detect structurally similar functions using the Weisfeiler-Lehman
+ * graph kernel (2-iteration refinement).
+ *
+ * Stage 1: WL hash pre-filter — group nodes with identical structural signatures.
+ * Stage 2: Within each group, compute Jaccard similarity on neighbor sets.
+ *
+ * Only compares pairs that share the same WL hash, avoiding O(N²).
+ *
+ * @param adjList    Adjacency map (node → outgoing neighbors)
+ * @param nodeNames  Node ID → human-readable name map
+ * @param options    threshold (0-1), minClusterSize, maxPairs
+ */
+export function detectClones(
+  adjList: Map<string, string[]>,
+  nodeNames: Map<string, string>,
+  options?: { threshold?: number; minClusterSize?: number; maxPairs?: number },
+): CloneDetectionResult {
+  const threshold = options?.threshold ?? 0.6;
+  const minClusterSize = options?.minClusterSize ?? 2;
+  const maxPairs = options?.maxPairs ?? 20;
+
+  const nodes = Array.from(adjList.keys());
+  const n = nodes.length;
+
+  if (n === 0) {
+    return {
+      totalFunctions: 0,
+      totalPairs: 0,
+      clusters: [],
+      topPairs: [],
+      summary: { exactClones: 0, nearMisses: 0, potentialClones: 0 },
+    };
+  }
+
+  // ── Stage 0: Pre-compute degrees and reverse adjacency ────────────────
+  const reverseAdj = buildReverseAdj(adjList);
+
+  const outDegree = new Map<string, number>();
+  const inDegree = new Map<string, number>();
+  for (const node of nodes) {
+    outDegree.set(node, adjList.get(node)?.length ?? 0);
+    inDegree.set(node, reverseAdj.get(node)?.length ?? 0);
+  }
+
+  // ── Stage 1: WL Hash (2 iterations) ───────────────────────────────────
+
+  // Initial label: degree signature
+  const labels = new Map<string, string>();
+  for (const node of nodes) {
+    const out = outDegree.get(node) ?? 0;
+    const inv = inDegree.get(node) ?? 0;
+    labels.set(node, `d:${out},${inv}`);
+  }
+
+  // 2 iterations of WL refinement
+  for (let iter = 0; iter < 2; iter++) {
+    const nextLabels = new Map<string, string>();
+    for (const node of nodes) {
+      const neighborLabels: string[] = [];
+      for (const neighbor of adjList.get(node) ?? []) {
+        neighborLabels.push(labels.get(neighbor) ?? '');
+      }
+      neighborLabels.sort();
+      const combined = (labels.get(node) ?? '') + '|' + neighborLabels.join(',');
+      nextLabels.set(node, wlHash(combined));
+    }
+    for (const [node, label] of nextLabels) {
+      labels.set(node, label);
+    }
+  }
+
+  // ── Stage 2: Group by WL hash, compare within groups ──────────────────
+
+  // Build neighbor WL hash sets for each node (for structural Jaccard)
+  const neighborHashSets = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    const hashSet = new Set<string>();
+    for (const neighbor of adjList.get(node) ?? []) {
+      hashSet.add(labels.get(neighbor) ?? '');
+    }
+    neighborHashSets.set(node, hashSet);
+  }
+
+  // Group nodes by final WL hash
+  const hashGroups = new Map<string, string[]>();
+  for (const node of nodes) {
+    const hash = labels.get(node) ?? '';
+    const group = hashGroups.get(hash);
+    if (group) group.push(node);
+    else hashGroups.set(hash, [node]);
+  }
+
+  // Compare pairs within each group using neighbor WL hash Jaccard
+  const allPairs: ClonePair[] = [];
+
+  for (const [, group] of hashGroups) {
+    if (group.length < 2) continue;
+
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i];
+        const b = group[j];
+
+        const setA = neighborHashSets.get(a)!;
+        const setB = neighborHashSets.get(b)!;
+
+        // Jaccard similarity on neighbor WL hashes (structural equivalence)
+        let intersection = 0;
+        for (const item of setA) {
+          if (setB.has(item)) intersection++;
+        }
+        const union = setA.size + setB.size - intersection;
+        const similarity = union === 0 ? 1 : intersection / union;
+
+        if (similarity >= threshold) {
+          allPairs.push({
+            functionA: { id: a, name: nodeNames.get(a) ?? a },
+            functionB: { id: b, name: nodeNames.get(b) ?? b },
+            similarity,
+            sharedNeighbors: intersection,
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by similarity descending
+  allPairs.sort((a, b) => b.similarity - a.similarity);
+
+  // ── Stage 3: Union-Find Clustering ────────────────────────────────────
+
+  const parent = new Map<string, string>();
+  const size = new Map<string, number>();
+
+  function find(x: string): string {
+    let p = parent.get(x);
+    if (p === undefined) {
+      parent.set(x, x);
+      size.set(x, 1);
+      return x;
+    }
+    if (p !== x) {
+      const root = find(p);
+      parent.set(x, root);
+      return root;
+    }
+    return x;
+  }
+
+  function union(x: string, y: string): void {
+    const rx = find(x);
+    const ry = find(y);
+    if (rx === ry) return;
+    const sx = size.get(rx) ?? 1;
+    const sy = size.get(ry) ?? 1;
+    if (sx < sy) {
+      parent.set(rx, ry);
+      size.set(ry, sx + sy);
+    } else {
+      parent.set(ry, rx);
+      size.set(rx, sx + sy);
+    }
+  }
+
+  // Initialize all nodes
+  for (const node of nodes) find(node);
+
+  // Union pairs above threshold
+  for (const pair of allPairs) {
+    union(pair.functionA.id, pair.functionB.id);
+  }
+
+  // Collect clusters
+  const clusterMap = new Map<string, Array<{ id: string; name: string }>>();
+  for (const node of nodes) {
+    const root = find(node);
+    const cluster = clusterMap.get(root);
+    const member = { id: node, name: nodeNames.get(node) ?? node };
+    if (cluster) cluster.push(member);
+    else clusterMap.set(root, [member]);
+  }
+
+  // Build cluster results (only multi-member clusters)
+  const clusters: CloneCluster[] = [];
+  const clusterPairMap = new Map<string, ClonePair[]>();
+
+  for (const pair of allPairs) {
+    const root = find(pair.functionA.id); // both nodes share same root after union
+
+    const group = clusterPairMap.get(root);
+    if (group) group.push(pair);
+    else clusterPairMap.set(root, [pair]);
+  }
+
+  let clusterIdCounter = 0;
+  for (const [root, members] of clusterMap) {
+    if (members.length < minClusterSize) continue;
+
+    const pairs = clusterPairMap.get(root) ?? [];
+    const avgSimilarity = pairs.length > 0
+      ? pairs.reduce((sum, p) => sum + p.similarity, 0) / pairs.length
+      : 1;
+
+    // Representative: highest total similarity to other members (or first member)
+    let rep = members[0];
+    let bestScore = -1;
+    for (const m of members) {
+      let score = 0;
+      for (const p of pairs) {
+        if (p.functionA.id === m.id || p.functionB.id === m.id) {
+          score += p.similarity;
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        rep = m;
+      }
+    }
+
+    clusters.push({
+      clusterId: clusterIdCounter++,
+      memberCount: members.length,
+      members,
+      avgSimilarity: Math.round(avgSimilarity * 10000) / 10000,
+      representativeFunction: rep.name,
+    });
+  }
+
+  // Sort clusters by size descending
+  clusters.sort((a, b) => b.memberCount - a.memberCount);
+
+  // ── Summary counts ────────────────────────────────────────────────────
+
+  const topPairs = allPairs.slice(0, maxPairs);
+  let exactClones = 0;
+  let nearMisses = 0;
+  let potentialClones = 0;
+
+  for (const p of allPairs) {
+    if (p.similarity >= 0.95) exactClones++;
+    else if (p.similarity >= 0.8) nearMisses++;
+    else if (p.similarity >= 0.6) potentialClones++;
+  }
+
+  return {
+    totalFunctions: n,
+    totalPairs: allPairs.length,
+    clusters,
+    topPairs,
+    summary: { exactClones, nearMisses, potentialClones },
+  };
+}

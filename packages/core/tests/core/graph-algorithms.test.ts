@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pageRank, betweennessCentrality, shortestPath } from '../../src/core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, detectClones } from '../../src/core/graph-algorithms.js';
 
 // ── PageRank Tests ──────────────────────────────────────────────────────────
 
@@ -192,5 +192,111 @@ describe('shortestPath', () => {
     const path = shortestPath(adj, 'A', 'Z');
 
     expect(path).toBeNull();
+  });
+});
+
+// ── Clone Detection Tests ──────────────────────────────────────────────────
+
+describe('detectClones', () => {
+  it('detects structurally identical functions as exact clones', () => {
+    // Two functions with identical call patterns: each calls 2 helpers
+    const adj = new Map<string, string[]>([
+      ['FuncA', ['Helper1', 'Helper2']],
+      ['FuncB', ['Helper3', 'Helper4']],
+      ['Helper1', []],
+      ['Helper2', []],
+      ['Helper3', []],
+      ['Helper4', []],
+    ]);
+    const names = new Map(Object.entries({
+      FuncA: 'processOrder', FuncB: 'processPayment',
+      Helper1: 'validate', Helper2: 'transform',
+      Helper3: 'check', Helper4: 'convert',
+    }));
+
+    const result = detectClones(adj, names, { threshold: 0.6 });
+    expect(result.totalFunctions).toBe(6);
+
+    // FuncA and FuncB should be detected as clones (same out-degree, structurally identical)
+    const abPair = result.topPairs.find(
+      (p) => (p.functionA.name === 'processOrder' && p.functionB.name === 'processPayment') ||
+             (p.functionA.name === 'processPayment' && p.functionB.name === 'processOrder')
+    );
+    expect(abPair).toBeDefined();
+    if (abPair) expect(abPair.similarity).toBeGreaterThan(0.8);
+  });
+
+  it('returns empty result for graph with no similar functions', () => {
+    // All functions have unique structures
+    const adj = new Map<string, string[]>([
+      ['A', ['B', 'C']],
+      ['B', ['C']],
+      ['C', []],
+    ]);
+    const names = new Map(Object.entries({
+      A: 'fnA', B: 'fnB', C: 'fnC',
+    }));
+
+    const result = detectClones(adj, names, { threshold: 0.9 });
+    // No two functions share the same WL hash
+    expect(result.totalPairs).toBe(0);
+    expect(result.clusters).toHaveLength(0);
+  });
+
+  it('handles empty graph', () => {
+    const result = detectClones(new Map(), new Map());
+    expect(result.totalFunctions).toBe(0);
+    expect(result.totalPairs).toBe(0);
+    expect(result.clusters).toEqual([]);
+  });
+
+  it('groups similar functions into clusters', () => {
+    // Three functions with identical call patterns
+    const adj = new Map<string, string[]>([
+      ['A', ['H1', 'H2']],
+      ['B', ['H3', 'H4']],
+      ['C', ['H5', 'H6']],
+      ['H1', []], ['H2', []], ['H3', []], ['H4', []], ['H5', []], ['H6', []],
+    ]);
+    const names = new Map(Object.entries({
+      A: 'fnA', B: 'fnB', C: 'fnC',
+    }));
+
+    const result = detectClones(adj, names, { threshold: 0.5, minClusterSize: 2 });
+    // A, B, C should be in the same cluster
+    expect(result.clusters.length).toBeGreaterThan(0);
+    const cluster = result.clusters[0];
+    expect(cluster.memberCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('respects similarity threshold', () => {
+    // Two groups of structurally similar functions
+    const adj = new Map<string, string[]>([
+      // Group: both call 1 helper (structurally identical)
+      ['A', ['HA']],
+      ['B', ['HB']],
+      // Different structure: calls 2 helpers
+      ['C', ['HC', 'HD']],
+      // Helpers
+      ['HA', []], ['HB', []], ['HC', []], ['HD', []],
+    ]);
+    const names = new Map(Object.entries({
+      A: 'fnA', B: 'fnB', C: 'fnC',
+    }));
+
+    // A and B are struct-equals → high similarity (within their WL group)
+    const result = detectClones(adj, names, { threshold: 0.5 });
+    // A and B should pair; C is different
+    expect(result.totalPairs).toBeGreaterThanOrEqual(1);
+
+    // With very high threshold, should still find A-B (they're exact structural matches)
+    const resultHigh = detectClones(adj, names, { threshold: 0.95 });
+    expect(resultHigh.totalPairs).toBeGreaterThanOrEqual(1);
+
+    // C should not pair with A or B (different WL hash)
+    const hasCPair = result.topPairs.some(
+      (p) => p.functionA.name === 'fnC' || p.functionB.name === 'fnC'
+    );
+    expect(hasCPair).toBe(false);
   });
 });
