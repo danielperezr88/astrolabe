@@ -94,3 +94,6 @@ export { detectAntiPatterns, type ArchitectureSmellsResult } from './analysis/an
 // #809: GNN node classification feature engineering
 export { extractNodeFeatures, extractEdgeFeatures, exportGnnDataset, nodeLabelOneHot, NODE_LABELS, EDGE_TYPES } from './core/gnn-features.js';
 export type { GnnNodeFeatures, GnnEdgeFeatures, GnnExportOptions } from './core/gnn-features.js';
+// #813: Embedding propagation
+export { computeEmbeddings, propagateEmbeddings, typeAwarePropagation, createSemanticEdges } from './core/embedding-propagation.js';
+export type { PropagationResult, SemanticEdgeResult, ComputeEmbeddingsOptions, EmbeddingProvider, EmbeddingProviderType } from './core/embedding-propagation.js';
