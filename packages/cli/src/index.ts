@@ -41,6 +41,7 @@ import {
   EDGE_DECAY_FACTORS, applyDecay, noisyOr,
   exportGnnDataset,
   computeEmbeddings, propagateEmbeddings, createSemanticEdges,
+  computeSnapshotMetrics, detectTrends,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -222,6 +223,15 @@ program
       // Save graph to SQLite
       const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
+      // #807: Auto-save snapshot for temporal evolution tracking
+      try {
+        const branch = (() => { try { return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return 'unknown'; } })();
+        const snapshot = computeSnapshotMetrics(graph, lastCommit, branch);
+        store.saveSnapshot(snapshot);
+        log.info('Snapshot saved', { id: snapshot.id, healthScore: snapshot.healthScore });
+      } catch (err) {
+        log.warn('Failed to save snapshot', { error: String(err) });
+      }
       // FTS index is created lazily on first query — no eager creation here
       store.close();
 
@@ -1871,6 +1881,101 @@ program
       }
 
       console.log('Embedding computation complete.');
+    } finally {
+      store.close();
+    }
+  });
+
+// ── evolution (temporal graph snapshots) ────────────────────────────────────
+// #807: Temporal graph evolution — view snapshots and trends
+program
+  .command('evolution [repoPath]')
+  .description('View temporal graph evolution — snapshots, health trends, and diffs over time')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--since <iso-date>', 'ISO 8601 start date for snapshot range')
+  .option('--until <iso-date>', 'ISO 8601 end date for snapshot range')
+  .option('--format <format>', 'Output format: table (default) or json', 'table')
+  .action((repoPath: string | undefined, opts: { db: string; since?: string; until?: string; format: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const snapshots = store.loadSnapshots(opts.since, opts.until);
+
+      if (snapshots.length === 0) {
+        console.log('No snapshots found. Run `astrolabe analyze` to create the first snapshot.');
+        return;
+      }
+
+      const trend = detectTrends(snapshots);
+
+      if (opts.format === 'json') {
+        const output = snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        }));
+        console.log(JSON.stringify({
+          repo: repoPath ?? 'unknown',
+          snapshotCount: snapshots.length,
+          trend,
+          snapshots: output,
+        }, null, 2));
+        return;
+      }
+
+      // Table format
+      const headers = ['Timestamp', 'Nodes', 'Edges', 'Health', 'Cycles', 'Hubs', 'Trend'];
+      const colWidths = [20, 8, 8, 8, 8, 6, 10];
+      const pad = (s: string, w: number) => s.padEnd(w);
+
+      console.log();
+      console.log(`Temporal Graph Evolution (${snapshots.length} snapshot(s))`);
+      console.log(`Repo: ${repoPath ?? 'unknown'}`);
+      console.log();
+      console.log(headers.map((h, i) => pad(h, colWidths[i])).join(''));
+      console.log(colWidths.map((w) => '-'.repeat(w)).join(''));
+
+      for (let i = 0; i < snapshots.length; i++) {
+        const s = snapshots[i];
+        let trendIcon = '';
+        if (i > 0) {
+          const delta = s.healthScore - snapshots[i - 1].healthScore;
+          trendIcon = delta > 1 ? '\u2191' : delta < -1 ? '\u2193' : '\u2192';
+        }
+
+        const cols = [
+          s.timestamp.replace('T', ' ').slice(0, 19),
+          String(s.nodeCount),
+          String(s.edgeCount),
+          s.healthScore.toFixed(1),
+          String(s.cycleCount),
+          String(s.hubCount),
+          trendIcon,
+        ];
+        console.log(cols.map((c, ci) => pad(c, colWidths[ci])).join(''));
+      }
+
+      // Trend summary
+      console.log();
+      const trendLabel = trend.direction === 'improving' ? '\u2191 IMPROVING' : trend.direction === 'degrading' ? '\u2193 DEGRADING' : '\u2192 STABLE';
+      console.log(`Health Trend: ${trendLabel} (slope: ${trend.slope > 0 ? '+' : ''}${trend.slope.toFixed(3)}/snapshot, confidence: ${(trend.confidence * 100).toFixed(0)}%)`);
+      console.log(`Current Score: ${trend.currentScore.toFixed(1)} \u2192 Projected: ${trend.projectedScore.toFixed(1)}`);
+      console.log();
     } finally {
       store.close();
     }

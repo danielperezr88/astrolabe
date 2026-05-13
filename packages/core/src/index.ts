@@ -97,3 +97,5 @@ export type { GnnNodeFeatures, GnnEdgeFeatures, GnnExportOptions } from './core/
 // #813: Embedding propagation
 export { computeEmbeddings, propagateEmbeddings, typeAwarePropagation, createSemanticEdges } from './core/embedding-propagation.js';
 export type { PropagationResult, SemanticEdgeResult, ComputeEmbeddingsOptions, EmbeddingProvider, EmbeddingProviderType } from './core/embedding-propagation.js';
+// #807: Temporal graph evolution
+export { computeSnapshotMetrics, detectTrends, type SnapshotData, type TrendResult, type SnapshotDiff, type TrendDirection } from './core/graph-evolution.js';
