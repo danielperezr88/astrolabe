@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.backends"
+
+[project]
+name = "astrolabe-datasets"
+version = "0.1.0"
+description = "Python Graph Dataset API for Astrolabe knowledge graphs — PyG, cuGraph, Spark, and Pandas backends"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Daniel Perez Rubio" },
+]
+keywords = [
+    "knowledge-graph",
+    "gnn",
+    "pytorch-geometric",
+    "cugraph",
+    "spark",
+    "graph-analytics",
+    "code-analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+pyg = [
+    "torch>=2.0",
+    "torch-geometric>=2.4",
+]
+cugraph = [
+    "cudf>=24.0",
+    "cugraph>=24.0",
+    "cugraph-pyg>=24.0",
+]
+spark = [
+    "pyspark>=3.5",
+    "graphframes>=0.11",
+]
+igraph = ["python-igraph>=0.11"]
+graph-tool = ["graph-tool>=2.70"]
+networkx = ["networkx>=3.0"]
+export = []
+all = [
+    "torch>=2.0",
+    "torch-geometric>=2.4",
+    "pyspark>=3.5",
+    "graphframes>=0.11",
+    "python-igraph>=0.11",
+    "networkx>=3.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Repository = "https://github.com/danielperezr88/astrolabe"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "gpu: marks tests requiring GPU",
+    "spark: marks tests requiring Spark",
+]

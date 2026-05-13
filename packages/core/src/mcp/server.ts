@@ -24,12 +24,22 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, detectClones, computeSpectralMetrics, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
 import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
 import type { CommunityInfo } from '../analysis/graphlet/index.js';
+// #811: Graph-based coverage metrics
+import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.js';
+import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
+// #809: GNN feature engineering
+import { exportGnnDataset } from '../core/gnn-features.js';
+// #813: Semantic embeddings for MCP query tool
+import { EmbeddingStore, createEmbeddingProvider, type EmbeddingProviderType } from '../search/embeddings-store.js';
+import { cosineSimilarity } from '../core/embedding-propagation.js';
+// #807: Temporal graph evolution
+import { detectTrends } from '../core/graph-evolution.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -499,7 +509,7 @@ class LocalBackend {
     return { match_count: results.length, matches: results, siblingWarning };
   }
 
-  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000, targetUid?: string, kind?: string, filePath?: string) {
+  impact(target: string, direction: 'upstream' | 'downstream' = 'upstream', repo?: string, maxDepth = 5, minConfidence = 0.3, timeoutMs = 30_000, targetUid?: string, kind?: string, filePath?: string, mode: 'binary' | 'probabilistic' = 'binary', decaySchedule: 'linear' | 'exponential' | 'logarithmic' = 'linear') {
     const ctx = this.getRepo(repo);
     const graph = ctx.loadGraph();
 
@@ -589,27 +599,131 @@ class LocalBackend {
     let truncated = false;
     const deadline = Date.now() + Math.min(timeoutMs, 3_600_000);
 
+    // #806: Probabilistic mode — track accumulated confidence per node across multiple paths
+    const probabilisticResults: Array<{ id: string; name: string; type: string; filePath: string; score: number; paths: Array<{ via: string; depth: number; confidence: number }>; category: string }> = [];
+    const nodeScores = new Map<string, { paths: Array<{ via: string; depth: number; confidence: number }>; bestScore: number; bestDepth: number }>();
+
+    // If probabilistic mode, build adj index without confidence filtering
+    let probAdj: Map<string, Array<{ neighborId: string; type: string; confidence: number }>> | null = null;
+    if (mode === 'probabilistic') {
+      probAdj = new Map<string, Array<{ neighborId: string; type: string; confidence: number }>>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS') continue;
+        if (direction === 'upstream') {
+          let bucket = probAdj.get(rel.targetId);
+          if (!bucket) { bucket = []; probAdj.set(rel.targetId, bucket); }
+          bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence });
+        } else {
+          let bucket = probAdj.get(rel.sourceId);
+          if (!bucket) { bucket = []; probAdj.set(rel.sourceId, bucket); }
+          bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence });
+        }
+      }
+    }
+
     while (queue.length > 0 && affected.length < MAX_IMPACT_RESULTS) {
       if (Date.now() >= deadline) { truncated = true; break; }
       const current = queue.shift()!;
       if (current.depth >= maxDepth) continue;
 
-      const neighbors = adj.get(current.id) ?? [];
-      for (const { neighborId, type, confidence } of neighbors) {
-        if (visited.has(neighborId)) continue;
-        if (affected.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
-        visited.add(neighborId);
-        const node = graph.getNode(neighborId);
-        queue.push({ id: neighborId, depth: current.depth + 1 });
-        affected.push({
-          depth: current.depth + 1,
-          name: node?.properties.name ?? neighborId,
-          type: node?.label ?? 'unknown',
-          filePath: (node?.properties.filePath as string) ?? '',
-          relationType: type,
-          confidence,
+      const neighbors = mode === 'probabilistic'
+        ? (probAdj!.get(current.id) ?? [])
+        : (adj.get(current.id) ?? []);
+
+      if (mode === 'probabilistic') {
+        // #806: Probabilistic BFS with confidence decay and Noisy-OR fusion
+        for (const { neighborId, type, confidence } of neighbors) {
+          if (neighborId === targetNode.id) continue;
+          if (probabilisticResults.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
+
+          const edgeDecay = EDGE_DECAY_FACTORS[type] ?? 0.7;
+          const parentEntry = nodeScores.get(current.id);
+          const parentConfidence = parentEntry?.bestScore ?? 1.0;
+          let decayedConfidence = parentConfidence * edgeDecay * Math.max(confidence, 0.1);
+          decayedConfidence = applyDecay(decayedConfidence, current.depth + 1, decaySchedule);
+
+          const existing = nodeScores.get(neighborId);
+          const pathEntry = { via: current.id, depth: current.depth + 1, confidence: decayedConfidence };
+
+          if (existing) {
+            // Noisy-OR: accumulate multi-path evidence
+            existing.paths.push(pathEntry);
+            const allProbs = existing.paths.map((p) => p.confidence);
+            existing.bestScore = noisyOr(allProbs);
+            existing.bestDepth = Math.min(existing.bestDepth, current.depth + 1);
+          } else {
+            nodeScores.set(neighborId, {
+              paths: [pathEntry],
+              bestScore: decayedConfidence,
+              bestDepth: current.depth + 1,
+            });
+            // Enqueue for further traversal
+            if (current.depth + 1 < maxDepth) {
+              queue.push({ id: neighborId, depth: current.depth + 1 });
+            }
+          }
+        }
+      } else {
+        // Binary mode (original)
+        for (const { neighborId, type, confidence } of neighbors) {
+          if (visited.has(neighborId)) continue;
+          if (affected.length >= MAX_IMPACT_RESULTS) { truncated = true; break; }
+          visited.add(neighborId);
+          const node = graph.getNode(neighborId);
+          queue.push({ id: neighborId, depth: current.depth + 1 });
+          affected.push({
+            depth: current.depth + 1,
+            name: node?.properties.name ?? neighborId,
+            type: node?.label ?? 'unknown',
+            filePath: (node?.properties.filePath as string) ?? '',
+            relationType: type,
+            confidence,
+          });
+        }
+      }
+    }
+
+    // #806: Build ranked output for probabilistic mode
+    if (mode === 'probabilistic') {
+      for (const [id, entry] of nodeScores) {
+        const node = graph.getNode(id);
+        if (!node) continue;
+        probabilisticResults.push({
+          id,
+          name: (node.properties.name as string) ?? id,
+          type: node.label ?? 'unknown',
+          filePath: (node.properties.filePath as string) ?? '',
+          score: Math.round(entry.bestScore * 1000) / 1000,
+          paths: entry.paths.map((p) => ({
+            via: p.via,
+            depth: p.depth,
+            confidence: Math.round(p.confidence * 1000) / 1000,
+          })),
+          category: '',
         });
       }
+      // Sort by score descending
+      probabilisticResults.sort((a, b) => b.score - a.score);
+      // Categorize by score
+      for (const r of probabilisticResults) {
+        if (r.score >= 0.8) r.category = 'direct';
+        else if (r.score >= 0.4) r.category = 'transitive';
+        else r.category = 'low-risk';
+      }
+      return {
+        target: { name: targetNode.properties.name ?? targetNode.id, type: targetNode.label, filePath: targetNode.properties.filePath ?? '' },
+        direction,
+        mode: 'probabilistic' as const,
+        decaySchedule,
+        affected_count: probabilisticResults.length,
+        truncated,
+        results: probabilisticResults.slice(0, 100),
+        summary: {
+          direct: probabilisticResults.filter((r) => r.category === 'direct').length,
+          transitive: probabilisticResults.filter((r) => r.category === 'transitive').length,
+          lowRisk: probabilisticResults.filter((r) => r.category === 'low-risk').length,
+        },
+      };
     }
 
     // Group by depth with risk levels
@@ -951,6 +1065,9 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
         task_context: { type: 'string', description: 'Context about the current task (e.g., "debugging auth flow")' },
         goal: { type: 'string', description: 'What the search aims to find (e.g., "find where tokens are validated")' },
+        mode: { type: 'string', enum: ['hybrid', 'semantic'], description: 'Search mode: hybrid (FTS + TF-IDF, default) or semantic (embedding cosine similarity)', default: 'hybrid' },
+        embedding_provider: { type: 'string', description: 'Embedding provider for semantic mode: auto, transformers, tfidf, remote. Default auto.', default: 'auto' },
+        propagate_hops: { type: 'number', description: 'Propagation hops for semantic embeddings (0=none, 1=single, 2=double). Default 0.', default: 0 },
       },
       required: ['query'],
     },
@@ -962,12 +1079,95 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
       const service = params.service as string | undefined;
       const taskContext = params.task_context as string | undefined;
       const goal = params.goal as string | undefined;
+      const mode = (params.mode as string) ?? 'hybrid';
       let result: unknown;
 
-      if (repo?.startsWith('@')) {
-        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+      // #813: Semantic search mode
+      if (mode === 'semantic') {
+        // Get repo context for dbPath
+        const ctx = repo?.startsWith('@')
+          ? backend.resolveGroupRepos(repo).contexts[0]?.repo
+          : backend.getRepo(repo);
+
+        if (!ctx) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'No indexed repository found. Use astrolabe embed first.' }) }] };
+        }
+
+        try {
+          const dbPath = ctx.entry.dbPath;
+          const embedStore = new EmbeddingStore(new (await import('better-sqlite3')).default(dbPath));
+          const providerType = (params.embedding_provider as EmbeddingProviderType) ?? 'auto';
+          const provider = createEmbeddingProvider(providerType);
+          const demand = provider.dimensions;
+
+          // Compute query embedding
+            const effectiveHops = requireNumber(params, 'propagate_hops', 1);
+          const hops_used = effectiveHops > 2 ? 2 : effectiveHops < 0 ? 0 : effectiveHops;
+          const queryVec = provider.encodeAsync
+            ? await provider.encodeAsync(query)
+            : provider.encode(query);
+
+          // Load all stored embeddings
+          const allEmbs = embedStore.getAll();
+
+          if (allEmbs.length === 0) {
+            embedStore.close?.();
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'No embeddings found. Run `astrolabe embed` first.' }) }] };
+          }
+
+          // Rank by cosine similarity
+          const results: Array<{ nodeId: string; similarity: number; contentHash: string }> = [];
+          for (const emb of allEmbs) {
+            // Verify dimensionality match
+            if (emb.dimensions !== demand) continue;
+            const storedVec = Array.from(new Float32Array(emb.vector.buffer));
+            if (storedVec.length !== demand) continue;
+            const sim = cosineSimilarity(Array.from(queryVec), storedVec);
+            results.push({ nodeId: emb.nodeId, similarity: sim, contentHash: emb.contentHash });
+          }
+
+          // Sort by similarity descending, take top limit
+          results.sort((a, b) => b.similarity - a.similarity);
+          const limit = requireNumber(params, 'limit', 20);
+          const topResults = results.slice(0, limit);
+
+          // Enrich with node info from the graph
+          const graph = ctx.loadGraph();
+          const enriched = topResults.map((r) => {
+            const node = graph.getNode(r.nodeId);
+            return {
+              nodeId: r.nodeId,
+              name: node?.properties.name ?? r.nodeId,
+              label: node?.label ?? 'unknown',
+              filePath: node?.properties.filePath ?? '',
+              similarity: Math.round(r.similarity * 10000) / 10000,
+            };
+          });
+
+          embedStore.close?.();
+          result = {
+            mode: 'semantic',
+            hops_used,
+            results: enriched,
+            total_embeddings: allEmbs.length,
+          };
+        } catch (err) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Semantic search failed: ${(err as Error).message}. Try running \`astrolabe embed\` first.`,
+              }),
+            }],
+          };
+        }
       } else {
-        result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        // Hybrid mode (existing behavior)
+        if (repo?.startsWith('@')) {
+          result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+        } else {
+          result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        }
       }
 
       timer.mark('search');
@@ -1041,6 +1241,8 @@ service: monorepo path prefix filter (only active in group mode).`,
         targetUid: { type: 'string', description: 'Exact node ID for zero-ambiguity lookup (skips name resolution)' },
         kind: { type: 'string', description: 'Node label filter for disambiguation when target name is ambiguous' },
         file_path: { type: 'string', description: 'File path filter for disambiguation' },
+        mode: { type: 'string', description: 'Impact scoring mode: binary (current) or probabilistic (confidence decay with Noisy-OR fusion)', enum: ['binary', 'probabilistic'] },
+        decaySchedule: { type: 'string', description: 'Decay schedule for probabilistic mode (default: linear)', enum: ['linear', 'exponential', 'logarithmic'] },
       },
       required: ['target', 'direction'],
     },
@@ -1054,6 +1256,8 @@ service: monorepo path prefix filter (only active in group mode).`,
       const targetUid = params.targetUid as string | undefined;
       const kind = params.kind as string | undefined;
       const filePath = params.file_path as string | undefined;
+      const mode = (params.mode as string) ?? 'binary';
+      const decaySchedule = (params.decaySchedule as string) ?? 'linear';
       let result: unknown;
 
       if (repo?.startsWith('@') && crossDepth > 0) {
@@ -1073,6 +1277,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
 
         // Cross-repo fan-out via contract links
@@ -1109,6 +1315,11 @@ service: monorepo path prefix filter (only active in group mode).`,
                     requireNumber(params, 'maxDepth', 3),
                     requireNumber(params, 'minConfidence', 0.3),
                     timeoutMs,
+                    undefined,
+                    undefined,
+                    undefined,
+                    mode as 'binary' | 'probabilistic',
+                    decaySchedule as 'linear' | 'exponential' | 'logarithmic',
                   );
                   crossResults.push({ repo: targetRepo, contract: link.contractType, link, result: crossResult });
                 } catch { /* skip unreachable repos */ }
@@ -1138,6 +1349,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
       } else {
         result = backend.impact(
@@ -1150,6 +1363,8 @@ service: monorepo path prefix filter (only active in group mode).`,
           targetUid,
           kind,
           filePath,
+          mode as 'binary' | 'probabilistic',
+          decaySchedule as 'linear' | 'exponential' | 'logarithmic',
         );
       }
 
@@ -1706,12 +1921,15 @@ Algorithms:
 - pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
 - betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
 - shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+- clone_detection: Detect structurally similar functions using Weisfeiler-Lehman graph kernels (#810). Returns clone clusters and top pairs.
+- resilience: Detect single points of failure (cut vertices) and critical dependency bridges. Returns articulation points and bridge edges.
+- architecture_smells: Detect architecture anti-patterns (cyclic dependencies, god modules, unstable deps, dependency meshes, cut vertices, bridge edges).
 
 The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCESS synthetic edges).`,
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'clone_detection', 'spectral_analysis', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1796,6 +2014,155 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'clone_detection') {
+        // Build node name map
+        const nodeNames = new Map<string, string>();
+        for (const node of graph.iterNodes()) {
+          nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
+        }
+
+        const result = detectClones(adjList, nodeNames);
+
+        // Format output
+        const output = {
+          algorithm: 'clone_detection',
+          totalFunctions: result.totalFunctions,
+          clonePairs: result.topPairs.map((p) => ({
+            functionA: p.functionA.name,
+            functionB: p.functionB.name,
+            similarity: Math.round(p.similarity * 100) / 100,
+          })),
+          clusters: result.clusters.map((c) => ({
+            id: c.clusterId,
+            size: c.memberCount,
+            representative: c.representativeFunction,
+            members: c.members.map((m) => m.name),
+          })),
+          summary: result.summary,
+          method: 'Weisfeiler-Lehman graph kernel (2 iterations)',
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+      }
+
+      if (algorithm === 'spectral_analysis') {
+        // Build optional community map from Community nodes + MEMBER_OF edges
+        const communityMap = new Map<string, string[]>();
+        for (const node of graph.iterNodes()) {
+          if (node.label === 'Community') {
+            communityMap.set(
+              (node.properties.name as string) ?? node.id,
+              [],
+            );
+          }
+        }
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type === 'MEMBER_OF') {
+            const commNode = graph.getNode(rel.targetId);
+            if (commNode && commNode.label === 'Community') {
+              const name = (commNode.properties.name as string) ?? commNode.id;
+              let members = communityMap.get(name);
+              if (!members) { members = []; communityMap.set(name, members); }
+              members.push(rel.sourceId);
+            }
+          }
+        }
+
+        const metrics = computeSpectralMetrics(adjList, communityMap.size > 0 ? communityMap : undefined);
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              algorithm: 'spectral_analysis',
+              metrics: {
+                nodeCount: metrics.nodeCount,
+                edgeCount: metrics.edgeCount,
+                density: Math.round(metrics.density * 10000) / 10000,
+                degreeEntropy: Math.round(metrics.degreeEntropy * 1000) / 1000,
+                avgDegree: Math.round(metrics.avgDegree * 100) / 100,
+                maxDegree: metrics.maxDegree,
+                flowHierarchy: Math.round(metrics.flowHierarchy * 10000) / 10000,
+                modularityQ: Math.round(metrics.modularityQ * 10000) / 10000,
+                topology: metrics.topologyType,
+                topologyConfidence: Math.round(metrics.topologyConfidence * 100) / 100,
+              },
+              interpretation: {
+                density: metrics.density < 0.1 ? 'Sparse graph — loosely coupled architecture' : metrics.density > 0.3 ? 'Dense graph — tightly coupled architecture' : 'Moderately connected',
+                degreeEntropy: metrics.degreeEntropy < 1 ? 'Uniform degree distribution' : metrics.degreeEntropy > 3 ? 'Highly skewed degree distribution (hub-centric)' : 'Moderately diverse degrees',
+                flowHierarchy: metrics.flowHierarchy > 0.7 ? 'Highly hierarchical — clear dependency direction' : metrics.flowHierarchy < 0.3 ? 'Cyclic — strong bidirectional coupling' : 'Mixed hierarchy',
+                modularityQ: metrics.modularityQ > 0.5 ? 'Well-modularized' : metrics.modularityQ > 0.3 ? 'Moderately modular' : 'Low modularity',
+              },
+            }, null, 2),
+          }],
+        };
+      }
+
+      if (algorithm === 'resilience') {
+        const cutVertices = detectCutVertices(adjList);
+        const bridges = detectBridges(adjList);
+
+        // Resolve node names for readability (staging API: CutVertexResult.nodeId, BridgeResult.sourceId/targetId)
+        const namedCutVertices = cutVertices.map((cv) => {
+          const node = graph.getNode(cv.nodeId);
+          return { id: cv.nodeId, name: node?.properties.name ?? cv.nodeId };
+        });
+
+        const namedBridges = bridges.map((b) => {
+          const srcNode = graph.getNode(b.sourceId);
+          const tgtNode = graph.getNode(b.targetId);
+          return {
+            source: { id: b.sourceId, name: srcNode?.properties.name ?? b.sourceId },
+            target: { id: b.targetId, name: tgtNode?.properties.name ?? b.targetId },
+          };
+        });
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              algorithm: 'resilience',
+              analysis: {
+                cutVertices: {
+                  count: cutVertices.length,
+                  nodes: namedCutVertices,
+                  description: 'Nodes whose removal disconnects the graph (single points of failure)',
+                },
+                bridgeEdges: {
+                  count: bridges.length,
+                  edges: namedBridges,
+                  description: 'Edges whose removal disconnects the graph (critical dependency links)',
+                },
+                robustnessSummary: cutVertices.length === 0 && bridges.length === 0
+                  ? 'The graph is biconnected — no single point of failure detected.'
+                  : `Found ${cutVertices.length} cut vertices (SPoF) and ${bridges.length} bridge edges.`,
+              },
+            }, null, 2),
+          }],
+        };
+      }
+
+      if (algorithm === 'architecture_smells') {
+        const results = architectureSmells(adjList);
+        const output: any = {
+          algorithm: 'architecture_smells',
+          summary: {
+            cycles: results.sccs?.length ?? 0,
+            cutVertices: results.cutVertices?.length ?? 0,
+            bridges: results.bridges?.length ?? 0,
+            hubs: results.hubs?.length ?? 0,
+            meshes: results.meshes?.length ?? 0,
+          },
+        };
+        if (results.sccs?.length) output.sccs = results.sccs;
+        if (results.hubs?.length) output.hubs = results.hubs;
+        if (results.martinMetrics?.length) output.martinMetrics = results.martinMetrics;
+        if (results.meshes?.length) output.meshes = results.meshes;
+        if (results.cutVertices?.length) output.cutVertices = results.cutVertices;
+        if (results.bridges?.length) output.bridges = results.bridges;
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown algorithm: ${algorithm}` }) }] };
@@ -2358,6 +2725,190 @@ DIAGRAM TYPES:
       lines.push('These symbols have no test coverage but are depended upon by multiple callers. Consider adding tests to reduce risk.');
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #811: Graph-based test coverage analysis
+  'astrolabe.test_coverage': {
+    name: 'astrolabe.test_coverage',
+    description: `Analyze test coverage using graph structure — per-community metrics, edge coverage, and gap prioritization. Requires coverage data to have been ingested via the ingest-coverage CLI command.
+
+Returns:
+- Overall node/edge coverage percentages
+- Per-community breakdown with top coverage gaps
+- Top untested high-impact symbols for prioritization`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+      const metrics = computeGraphCoverageMetrics(graph);
+
+      if (metrics.totalFunctionNodes === 0) {
+        return { content: [{ type: 'text', text: 'No function nodes found in the knowledge graph. Run `astrolabe analyze` first.' }] };
+      }
+
+      // Build text output
+      const lines: string[] = [
+        `=== Test Coverage Analysis (Graph-Aware) ===`,
+        '',
+        `Overall: ${metrics.overallNodeCoveragePercent.toFixed(1)}% node coverage (${metrics.coveredFunctionNodes} covered / ${metrics.partialFunctionNodes} partial / ${metrics.uncoveredFunctionNodes} uncovered of ${metrics.totalFunctionNodes} total)`,
+        `Calls edges: ${metrics.overallEdgeCoveragePercent.toFixed(1)}% edge coverage (${metrics.coveredCallEdges} covered / ${metrics.totalCallEdges} total)`,
+        '',
+      ];
+
+      // Per-community breakdown
+      lines.push(`--- Per-Community Coverage (${metrics.communities.length} communities) ---`);
+      for (const c of metrics.communities) {
+        const bar = '█'.repeat(Math.round(c.nodeCoveragePercent / 10)) + '░'.repeat(10 - Math.round(c.nodeCoveragePercent / 10));
+        lines.push(`  ${c.communityName}: ${bar} ${c.nodeCoveragePercent.toFixed(0)}% nodes, ${c.edgeCoveragePercent.toFixed(0)}% edges`);
+        for (const gap of c.topGaps) {
+          lines.push(`    ⚠ ${gap.label}:${gap.name} (impact: ${gap.impact})`);
+        }
+      }
+
+      // Top gaps
+      if (metrics.topUntestedHighImpact.length > 0) {
+        lines.push('');
+        lines.push('--- Top 20 Untested High-Impact Symbols ---');
+        for (const gap of metrics.topUntestedHighImpact) {
+          lines.push(`  ⚠ [${gap.community}] ${gap.label}:${gap.name} — ${gap.impact} dependents (${gap.filePath})`);
+        }
+        lines.push('');
+        lines.push('These symbols have no test coverage but are heavily depended upon. Prioritize adding tests for them.');
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #809: GNN node classification feature engineering and dataset export
+  'astrolabe.gnn_export': {
+    name: 'astrolabe.gnn_export',
+    description: `Export GNN-ready feature vectors and dataset from the knowledge graph for graph neural network training (#809).
+
+Feature vectors include:
+- Node features: one-hot label encoding (37 labels), degree in/out, PageRank, betweenness centrality, community ID, code metrics (param count, async, static, abstract, lines, nesting)
+- Edge features: one-hot type encoding (26 types), confidence score, cross-community flag
+- Optional: 384-D embedding vectors from the SQLite embedding store
+
+Writes nodes.csv (or .json), edges.csv (or .json), node_labels.json, and edge_types.json to the specified output directory.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name' },
+        output_path: { type: 'string', description: 'Output directory path for exported files (default: .astrolabe/gnn-dataset/)' },
+        format: { type: 'string', description: 'Output format: csv or json (default: csv)' },
+        include_embeddings: { type: 'boolean', description: 'Include 384-D embedding vectors in node features (default: false)' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const graph = ctx.loadGraph();
+
+      const outputPath = (params.output_path as string) || '.astrolabe/gnn-dataset/';
+      const format = ((params.format === 'json' ? 'json' : 'csv') as 'csv' | 'json');
+      const includeEmbeddings = params.include_embeddings === true;
+
+      const result = exportGnnDataset(graph, outputPath, {
+        dbPath: ctx.entry.dbPath,
+        format,
+        includeEmbeddings,
+      });
+
+      const lines = [
+        `GNN dataset exported to: ${result.exportPath}`,
+        `  Nodes: ${result.nodeCount.toLocaleString()}`,
+        `  Edges: ${result.edgeCount.toLocaleString()}`,
+        `  Feature dimensions: ${result.featureDimensions}`,
+        `  Format: ${format}`,
+        `  Embeddings: ${includeEmbeddings ? 'included' : 'not included'}`,
+        '',
+        `Output files:`,
+        `  ${pathJoin(outputPath, format === 'json' ? 'nodes.json' : 'nodes.csv')}`,
+        `  ${pathJoin(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`,
+        `  ${pathJoin(outputPath, 'node_labels.json')}`,
+        `  ${pathJoin(outputPath, 'edge_types.json')}`,
+      ];
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #807: Temporal graph evolution — snapshots, diffs, and trend detection
+  'astrolabe.graph_evolution': {
+    name: 'astrolabe.graph_evolution',
+    description: `Temporal graph evolution — view snapshots of architecture health over time, detect improving/degrading trends, and diff any two snapshots.
+
+Returns snapshots filtered by date range, a trend summary (health direction, slope, confidence), and per-metric summaries.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (omit if only one indexed)' },
+        since: { type: 'string', description: 'ISO 8601 start date for snapshot range (optional)' },
+        until: { type: 'string', description: 'ISO 8601 end date for snapshot range (optional)' },
+      },
+      required: [],
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const store = ctx.store;
+
+      const since = params.since as string | undefined;
+      const until = params.until as string | undefined;
+
+      const snapshots = store.loadSnapshots(since, until);
+      const trend = detectTrends(snapshots);
+
+      // Detect cohesion/coupling trend if enough snapshots
+      let couplingDirection: string = 'stable';
+      if (snapshots.length >= 2) {
+        const firstCohesion = snapshots[0].cohesion;
+        const lastCohesion = snapshots[snapshots.length - 1].cohesion;
+        const cohesionDelta = lastCohesion - firstCohesion;
+        couplingDirection = cohesionDelta > 0.05 ? 'decoupling' : cohesionDelta < -0.05 ? 'tightening' : 'stable';
+      }
+
+      // Build trend summary
+      const trendSummary = {
+        health: {
+          direction: trend.direction,
+          slope: trend.slope,
+          confidence: trend.confidence,
+        },
+        coupling: {
+          direction: couplingDirection,
+        },
+        communities: snapshots.length > 0 ? snapshots[snapshots.length - 1].communityCount : 0,
+      };
+
+      const output = {
+        repo: ctx.entry.name,
+        snapshotCount: snapshots.length,
+        snapshots: snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          modularity: Math.round(s.modularity * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        })),
+        trend_summary: trendSummary,
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
     },
   },
 };

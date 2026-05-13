@@ -32,11 +32,20 @@ import {
   generateWiki,
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+  detectClones,
+  computeSpectralMetrics,
+  detectAntiPatterns,
   migrateFromGitNexus,
+  detectCutVertices, detectBridges,
+  computeGraphCoverageMetrics,
+  EDGE_DECAY_FACTORS, applyDecay, noisyOr,
+  exportGnnDataset,
+  computeEmbeddings, propagateEmbeddings, createSemanticEdges,
+  computeSnapshotMetrics, detectTrends,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
-import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo, PhaseTimerResult, EmbeddingProviderType } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 import { startWatch } from './watch.js';
 
@@ -214,6 +223,15 @@ program
       // Save graph to SQLite
       const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
+      // #807: Auto-save snapshot for temporal evolution tracking
+      try {
+        const branch = (() => { try { return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return 'unknown'; } })();
+        const snapshot = computeSnapshotMetrics(graph, lastCommit, branch);
+        store.saveSnapshot(snapshot);
+        log.info('Snapshot saved', { id: snapshot.id, healthScore: snapshot.healthScore });
+      } catch (err) {
+        log.warn('Failed to save snapshot', { error: String(err) });
+      }
       // FTS index is created lazily on first query — no eager creation here
       store.close();
 
@@ -572,7 +590,9 @@ program
   .command('impact <symbol-name>')
   .description('Show code impact analysis for a symbol')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
-  .action((symbolName: string, opts: { db: string }) => {
+  .option('--probabilistic', 'Use probabilistic confidence-decay scoring')
+  .option('--decay <schedule>', 'Decay schedule for probabilistic mode', 'linear')
+  .action((symbolName: string, opts: { db: string; probabilistic?: boolean; decay?: string }) => {
     const store = createSqliteStore(opts.db);
     try {
       const graph = store.loadGraph();
@@ -588,19 +608,101 @@ program
         bucket.push({ neighborId: rel.sourceId, type: rel.type, direction: 'incoming' });
       }
 
-      let found = 0;
-      for (const node of graph.iterNodes()) {
-        if (node.properties.name === symbolName) {
-          found++;
-          console.log(`${node.label}: ${node.id}`);
-          const neighbors = adj.get(node.id) ?? [];
-          for (const { neighborId, type, direction } of neighbors) {
-            const other = graph.getNode(neighborId);
-            console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+      if (opts.probabilistic) {
+        // #806: Probabilistic multi-hop BFS with confidence decay and Noisy-OR fusion
+        const schedule = (opts.decay ?? 'linear') as 'linear' | 'exponential' | 'logarithmic';
+        const maxDepth = 3;
+
+        // Find the target node
+        let targetId: string | null = null;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === symbolName) { targetId = node.id; break; }
+        }
+        if (!targetId) {
+          console.log(`Symbol "${symbolName}" not found.`);
+          return;
+        }
+
+        // Pre-build adjacency with confidence (incoming + outgoing)
+        const probAdj = new Map<string, Array<{ neighborId: string; type: string; confidence: number; direction: 'outgoing' | 'incoming' }>>();
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type === 'STEP_IN_PROCESS') continue;
+          // outgoing: source → target
+          let bucket = probAdj.get(rel.sourceId);
+          if (!bucket) { bucket = []; probAdj.set(rel.sourceId, bucket); }
+          bucket.push({ neighborId: rel.targetId, type: rel.type, confidence: rel.confidence, direction: 'outgoing' });
+          // incoming: target → source
+          bucket = probAdj.get(rel.targetId);
+          if (!bucket) { bucket = []; probAdj.set(rel.targetId, bucket); }
+          bucket.push({ neighborId: rel.sourceId, type: rel.type, confidence: rel.confidence, direction: 'incoming' });
+        }
+
+        // BFS with confidence decay
+        const nodeScores = new Map<string, { paths: Array<{ via: string; depth: number; confidence: number }>; bestScore: number }>();
+        nodeScores.set(targetId, { paths: [], bestScore: 1.0 });
+        const queue: Array<{ id: string; depth: number }> = [{ id: targetId, depth: 0 }];
+        const visited = new Set<string>([targetId]);
+
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (current.depth >= maxDepth) continue;
+
+          for (const { neighborId, type, confidence } of (probAdj.get(current.id) ?? [])) {
+            if (neighborId === targetId) continue;
+
+            const edgeDecay = EDGE_DECAY_FACTORS[type] ?? 0.7;
+            const parentEntry = nodeScores.get(current.id);
+            const parentConfidence = parentEntry?.bestScore ?? 1.0;
+            let decayedConfidence = parentConfidence * edgeDecay * Math.max(confidence, 0.1);
+            decayedConfidence = applyDecay(decayedConfidence, current.depth + 1, schedule);
+
+            const existing = nodeScores.get(neighborId);
+            const pathEntry = { via: current.id, depth: current.depth + 1, confidence: decayedConfidence };
+
+            if (existing) {
+              existing.paths.push(pathEntry);
+              const allProbs = existing.paths.map((p) => p.confidence);
+              existing.bestScore = noisyOr(allProbs);
+            } else {
+              nodeScores.set(neighborId, { paths: [pathEntry], bestScore: decayedConfidence });
+              if (!visited.has(neighborId)) {
+                visited.add(neighborId);
+                queue.push({ id: neighborId, depth: current.depth + 1 });
+              }
+            }
           }
         }
+
+        console.log(`Probabilistic impact for "${symbolName}" (decay: ${schedule}, maxDepth: ${maxDepth}):`);
+        const sorted = [...nodeScores]
+          .filter(([id]) => id !== targetId)
+          .map(([id, entry]) => {
+            const node = graph.getNode(id);
+            return { name: node?.properties.name ?? id, score: Math.round(entry.bestScore * 1000) / 1000, paths: entry.paths.length };
+          })
+          .sort((a, b) => b.score - a.score);
+
+        for (const { name, score, paths } of sorted) {
+          const cat = score >= 0.8 ? 'DIRECT' : score >= 0.4 ? 'TRANSITIVE' : 'LOW-RISK';
+          const pathInfo = paths > 1 ? ` (${paths} paths)` : '';
+          console.log(`  [${cat}] ${name} (confidence: ${score.toFixed(3)})${pathInfo}`);
+        }
+        if (sorted.length === 0) console.log('  (no connected nodes)');
+      } else {
+        let found = 0;
+        for (const node of graph.iterNodes()) {
+          if (node.properties.name === symbolName) {
+            found++;
+            console.log(`${node.label}: ${node.id}`);
+            const neighbors = adj.get(node.id) ?? [];
+            for (const { neighborId, type, direction } of neighbors) {
+              const other = graph.getNode(neighborId);
+              console.log(`  ${direction === 'outgoing' ? '→' : '←'} ${type} ${other?.properties.name ?? neighborId}`);
+            }
+          }
+        }
+        if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
       }
-      if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
     } finally { store.close(); }
   });
 
@@ -1104,6 +1206,75 @@ program
     console.log();
   });
 
+// ── detect-smells ──────────────────────────────────────────────────────────
+program
+  .command('detect-smells [repoPath]')
+  .description('Detect architecture smells in the knowledge graph (cycles, god modules, unstable deps, meshes)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output as JSON')
+  .option('--fan-in <number>', 'Fan-in threshold for hub detection')
+  .option('--fan-out <number>', 'Fan-out threshold for hub detection')
+  .option('--density <number>', 'Density threshold for mesh detection (0-1)')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean; fanIn?: string; fanOut?: string; density?: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+    const store = createSqliteStore(dbPath);
+    const graph = store.loadGraph();
+    store.close();
+    const options: any = {};
+    if (opts.fanIn) options.fanInThreshold = Number(opts.fanIn);
+    if (opts.fanOut) options.fanOutThreshold = Number(opts.fanOut);
+    if (opts.density) options.densityThreshold = Number(opts.density);
+    const results = detectAntiPatterns(graph, options);
+    if (opts.json) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    console.log('\n=== Architecture Smells ===\n');
+    if (results.sccs?.length) {
+      console.log(`Cyclic Dependencies: ${results.sccs.length} cycle(s) found`);
+      for (const scc of results.sccs) {
+        console.log(`  Cycle #${scc.id}: ${scc.size} nodes — ${scc.nodeIds.slice(0, 5).join(', ')}${scc.nodeIds.length > 5 ? '...' : ''}`);
+      }
+      console.log();
+    }
+    if (results.hubs?.length) {
+      console.log(`Hub-like Modules: ${results.hubs.length} detected`);
+      for (const hub of results.hubs) {
+        console.log(`  ${hub.nodeId} — fanIn: ${hub.fanIn}, fanOut: ${hub.fanOut}, classification: ${hub.classification}`);
+      }
+      console.log();
+    }
+    if (results.meshes?.length) {
+      console.log(`Dependency Meshes: ${results.meshes.length} detected`);
+      for (const mesh of results.meshes) {
+        console.log(`  Mesh: ${mesh.nodeIds.length} nodes, density: ${mesh.density.toFixed(3)}, anchors: ${mesh.acyclicAnchors.length}`);
+      }
+      console.log();
+    }
+    if (results.cutVertices?.length) {
+      console.log(`Cut Vertices (SPoF): ${results.cutVertices.length} detected`);
+      for (const cv of results.cutVertices) {
+        console.log(`  ${cv.nodeId} — would split graph into ${cv.componentCountAfterRemoval} components`);
+      }
+      console.log();
+    }
+    if (results.bridges?.length) {
+      console.log(`Bridge Edges: ${results.bridges.length} detected`);
+      for (const bridge of results.bridges.slice(0, 10)) {
+        console.log(`  ${bridge.sourceId} → ${bridge.targetId}`);
+      }
+      if (results.bridges.length > 10) console.log(`  ... and ${results.bridges.length - 10} more`);
+      console.log();
+    }
+    if (!results.sccs?.length && !results.hubs?.length && !results.meshes?.length) {
+      console.log('No architecture smells detected.');
+    }
+  });
+
 // ── ingest-coverage (#463) ──────────────────────────────────────────────────
 program
   .command('ingest-coverage <report-file>')
@@ -1313,6 +1484,498 @@ program
           console.log(JSON.stringify(vulnReport, null, 2));
         }
       }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── detect-clones (#810) ─────────────────────────────────────────────────────
+program
+  .command('detect-clones [repoPath]')
+  .description('Detect structurally similar functions using Weisfeiler-Lehman graph kernels (#810)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--threshold <n>', 'Similarity threshold (0-1)', '0.6')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; threshold: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const threshold = parseFloat(opts.threshold);
+    if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+      console.log('Threshold must be a number between 0 and 1.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency + node names (same as MCP handler)
+      const adjList = new Map<string, string[]>();
+      const nodeNames = new Map<string, string>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+        nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const result = detectClones(adjList, nodeNames, { threshold });
+
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Clone Detection (WL Graph Kernel) ===`);
+      console.log(`Functions analyzed: ${result.totalFunctions}`);
+      console.log(`Clone pairs found: ${result.totalPairs} (threshold: ${threshold})`);
+      console.log(`  Exact clones (>=95%):  ${result.summary.exactClones}`);
+      console.log(`  Near-misses (80-95%):  ${result.summary.nearMisses}`);
+      console.log(`  Potential clones (60-80%): ${result.summary.potentialClones}`);
+
+      if (result.clusters.length > 0) {
+        console.log(`\n--- Clone Clusters (${result.clusters.length}) ---`);
+        for (const c of result.clusters.slice(0, 10)) {
+          console.log(`  Cluster ${c.clusterId}: ${c.memberCount} functions, representative: ${c.representativeFunction}`);
+          const memberNames = c.members.map((m) => m.name).join(', ');
+          console.log(`    Members: ${memberNames}`);
+        }
+        if (result.clusters.length > 10) console.log(`  ... and ${result.clusters.length - 10} more clusters`);
+      }
+
+      if (result.topPairs.length > 0) {
+        console.log(`\n--- Top Similar Pairs ---`);
+        for (const pair of result.topPairs.slice(0, 15)) {
+          console.log(`  ${(pair.similarity * 100).toFixed(0)}%: ${pair.functionA.name} ↔ ${pair.functionB.name}`);
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── spectral (#812) ──────────────────────────────────────────────────────────
+program
+  .command('spectral [repoPath]')
+  .description('Spectral graph analysis — density, entropy, flow hierarchy, topology classification (#812)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const metrics = computeSpectralMetrics(adjList);
+
+      if (opts.json) {
+        console.log(JSON.stringify(metrics, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Spectral Graph Analysis ===`);
+      console.log(`Nodes: ${metrics.nodeCount} | Edges: ${metrics.edgeCount}`);
+      console.log();
+      console.log(`Density:         ${(metrics.density * 100).toFixed(2)}% (${metrics.density < 0.1 ? 'sparse/loosely coupled' : metrics.density > 0.3 ? 'dense/tightly coupled' : 'moderate'})`);
+      console.log(`Degree Entropy:  ${metrics.degreeEntropy.toFixed(3)} (${metrics.degreeEntropy < 1 ? 'uniform' : metrics.degreeEntropy > 3 ? 'hub-centric/skewed' : 'moderate diversity'})`);
+      console.log(`Avg Degree:      ${metrics.avgDegree.toFixed(1)}`);
+      console.log(`Max Degree:      ${metrics.maxDegree}`);
+      console.log(`Flow Hierarchy:  ${(metrics.flowHierarchy * 100).toFixed(1)}% acyclic (${metrics.flowHierarchy > 0.7 ? 'highly hierarchical' : metrics.flowHierarchy < 0.3 ? 'highly cyclic' : 'mixed'})`);
+      if (metrics.modularityQ > 0) {
+        console.log(`Modularity Q:    ${metrics.modularityQ.toFixed(4)} (${metrics.modularityQ > 0.5 ? 'well-modularized' : 'low modularity'})`);
+      }
+      console.log(`Topology:        ${metrics.topologyType} (confidence: ${metrics.topologyConfidence.toFixed(2)})`);
+      console.log();
+    } finally {
+      store.close();
+    }
+  });
+
+// ── resilience (#805) ─────────────────────────────────────────────────────────
+program
+  .command('resilience [repoPath]')
+  .description('Analyze graph resilience — detect single points of failure (SPoF) and critical edges')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges (same as MCP handler)
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
+      const cutVertices = detectCutVertices(adjList);
+      const bridges = detectBridges(adjList);
+
+      // Resolve names (staging API: CutVertexResult.nodeId, BridgeResult.sourceId/targetId)
+      const namedCutVertices = cutVertices.map((cv) => {
+        const node = graph.getNode(cv.nodeId);
+        return { id: cv.nodeId, name: node?.properties.name ?? cv.nodeId };
+      });
+
+      const namedBridges = bridges.map((b) => {
+        const srcNode = graph.getNode(b.sourceId);
+        const tgtNode = graph.getNode(b.targetId);
+        return {
+          source: { id: b.sourceId, name: srcNode?.properties.name ?? b.sourceId },
+          target: { id: b.targetId, name: tgtNode?.properties.name ?? b.targetId },
+        };
+      });
+
+      const nodeCount = adjList.size;
+      const edgeCount = Array.from(adjList.values()).reduce((s, t) => s + t.length, 0);
+
+      if (opts.json) {
+        console.log(JSON.stringify({
+          nodeCount,
+          edgeCount,
+          cutVertices: { count: cutVertices.length, nodes: namedCutVertices },
+          bridgeEdges: { count: bridges.length, edges: namedBridges },
+          isBiconnected: cutVertices.length === 0 && bridges.length === 0,
+        }, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Graph Resilience Analysis ===`);
+      console.log(`Nodes: ${nodeCount} | Edges: ${edgeCount}`);
+      console.log();
+
+      if (cutVertices.length === 0 && bridges.length === 0) {
+        console.log('\u2713 The graph is biconnected \u2014 no single points of failure detected.');
+      } else {
+        if (cutVertices.length > 0) {
+          console.log(`--- Single Points of Failure (${cutVertices.length} cut vertices) ---`);
+          console.log('These nodes, if removed, would disconnect the dependency graph:');
+          for (const n of namedCutVertices.slice(0, 20)) {
+            console.log(`  \u26A0  ${n.name}`);
+          }
+          if (namedCutVertices.length > 20) {
+            console.log(`  ... and ${namedCutVertices.length - 20} more`);
+          }
+          console.log();
+        }
+
+        if (bridges.length > 0) {
+          console.log(`--- Critical Dependency Bridges (${bridges.length} bridge edges) ---`);
+          console.log('These edges are the ONLY connection between subsystems:');
+          for (const b of namedBridges.slice(0, 20)) {
+            console.log(`  \u26A1 ${b.source.name} \u2192 ${b.target.name}`);
+          }
+          if (namedBridges.length > 20) {
+            console.log(`  ... and ${namedBridges.length - 20} more`);
+          }
+          console.log();
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+// ── test-coverage (#811) ─────────────────────────────────────────────────────
+program
+  .command('test-coverage [repoPath]')
+  .description('Analyze test coverage using graph structure — per-community metrics and gap prioritization (#811)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      const metrics = computeGraphCoverageMetrics(graph);
+
+      if (opts.json) {
+        console.log(JSON.stringify(metrics, null, 2));
+        return;
+      }
+
+      if (metrics.totalFunctionNodes === 0) {
+        console.log('No function nodes found. Run `astrolabe analyze` first.');
+        return;
+      }
+
+      console.log(`\n=== Test Coverage Analysis (Graph-Aware) ===`);
+      console.log(`\nOverall:`);
+      console.log(`  Node coverage: ${metrics.overallNodeCoveragePercent.toFixed(1)}% (${metrics.coveredFunctionNodes} covered / ${metrics.partialFunctionNodes} partial / ${metrics.uncoveredFunctionNodes} uncovered of ${metrics.totalFunctionNodes} total)`);
+      console.log(`  Edge coverage: ${metrics.overallEdgeCoveragePercent.toFixed(1)}% (${metrics.coveredCallEdges} covered / ${metrics.totalCallEdges} total call edges)`);
+
+      console.log(`\n--- Per-Community Coverage (${metrics.communities.length} communities) ---`);
+      for (const c of metrics.communities) {
+        const bar = '█'.repeat(Math.round(c.nodeCoveragePercent / 10)) + '░'.repeat(10 - Math.round(c.nodeCoveragePercent / 10));
+        console.log(`  ${c.communityName}: ${bar} ${c.nodeCoveragePercent.toFixed(0)}% nodes`);
+        for (const gap of c.topGaps.slice(0, 3)) {
+          console.log(`    ⚠  ${gap.label}:${gap.name} (impact: ${gap.impact})`);
+        }
+      }
+
+      if (metrics.topUntestedHighImpact.length > 0) {
+        console.log(`\n--- Top Untested High-Impact Symbols ---`);
+        for (const gap of metrics.topUntestedHighImpact.slice(0, 15)) {
+          console.log(`  ⚠  [${gap.community}] ${gap.label}:${gap.name} — ${gap.impact} dependents`);
+        }
+        if (metrics.topUntestedHighImpact.length > 15) {
+          console.log(`  ... and ${metrics.topUntestedHighImpact.length - 15} more`);
+        }
+      }
+
+      console.log();
+    } finally {
+      store.close();
+    }
+  });
+
+// ── gnn-export (GNN feature engineering and dataset export, #809) ───────────
+program
+  .command('gnn-export [repoPath]')
+  .description('Export GNN-ready feature vectors and dataset from the knowledge graph (#809)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('-o, --output <path>', 'Output directory', '.astrolabe/gnn-dataset/')
+  .option('--format <format>', 'Output format: csv or json', 'csv')
+  .option('--include-embeddings', 'Include 384-D embedding vectors in node features')
+  .action((repoPath: string | undefined, opts: { db: string; output: string; format: string; includeEmbeddings?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    const format = (opts.format === 'json' ? 'json' : 'csv') as 'csv' | 'json';
+    const outputPath = resolve(opts.output);
+
+    const store = createSqliteStore(resolve(dbPath));
+    try {
+      const graph = store.loadGraph();
+      console.log(`Loaded graph: ${graph.nodeCount.toLocaleString()} nodes, ${graph.relationshipCount.toLocaleString()} edges`);
+
+      const result = exportGnnDataset(graph, outputPath, {
+        dbPath: resolve(dbPath),
+        includeEmbeddings: opts.includeEmbeddings,
+        format,
+      });
+
+      console.log(`\nGNN dataset exported to: ${result.exportPath}`);
+      console.log(`  Nodes:            ${result.nodeCount.toLocaleString()}`);
+      console.log(`  Edges:            ${result.edgeCount.toLocaleString()}`);
+      console.log(`  Feature dims:     ${result.featureDimensions}`);
+      console.log(`  Format:           ${format}`);
+      console.log(`  Embeddings:       ${opts.includeEmbeddings ? 'included' : 'not included'}`);
+      console.log(`\nOutput files:`);
+      console.log(`  ${join(outputPath, format === 'json' ? 'nodes.json' : 'nodes.csv')}`);
+      console.log(`  ${join(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`);
+      console.log(`  ${join(outputPath, 'node_labels.json')}`);
+      console.log(`  ${join(outputPath, 'edge_types.json')}`);
+    } finally {
+      store.close();
+    }
+  });
+
+// ── embed (semantic embedding computation, #813) ──────────────────────────────
+program
+  .command('embed [repoPath]')
+  .description('Compute semantic embeddings for code nodes with optional propagation (#813)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--propagate', 'Propagate embeddings along graph edges (neighbor averaging)', false)
+  .option('--propagate-hops <n>', 'Number of hops for embedding propagation', '1')
+  .option('--threshold <n>', 'Cosine similarity threshold for SEMANTICALLY_SIMILAR edges', '0.85')
+  .option('--provider <type>', 'Embedding provider (auto, transformers, tfidf, remote)', 'auto')
+  .option('--no-edges', 'Skip creating SEMANTICALLY_SIMILAR edges')
+  .option('--log-level <level>', 'Log level', 'info')
+  .action(async (repoPath: string | undefined, opts: {
+    db: string;
+    propagate: boolean;
+    propagateHops: string;
+    threshold: string;
+    provider: string;
+    edges: boolean;
+    logLevel: string;
+  }) => {
+    const resolvedPath = repoPath ? resolve(repoPath) : process.cwd();
+    const dbPath = opts.db !== '.astrolabe/astrolabe.db' ? resolve(opts.db) : join(resolvedPath, '.astrolabe', 'astrolabe.db');
+    const propagateHops = parseInt(opts.propagateHops, 10) || 1;
+    const threshold = parseFloat(opts.threshold) || 0.85;
+
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      console.log(`Loaded graph: ${graph.nodeCount.toLocaleString()} nodes, ${graph.relationshipCount.toLocaleString()} edges`);
+
+      // Step 1: Compute embeddings
+      const providerType = opts.provider as EmbeddingProviderType;
+      const result = await computeEmbeddings(graph, { provider: providerType, dbPath });
+      console.log(`Embeddings computed: ${result.nodeCount.toLocaleString()} nodes (${result.dimensions}D)`);
+
+      // Step 2: Propagate if requested
+      if (opts.propagate) {
+        const propagated = propagateEmbeddings(graph, result.embeddings, propagateHops);
+        console.log(`Embeddings propagated: ${propagated.size.toLocaleString()} nodes, ${propagateHops} hop(s)`);
+      }
+
+      // Step 3: Create semantic edges (unless --no-edges)
+      if (opts.edges) {
+        const edges = createSemanticEdges(graph, result.embeddings, threshold);
+        console.log(`Semantic edges created: ${edges.edgesAdded} edges (threshold=${threshold})`);
+        if (edges.edgesAdded > 0) {
+          store.saveGraph(graph);
+        }
+      }
+
+      console.log('Embedding computation complete.');
+    } finally {
+      store.close();
+    }
+  });
+
+// ── evolution (temporal graph snapshots) ────────────────────────────────────
+// #807: Temporal graph evolution — view snapshots and trends
+program
+  .command('evolution [repoPath]')
+  .description('View temporal graph evolution — snapshots, health trends, and diffs over time')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--since <iso-date>', 'ISO 8601 start date for snapshot range')
+  .option('--until <iso-date>', 'ISO 8601 end date for snapshot range')
+  .option('--format <format>', 'Output format: table (default) or json', 'table')
+  .action((repoPath: string | undefined, opts: { db: string; since?: string; until?: string; format: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const snapshots = store.loadSnapshots(opts.since, opts.until);
+
+      if (snapshots.length === 0) {
+        console.log('No snapshots found. Run `astrolabe analyze` to create the first snapshot.');
+        return;
+      }
+
+      const trend = detectTrends(snapshots);
+
+      if (opts.format === 'json') {
+        const output = snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        }));
+        console.log(JSON.stringify({
+          repo: repoPath ?? 'unknown',
+          snapshotCount: snapshots.length,
+          trend,
+          snapshots: output,
+        }, null, 2));
+        return;
+      }
+
+      // Table format
+      const headers = ['Timestamp', 'Nodes', 'Edges', 'Health', 'Cycles', 'Hubs', 'Trend'];
+      const colWidths = [20, 8, 8, 8, 8, 6, 10];
+      const pad = (s: string, w: number) => s.padEnd(w);
+
+      console.log();
+      console.log(`Temporal Graph Evolution (${snapshots.length} snapshot(s))`);
+      console.log(`Repo: ${repoPath ?? 'unknown'}`);
+      console.log();
+      console.log(headers.map((h, i) => pad(h, colWidths[i])).join(''));
+      console.log(colWidths.map((w) => '-'.repeat(w)).join(''));
+
+      for (let i = 0; i < snapshots.length; i++) {
+        const s = snapshots[i];
+        let trendIcon = '';
+        if (i > 0) {
+          const delta = s.healthScore - snapshots[i - 1].healthScore;
+          trendIcon = delta > 1 ? '\u2191' : delta < -1 ? '\u2193' : '\u2192';
+        }
+
+        const cols = [
+          s.timestamp.replace('T', ' ').slice(0, 19),
+          String(s.nodeCount),
+          String(s.edgeCount),
+          s.healthScore.toFixed(1),
+          String(s.cycleCount),
+          String(s.hubCount),
+          trendIcon,
+        ];
+        console.log(cols.map((c, ci) => pad(c, colWidths[ci])).join(''));
+      }
+
+      // Trend summary
+      console.log();
+      const trendLabel = trend.direction === 'improving' ? '\u2191 IMPROVING' : trend.direction === 'degrading' ? '\u2193 DEGRADING' : '\u2192 STABLE';
+      console.log(`Health Trend: ${trendLabel} (slope: ${trend.slope > 0 ? '+' : ''}${trend.slope.toFixed(3)}/snapshot, confidence: ${(trend.confidence * 100).toFixed(0)}%)`);
+      console.log(`Current Score: ${trend.currentScore.toFixed(1)} \u2192 Projected: ${trend.projectedScore.toFixed(1)}`);
+      console.log();
     } finally {
       store.close();
     }
