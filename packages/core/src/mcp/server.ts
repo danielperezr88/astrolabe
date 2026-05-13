@@ -24,7 +24,7 @@ import { StreamableHttpTransport } from './http-transport.js';
 import { routeMap, toolMap, apiImpact, shapeCheck } from './api-tools.js';
 import { executeTraversal, type TraversalQuery } from './traverse.js';
 import { PhaseTimer } from '../core/phase-timer.js';
-import { pageRank, betweennessCentrality, shortestPath, computeSpectralMetrics, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
+import { pageRank, betweennessCentrality, shortestPath, detectClones, computeSpectralMetrics, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
 // #461: Graphlet-based structural analysis
@@ -1828,6 +1828,7 @@ Algorithms:
 - pagerank: Identify the most important modules by link structure. Returns nodes sorted by PageRank score.
 - betweenness: Find bridge nodes that connect different communities. High betweenness = critical dependency bottleneck.
 - shortest_path: Find the dependency chain between two modules. Returns the shortest path or null.
+- clone_detection: Detect structurally similar functions using Weisfeiler-Lehman graph kernels (#810). Returns clone clusters and top pairs.
 - resilience: Detect single points of failure (cut vertices) and critical dependency bridges. Returns articulation points and bridge edges.
 - architecture_smells: Detect architecture anti-patterns (cyclic dependencies, god modules, unstable deps, dependency meshes, cut vertices, bridge edges).
 
@@ -1835,7 +1836,7 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
     inputSchema: {
       type: 'object',
       properties: {
-        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'spectral_analysis', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
+        algorithm: { type: 'string', enum: ['pagerank', 'betweenness', 'shortest_path', 'clone_detection', 'spectral_analysis', 'resilience', 'architecture_smells'], description: 'Algorithm to run' },
         source: { type: 'string', description: 'Source node ID or name (required for shortest_path)' },
         target: { type: 'string', description: 'Target node ID or name (required for shortest_path)' },
         repo: { type: 'string', description: 'Repository name' },
@@ -1920,6 +1921,37 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
         });
 
         return { content: [{ type: 'text', text: JSON.stringify({ algorithm: 'shortest_path', source: sourceParam, target: targetParam, path: namedPath, length: path.length - 1 }, null, 2) }] };
+      }
+
+      if (algorithm === 'clone_detection') {
+        // Build node name map
+        const nodeNames = new Map<string, string>();
+        for (const node of graph.iterNodes()) {
+          nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
+        }
+
+        const result = detectClones(adjList, nodeNames);
+
+        // Format output
+        const output = {
+          algorithm: 'clone_detection',
+          totalFunctions: result.totalFunctions,
+          clonePairs: result.topPairs.map((p) => ({
+            functionA: p.functionA.name,
+            functionB: p.functionB.name,
+            similarity: Math.round(p.similarity * 100) / 100,
+          })),
+          clusters: result.clusters.map((c) => ({
+            id: c.clusterId,
+            size: c.memberCount,
+            representative: c.representativeFunction,
+            members: c.members.map((m) => m.name),
+          })),
+          summary: result.summary,
+          method: 'Weisfeiler-Lehman graph kernel (2 iterations)',
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
       }
 
       if (algorithm === 'spectral_analysis') {
