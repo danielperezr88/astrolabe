@@ -1478,7 +1478,6 @@ program
     }
   });
 
-<<<<<<< HEAD
 // ── detect-clones (#810) ─────────────────────────────────────────────────────
 program
   .command('detect-clones [repoPath]')
@@ -1487,47 +1486,28 @@ program
   .option('--threshold <n>', 'Similarity threshold (0-1)', '0.6')
   .option('--json', 'Output raw JSON')
   .action((repoPath: string | undefined, opts: { db: string; threshold: string; json?: boolean }) => {
-=======
-// ── spectral (#812) ──────────────────────────────────────────────────────────
-program
-  .command('spectral [repoPath]')
-  .description('Spectral graph analysis — density, entropy, flow hierarchy, topology classification (#812)')
-  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
-  .option('--json', 'Output raw JSON')
-  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
->>>>>>> origin/staging
     const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
     if (!existsSync(dbPath)) {
       console.log('No knowledge graph found. Run `astrolabe analyze` first.');
       return;
     }
 
-<<<<<<< HEAD
     const threshold = parseFloat(opts.threshold);
     if (isNaN(threshold) || threshold < 0 || threshold > 1) {
       console.log('Threshold must be a number between 0 and 1.');
       return;
     }
 
-=======
->>>>>>> origin/staging
     const store = createSqliteStore(dbPath);
     try {
       const graph = store.loadGraph();
 
-<<<<<<< HEAD
       // Build adjacency + node names (same as MCP handler)
       const adjList = new Map<string, string[]>();
       const nodeNames = new Map<string, string>();
       for (const node of graph.iterNodes()) {
         if (!adjList.has(node.id)) adjList.set(node.id, []);
         nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
-=======
-      // Build adjacency list from CALLS and IMPORTS edges
-      const adjList = new Map<string, string[]>();
-      for (const node of graph.iterNodes()) {
-        if (!adjList.has(node.id)) adjList.set(node.id, []);
->>>>>>> origin/staging
       }
       for (const rel of graph.iterRelationships()) {
         if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
@@ -1538,7 +1518,6 @@ program
         if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
       }
 
-<<<<<<< HEAD
       const result = detectClones(adjList, nodeNames, { threshold });
 
       if (opts.json) {
@@ -1569,8 +1548,42 @@ program
           console.log(`  ${(pair.similarity * 100).toFixed(0)}%: ${pair.functionA.name} ↔ ${pair.functionB.name}`);
         }
       }
+    } finally {
+      store.close();
+    }
+  });
 
-=======
+// ── spectral (#812) ──────────────────────────────────────────────────────────
+program
+  .command('spectral [repoPath]')
+  .description('Spectral graph analysis — density, entropy, flow hierarchy, topology classification (#812)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+
+      // Build adjacency list from CALLS and IMPORTS edges
+      const adjList = new Map<string, string[]>();
+      for (const node of graph.iterNodes()) {
+        if (!adjList.has(node.id)) adjList.set(node.id, []);
+      }
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
+        if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        let targets = adjList.get(rel.sourceId);
+        if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
+        targets.push(rel.targetId);
+        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
+      }
+
       const metrics = computeSpectralMetrics(adjList);
 
       if (opts.json) {
@@ -1748,7 +1761,6 @@ program
       }
 
       console.log();
->>>>>>> origin/staging
       console.log();
     } finally {
       store.close();
