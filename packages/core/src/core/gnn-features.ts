@@ -38,7 +38,7 @@ export const EDGE_TYPES: readonly RelationshipType[] = [
   'MEMBER_OF', 'STEP_IN_PROCESS', 'HANDLES_ROUTE', 'FETCHES',
   'HANDLES_TOOL', 'ENTRY_POINT_OF', 'WRAPS', 'QUERIES',
   'USES_FRAMEWORK', 'RETURNS_TYPE', 'DECLARES_TYPE',
-  'CHAINABLE_TO', 'SEMANTICALLY_SIMILAR',
+  'CHAINABLE_TO',
 ] as const;
 
 // ── Feature types ─────────────────────────────────────────────────────────
