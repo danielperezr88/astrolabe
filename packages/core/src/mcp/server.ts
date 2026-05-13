@@ -35,6 +35,11 @@ import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 // #809: GNN feature engineering
 import { exportGnnDataset } from '../core/gnn-features.js';
+// #813: Semantic embeddings for MCP query tool
+import { EmbeddingStore, createEmbeddingProvider, type EmbeddingProviderType } from '../search/embeddings-store.js';
+import { cosineSimilarity } from '../core/embedding-propagation.js';
+// #807: Temporal graph evolution
+import { detectTrends } from '../core/graph-evolution.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1060,6 +1065,9 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
         service: { type: 'string', description: 'Optional monorepo path prefix filter (only active in group mode)' },
         task_context: { type: 'string', description: 'Context about the current task (e.g., "debugging auth flow")' },
         goal: { type: 'string', description: 'What the search aims to find (e.g., "find where tokens are validated")' },
+        mode: { type: 'string', enum: ['hybrid', 'semantic'], description: 'Search mode: hybrid (FTS + TF-IDF, default) or semantic (embedding cosine similarity)', default: 'hybrid' },
+        embedding_provider: { type: 'string', description: 'Embedding provider for semantic mode: auto, transformers, tfidf, remote. Default auto.', default: 'auto' },
+        propagate_hops: { type: 'number', description: 'Propagation hops for semantic embeddings (0=none, 1=single, 2=double). Default 0.', default: 0 },
       },
       required: ['query'],
     },
@@ -1071,12 +1079,95 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
       const service = params.service as string | undefined;
       const taskContext = params.task_context as string | undefined;
       const goal = params.goal as string | undefined;
+      const mode = (params.mode as string) ?? 'hybrid';
       let result: unknown;
 
-      if (repo?.startsWith('@')) {
-        result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+      // #813: Semantic search mode
+      if (mode === 'semantic') {
+        // Get repo context for dbPath
+        const ctx = repo?.startsWith('@')
+          ? backend.resolveGroupRepos(repo).contexts[0]?.repo
+          : backend.getRepo(repo);
+
+        if (!ctx) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error: 'No indexed repository found. Use astrolabe embed first.' }) }] };
+        }
+
+        try {
+          const dbPath = ctx.entry.dbPath;
+          const embedStore = new EmbeddingStore(new (await import('better-sqlite3')).default(dbPath));
+          const providerType = (params.embedding_provider as EmbeddingProviderType) ?? 'auto';
+          const provider = createEmbeddingProvider(providerType);
+          const demand = provider.dimensions;
+
+          // Compute query embedding
+            const effectiveHops = requireNumber(params, 'propagate_hops', 1);
+          const hops_used = effectiveHops > 2 ? 2 : effectiveHops < 0 ? 0 : effectiveHops;
+          const queryVec = provider.encodeAsync
+            ? await provider.encodeAsync(query)
+            : provider.encode(query);
+
+          // Load all stored embeddings
+          const allEmbs = embedStore.getAll();
+
+          if (allEmbs.length === 0) {
+            embedStore.close?.();
+            return { content: [{ type: 'text', text: JSON.stringify({ error: 'No embeddings found. Run `astrolabe embed` first.' }) }] };
+          }
+
+          // Rank by cosine similarity
+          const results: Array<{ nodeId: string; similarity: number; contentHash: string }> = [];
+          for (const emb of allEmbs) {
+            // Verify dimensionality match
+            if (emb.dimensions !== demand) continue;
+            const storedVec = Array.from(new Float32Array(emb.vector.buffer));
+            if (storedVec.length !== demand) continue;
+            const sim = cosineSimilarity(Array.from(queryVec), storedVec);
+            results.push({ nodeId: emb.nodeId, similarity: sim, contentHash: emb.contentHash });
+          }
+
+          // Sort by similarity descending, take top limit
+          results.sort((a, b) => b.similarity - a.similarity);
+          const limit = requireNumber(params, 'limit', 20);
+          const topResults = results.slice(0, limit);
+
+          // Enrich with node info from the graph
+          const graph = ctx.loadGraph();
+          const enriched = topResults.map((r) => {
+            const node = graph.getNode(r.nodeId);
+            return {
+              nodeId: r.nodeId,
+              name: node?.properties.name ?? r.nodeId,
+              label: node?.label ?? 'unknown',
+              filePath: node?.properties.filePath ?? '',
+              similarity: Math.round(r.similarity * 10000) / 10000,
+            };
+          });
+
+          embedStore.close?.();
+          result = {
+            mode: 'semantic',
+            hops_used,
+            results: enriched,
+            total_embeddings: allEmbs.length,
+          };
+        } catch (err) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: `Semantic search failed: ${(err as Error).message}. Try running \`astrolabe embed\` first.`,
+              }),
+            }],
+          };
+        }
       } else {
-        result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        // Hybrid mode (existing behavior)
+        if (repo?.startsWith('@')) {
+          result = backend.queryGroup(query, repo, service, requireNumber(params, 'limit', 20), taskContext, goal);
+        } else {
+          result = backend.query(query, repo, requireNumber(params, 'limit', 20), taskContext, goal);
+        }
       }
 
       timer.mark('search');
@@ -2745,6 +2836,79 @@ Writes nodes.csv (or .json), edges.csv (or .json), node_labels.json, and edge_ty
       ];
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
+    },
+  },
+
+  // #807: Temporal graph evolution — snapshots, diffs, and trend detection
+  'astrolabe.graph_evolution': {
+    name: 'astrolabe.graph_evolution',
+    description: `Temporal graph evolution — view snapshots of architecture health over time, detect improving/degrading trends, and diff any two snapshots.
+
+Returns snapshots filtered by date range, a trend summary (health direction, slope, confidence), and per-metric summaries.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (omit if only one indexed)' },
+        since: { type: 'string', description: 'ISO 8601 start date for snapshot range (optional)' },
+        until: { type: 'string', description: 'ISO 8601 end date for snapshot range (optional)' },
+      },
+      required: [],
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string);
+      const store = ctx.store;
+
+      const since = params.since as string | undefined;
+      const until = params.until as string | undefined;
+
+      const snapshots = store.loadSnapshots(since, until);
+      const trend = detectTrends(snapshots);
+
+      // Detect cohesion/coupling trend if enough snapshots
+      let couplingDirection: string = 'stable';
+      if (snapshots.length >= 2) {
+        const firstCohesion = snapshots[0].cohesion;
+        const lastCohesion = snapshots[snapshots.length - 1].cohesion;
+        const cohesionDelta = lastCohesion - firstCohesion;
+        couplingDirection = cohesionDelta > 0.05 ? 'decoupling' : cohesionDelta < -0.05 ? 'tightening' : 'stable';
+      }
+
+      // Build trend summary
+      const trendSummary = {
+        health: {
+          direction: trend.direction,
+          slope: trend.slope,
+          confidence: trend.confidence,
+        },
+        coupling: {
+          direction: couplingDirection,
+        },
+        communities: snapshots.length > 0 ? snapshots[snapshots.length - 1].communityCount : 0,
+      };
+
+      const output = {
+        repo: ctx.entry.name,
+        snapshotCount: snapshots.length,
+        snapshots: snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          modularity: Math.round(s.modularity * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        })),
+        trend_summary: trendSummary,
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
     },
   },
 };

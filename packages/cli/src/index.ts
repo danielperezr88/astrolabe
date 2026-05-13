@@ -40,10 +40,12 @@ import {
   computeGraphCoverageMetrics,
   EDGE_DECAY_FACTORS, applyDecay, noisyOr,
   exportGnnDataset,
+  computeEmbeddings, propagateEmbeddings, createSemanticEdges,
+  computeSnapshotMetrics, detectTrends,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
-import type { ScanOutput, IncrementalInfo, PhaseTimerResult } from '@astrolabe-dev/core';
+import type { ScanOutput, IncrementalInfo, PhaseTimerResult, EmbeddingProviderType } from '@astrolabe-dev/core';
 import { PIPELINE_TIMING_KEY, PIPELINE_MEMORY_KEY } from '@astrolabe-dev/core';
 import { startWatch } from './watch.js';
 
@@ -221,6 +223,15 @@ program
       // Save graph to SQLite
       const store = createSqliteStore(dbPath);
       store.saveGraph(graph);
+      // #807: Auto-save snapshot for temporal evolution tracking
+      try {
+        const branch = (() => { try { return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return 'unknown'; } })();
+        const snapshot = computeSnapshotMetrics(graph, lastCommit, branch);
+        store.saveSnapshot(snapshot);
+        log.info('Snapshot saved', { id: snapshot.id, healthScore: snapshot.healthScore });
+      } catch (err) {
+        log.warn('Failed to save snapshot', { error: String(err) });
+      }
       // FTS index is created lazily on first query — no eager creation here
       store.close();
 
@@ -1761,7 +1772,6 @@ program
       }
 
       console.log();
-      console.log();
     } finally {
       store.close();
     }
@@ -1809,6 +1819,163 @@ program
       console.log(`  ${join(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`);
       console.log(`  ${join(outputPath, 'node_labels.json')}`);
       console.log(`  ${join(outputPath, 'edge_types.json')}`);
+    } finally {
+      store.close();
+    }
+  });
+
+// ── embed (semantic embedding computation, #813) ──────────────────────────────
+program
+  .command('embed [repoPath]')
+  .description('Compute semantic embeddings for code nodes with optional propagation (#813)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--propagate', 'Propagate embeddings along graph edges (neighbor averaging)', false)
+  .option('--propagate-hops <n>', 'Number of hops for embedding propagation', '1')
+  .option('--threshold <n>', 'Cosine similarity threshold for SEMANTICALLY_SIMILAR edges', '0.85')
+  .option('--provider <type>', 'Embedding provider (auto, transformers, tfidf, remote)', 'auto')
+  .option('--no-edges', 'Skip creating SEMANTICALLY_SIMILAR edges')
+  .option('--log-level <level>', 'Log level', 'info')
+  .action(async (repoPath: string | undefined, opts: {
+    db: string;
+    propagate: boolean;
+    propagateHops: string;
+    threshold: string;
+    provider: string;
+    edges: boolean;
+    logLevel: string;
+  }) => {
+    const resolvedPath = repoPath ? resolve(repoPath) : process.cwd();
+    const dbPath = opts.db !== '.astrolabe/astrolabe.db' ? resolve(opts.db) : join(resolvedPath, '.astrolabe', 'astrolabe.db');
+    const propagateHops = parseInt(opts.propagateHops, 10) || 1;
+    const threshold = parseFloat(opts.threshold) || 0.85;
+
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const graph = store.loadGraph();
+      console.log(`Loaded graph: ${graph.nodeCount.toLocaleString()} nodes, ${graph.relationshipCount.toLocaleString()} edges`);
+
+      // Step 1: Compute embeddings
+      const providerType = opts.provider as EmbeddingProviderType;
+      const result = await computeEmbeddings(graph, { provider: providerType, dbPath });
+      console.log(`Embeddings computed: ${result.nodeCount.toLocaleString()} nodes (${result.dimensions}D)`);
+
+      // Step 2: Propagate if requested
+      if (opts.propagate) {
+        const propagated = propagateEmbeddings(graph, result.embeddings, propagateHops);
+        console.log(`Embeddings propagated: ${propagated.size.toLocaleString()} nodes, ${propagateHops} hop(s)`);
+      }
+
+      // Step 3: Create semantic edges (unless --no-edges)
+      if (opts.edges) {
+        const edges = createSemanticEdges(graph, result.embeddings, threshold);
+        console.log(`Semantic edges created: ${edges.edgesAdded} edges (threshold=${threshold})`);
+        if (edges.edgesAdded > 0) {
+          store.saveGraph(graph);
+        }
+      }
+
+      console.log('Embedding computation complete.');
+    } finally {
+      store.close();
+    }
+  });
+
+// ── evolution (temporal graph snapshots) ────────────────────────────────────
+// #807: Temporal graph evolution — view snapshots and trends
+program
+  .command('evolution [repoPath]')
+  .description('View temporal graph evolution — snapshots, health trends, and diffs over time')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--since <iso-date>', 'ISO 8601 start date for snapshot range')
+  .option('--until <iso-date>', 'ISO 8601 end date for snapshot range')
+  .option('--format <format>', 'Output format: table (default) or json', 'table')
+  .action((repoPath: string | undefined, opts: { db: string; since?: string; until?: string; format: string }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No analysis found. Run `astrolabe analyze <repo>` first.');
+      return;
+    }
+
+    const store = createSqliteStore(dbPath);
+    try {
+      const snapshots = store.loadSnapshots(opts.since, opts.until);
+
+      if (snapshots.length === 0) {
+        console.log('No snapshots found. Run `astrolabe analyze` to create the first snapshot.');
+        return;
+      }
+
+      const trend = detectTrends(snapshots);
+
+      if (opts.format === 'json') {
+        const output = snapshots.map((s) => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          commitSha: s.commitSha.slice(0, 7),
+          branch: s.branch,
+          nodes: s.nodeCount,
+          edges: s.edgeCount,
+          communities: s.communityCount,
+          health: s.healthScore,
+          cohesion: Math.round(s.cohesion * 1000) / 1000,
+          complexity: Math.round(s.complexity * 1000) / 1000,
+          cycles: s.cycleCount,
+          hubs: s.hubCount,
+          unstableDeps: s.unstableDepCount,
+        }));
+        console.log(JSON.stringify({
+          repo: repoPath ?? 'unknown',
+          snapshotCount: snapshots.length,
+          trend,
+          snapshots: output,
+        }, null, 2));
+        return;
+      }
+
+      // Table format
+      const headers = ['Timestamp', 'Nodes', 'Edges', 'Health', 'Cycles', 'Hubs', 'Trend'];
+      const colWidths = [20, 8, 8, 8, 8, 6, 10];
+      const pad = (s: string, w: number) => s.padEnd(w);
+
+      console.log();
+      console.log(`Temporal Graph Evolution (${snapshots.length} snapshot(s))`);
+      console.log(`Repo: ${repoPath ?? 'unknown'}`);
+      console.log();
+      console.log(headers.map((h, i) => pad(h, colWidths[i])).join(''));
+      console.log(colWidths.map((w) => '-'.repeat(w)).join(''));
+
+      for (let i = 0; i < snapshots.length; i++) {
+        const s = snapshots[i];
+        let trendIcon = '';
+        if (i > 0) {
+          const delta = s.healthScore - snapshots[i - 1].healthScore;
+          trendIcon = delta > 1 ? '\u2191' : delta < -1 ? '\u2193' : '\u2192';
+        }
+
+        const cols = [
+          s.timestamp.replace('T', ' ').slice(0, 19),
+          String(s.nodeCount),
+          String(s.edgeCount),
+          s.healthScore.toFixed(1),
+          String(s.cycleCount),
+          String(s.hubCount),
+          trendIcon,
+        ];
+        console.log(cols.map((c, ci) => pad(c, colWidths[ci])).join(''));
+      }
+
+      // Trend summary
+      console.log();
+      const trendLabel = trend.direction === 'improving' ? '\u2191 IMPROVING' : trend.direction === 'degrading' ? '\u2193 DEGRADING' : '\u2192 STABLE';
+      console.log(`Health Trend: ${trendLabel} (slope: ${trend.slope > 0 ? '+' : ''}${trend.slope.toFixed(3)}/snapshot, confidence: ${(trend.confidence * 100).toFixed(0)}%)`);
+      console.log(`Current Score: ${trend.currentScore.toFixed(1)} \u2192 Projected: ${trend.projectedScore.toFixed(1)}`);
+      console.log();
     } finally {
       store.close();
     }
