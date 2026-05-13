@@ -54,7 +54,7 @@ This signals work is in progress and links the issue.
 
 ```bash
 # Make changes, then:
-npm test               # 472 passing required
+npm test               # 676 passing required
 git add -A
 git commit -m "fix: resolve auth crash (#42)"
 git push -u origin fix/issue-123-description
@@ -92,7 +92,7 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 ## Testing
 
 ```bash
-npm test                    # Unit tests (472 pass, 12 skipped)
+npm test                    # Unit tests (676 pass, 19 skipped)
 npm run build --workspace packages/shared   # Must run before core build
 ```
 
