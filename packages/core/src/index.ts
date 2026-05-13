@@ -39,6 +39,8 @@ export { parseLcov, parseIstanbul, parseCobertura, parseCoverageReport, detectFo
 export type { CoverageReport, FileCoverage } from './analysis/coverage/parser.js';
 export type { CoverageScanOutput } from './analysis/phases/coverage.js';
 export { annotateGraphWithCoverage } from './analysis/phases/coverage.js';
+// #811: Graph-based coverage metrics
+export { computeGraphCoverageMetrics, type GraphCoverageMetrics, type CommunityCoverage } from './analysis/coverage/graph-metrics.js';
 export { createSqliteStore, acquireDbLock } from './persist/index.js';
 export type { SqliteStore } from './persist/sqlite.js';
 export type { DbLock } from './persist/lock.js';
@@ -79,3 +81,21 @@ export { chat, callLLM, type ChatMessage, type ChatResponse, type LLMConfig } fr
 export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analysis/graphlet/index.js';
 export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
 export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
+// #810: Clone detection
+export { detectClones, type CloneDetectionResult, type ClonePair, type CloneCluster } from './core/graph-algorithms.js';
+// #812: Spectral graph analysis
+export { computeSpectralMetrics, type SpectralMetrics } from './core/graph-algorithms.js';
+// #805: Graph resilience analysis
+export { detectCutVertices, detectBridges } from './core/graph-algorithms.js';
+// #806: Probabilistic impact analysis
+export { EDGE_DECAY_FACTORS, applyDecay, noisyOr, type DecaySchedule } from './analysis/impact-decay.js';
+// #808: Architecture anti-pattern detection
+export { detectAntiPatterns, type ArchitectureSmellsResult } from './analysis/anti-pattern/index.js';
+// #809: GNN node classification feature engineering
+export { extractNodeFeatures, extractEdgeFeatures, exportGnnDataset, nodeLabelOneHot, NODE_LABELS, EDGE_TYPES } from './core/gnn-features.js';
+export type { GnnNodeFeatures, GnnEdgeFeatures, GnnExportOptions } from './core/gnn-features.js';
+// #813: Embedding propagation
+export { computeEmbeddings, propagateEmbeddings, typeAwarePropagation, createSemanticEdges } from './core/embedding-propagation.js';
+export type { PropagationResult, SemanticEdgeResult, ComputeEmbeddingsOptions, EmbeddingProvider, EmbeddingProviderType } from './core/embedding-propagation.js';
+// #807: Temporal graph evolution
+export { computeSnapshotMetrics, detectTrends, type SnapshotData, type TrendResult, type SnapshotDiff, type TrendDirection } from './core/graph-evolution.js';
