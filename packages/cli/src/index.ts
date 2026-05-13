@@ -39,6 +39,7 @@ import {
   detectCutVertices, detectBridges,
   computeGraphCoverageMetrics,
   EDGE_DECAY_FACTORS, applyDecay, noisyOr,
+  exportGnnDataset,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -1749,6 +1750,53 @@ program
       console.log();
 >>>>>>> origin/staging
       console.log();
+    } finally {
+      store.close();
+    }
+  });
+
+// ── gnn-export (GNN feature engineering and dataset export, #809) ───────────
+program
+  .command('gnn-export [repoPath]')
+  .description('Export GNN-ready feature vectors and dataset from the knowledge graph (#809)')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('-o, --output <path>', 'Output directory', '.astrolabe/gnn-dataset/')
+  .option('--format <format>', 'Output format: csv or json', 'csv')
+  .option('--include-embeddings', 'Include 384-D embedding vectors in node features')
+  .action((repoPath: string | undefined, opts: { db: string; output: string; format: string; includeEmbeddings?: boolean }) => {
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+
+    if (!existsSync(dbPath)) {
+      console.error(`Database not found: ${dbPath}`);
+      console.error('Run `astrolabe analyze <repo>` first.');
+      process.exit(1);
+    }
+
+    const format = (opts.format === 'json' ? 'json' : 'csv') as 'csv' | 'json';
+    const outputPath = resolve(opts.output);
+
+    const store = createSqliteStore(resolve(dbPath));
+    try {
+      const graph = store.loadGraph();
+      console.log(`Loaded graph: ${graph.nodeCount.toLocaleString()} nodes, ${graph.relationshipCount.toLocaleString()} edges`);
+
+      const result = exportGnnDataset(graph, outputPath, {
+        dbPath: resolve(dbPath),
+        includeEmbeddings: opts.includeEmbeddings,
+        format,
+      });
+
+      console.log(`\nGNN dataset exported to: ${result.exportPath}`);
+      console.log(`  Nodes:            ${result.nodeCount.toLocaleString()}`);
+      console.log(`  Edges:            ${result.edgeCount.toLocaleString()}`);
+      console.log(`  Feature dims:     ${result.featureDimensions}`);
+      console.log(`  Format:           ${format}`);
+      console.log(`  Embeddings:       ${opts.includeEmbeddings ? 'included' : 'not included'}`);
+      console.log(`\nOutput files:`);
+      console.log(`  ${join(outputPath, format === 'json' ? 'nodes.json' : 'nodes.csv')}`);
+      console.log(`  ${join(outputPath, format === 'json' ? 'edges.json' : 'edges.csv')}`);
+      console.log(`  ${join(outputPath, 'node_labels.json')}`);
+      console.log(`  ${join(outputPath, 'edge_types.json')}`);
     } finally {
       store.close();
     }
