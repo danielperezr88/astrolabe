@@ -231,7 +231,7 @@ Or point to your local build:
 }
 ```
 
-### Tools (23)
+### Tools (29)
 
 **Core Analysis**
 
@@ -274,6 +274,17 @@ Or point to your local build:
 | `group_sync` | Extract cross-repo HTTP contracts |
 | `group_contracts` | Inspect extracted contracts |
 | `group_impact` | Cross-repo impact via contract tracing |
+
+**Security & Coverage**
+
+| Tool | Description |
+|------|-------------|
+| `security_audit` | Security vulnerability scan across indexed code |
+| `coverage_report` | Generate coverage summary from imported data |
+| `coverage_gaps` | Identify untested code paths |
+| `test_coverage` | Test coverage analysis via graph structure |
+| `gnn_export` | Export GNN-ready feature vectors (`--format csv\|json`) |
+| `graph_evolution` | Track graph changes over time |
 
 **AI**
 
