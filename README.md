@@ -343,7 +343,7 @@ astrolabe generate-skill --output astrolabe-skill.md
 
 ## Supported Languages
 
-TypeScript, JavaScript, TSX, Python, Java, Go, Rust, C#, PHP, Ruby, Swift, C, C++, Kotlin, Protobuf
+TypeScript, JavaScript, TSX, Python, Java, Go, Rust, C#, PHP, Ruby, Swift, C, C++, Kotlin, Protobuf, Vue
 
 ## Contributing
 
