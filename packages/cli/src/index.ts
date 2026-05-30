@@ -6,7 +6,7 @@ import { program } from 'commander';
 import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
@@ -704,6 +704,113 @@ program
         if (found === 0) console.log(`Symbol "${symbolName}" not found.`);
       }
     } finally { store.close(); }
+  });
+
+// ── detect_changes ───────────────────────────────────────────────────────────
+program
+  .command('detect-changes [repoPath]')
+  .description('Git-diff impact — maps changed files to affected symbols and processes')
+  .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
+  .option('--scope <scope>', 'Diff scope: unstaged, staged, or all', 'unstaged')
+  .option('--json', 'Output raw JSON')
+  .action((repoPath: string | undefined, opts: { db: string; scope: string; json?: boolean }) => {
+    const validScopes = ['unstaged', 'staged', 'all'];
+    const scope = validScopes.includes(opts.scope) ? opts.scope as 'unstaged' | 'staged' | 'all' : 'unstaged';
+    const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
+    if (!existsSync(dbPath)) {
+      console.log('No knowledge graph found. Run `astrolabe analyze` first.');
+      return;
+    }
+
+    // Get changed files from git
+    const cwd = repoPath ?? '.';
+    let diffFiles: string[] = [];
+    try {
+      const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
+      const args = ['diff', '--name-only'];
+      if (diffFlag) args.push(diffFlag);
+      const output = execFileSync('git', args, { cwd, encoding: 'utf-8' });
+      diffFiles = output.trim().split('\n').filter(Boolean);
+    } catch {
+      console.log('Git diff failed. Is this a git repository?');
+      return;
+    }
+
+    if (diffFiles.length === 0) {
+      if (opts.json) { console.log(JSON.stringify({ changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' })); }
+      else { console.log('No changes detected.'); }
+      return;
+    }
+
+    // Match changed files to graph symbols
+    const store = createSqliteStore(resolve(dbPath));
+    try {
+      const graph = store.loadGraph();
+      const diffFileSet = new Set(diffFiles);
+      const changedSymbols: string[] = [];
+      const changedNodeIds = new Set<string>();
+
+      for (const node of graph.iterNodes()) {
+        const fp = node.properties.filePath as string | undefined;
+        if (fp && diffFileSet.has(fp)) {
+          changedNodeIds.add(node.id);
+          changedSymbols.push(node.properties.name ?? node.id);
+        }
+      }
+
+      // Find affected processes
+      const affectedProcesses: string[] = [];
+      const seenProcessNames = new Set<string>();
+      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+        if (changedNodeIds.has(rel.targetId)) {
+          const proc = graph.getNode(rel.sourceId);
+          if (proc) {
+            const procName = proc.properties.name ?? proc.id;
+            if (!seenProcessNames.has(procName)) {
+              seenProcessNames.add(procName);
+              affectedProcesses.push(procName);
+            }
+          }
+        }
+      }
+
+      const crossCommunityCount = affectedProcesses.length;
+      const riskLevel = affectedProcesses.length > 3 ? 'high'
+        : affectedProcesses.length > 0 ? 'medium'
+        : changedNodeIds.size > 0 ? 'unknown'
+        : 'low';
+
+      const result = {
+        changed_files: diffFiles,
+        changed_count: diffFiles.length,
+        affected_count: affectedProcesses.length,
+        risk_level: riskLevel,
+        changed_symbols: changedSymbols,
+        affected_processes: affectedProcesses,
+        cross_community_affected: crossCommunityCount,
+      };
+
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Change Impact Analysis (${scope}) ===`);
+      console.log(`Changed files: ${result.changed_count}`);
+      for (const f of diffFiles) console.log(`  ${f}`);
+      console.log(`Risk level: ${riskLevel}`);
+      if (changedSymbols.length > 0) {
+        console.log(`\nChanged symbols (${changedSymbols.length}):`);
+        for (const s of changedSymbols.slice(0, 20)) console.log(`  ${s}`);
+        if (changedSymbols.length > 20) console.log(`  ... and ${changedSymbols.length - 20} more`);
+      }
+      if (affectedProcesses.length > 0) {
+        console.log(`\nAffected processes (${affectedProcesses.length}):`);
+        for (const p of affectedProcesses) console.log(`  ${p}`);
+      }
+    } finally {
+      store.close();
+    }
   });
 
 // ── list ───────────────────────────────────────────────────────────────────────
@@ -1513,20 +1620,23 @@ program
     try {
       const graph = store.loadGraph();
 
-      // Build adjacency + node names (same as MCP handler)
+      // Build adjacency + node names — only Function/Method nodes for meaningful clone detection
+      const FUNCTION_LABELS = new Set(['Function', 'Method']);
+      const functionNodes = new Set<string>();
       const adjList = new Map<string, string[]>();
       const nodeNames = new Map<string, string>();
       for (const node of graph.iterNodes()) {
+        if (!FUNCTION_LABELS.has(node.label)) continue;
+        functionNodes.add(node.id);
         if (!adjList.has(node.id)) adjList.set(node.id, []);
         nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
       }
       for (const rel of graph.iterRelationships()) {
-        if (rel.type === 'STEP_IN_PROCESS' || rel.type === 'MEMBER_OF' || rel.type === 'ENTRY_POINT_OF') continue;
         if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+        if (!functionNodes.has(rel.sourceId) || !functionNodes.has(rel.targetId)) continue;
         let targets = adjList.get(rel.sourceId);
         if (!targets) { targets = []; adjList.set(rel.sourceId, targets); }
         targets.push(rel.targetId);
-        if (!adjList.has(rel.targetId)) adjList.set(rel.targetId, []);
       }
 
       const result = detectClones(adjList, nodeNames, { threshold });

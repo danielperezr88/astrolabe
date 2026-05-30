@@ -1024,13 +1024,26 @@ The graph is built from CALLS and IMPORTS relationships (excluding STEP_IN_PROCE
       }
 
       if (algorithm === 'clone_detection') {
-        // Build node name map
+        // Build adjacency limited to Function/Method nodes for meaningful clone detection
+        const FUNCTION_LABELS = new Set(['Function', 'Method']);
+        const functionNodes = new Set<string>();
+        const cloneAdj = new Map<string, string[]>();
         const nodeNames = new Map<string, string>();
         for (const node of graph.iterNodes()) {
+          if (!FUNCTION_LABELS.has(node.label)) continue;
+          functionNodes.add(node.id);
+          cloneAdj.set(node.id, []);
           nodeNames.set(node.id, (node.properties.name as string) ?? node.id);
         }
+        for (const rel of graph.iterRelationships()) {
+          if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+          if (!functionNodes.has(rel.sourceId) || !functionNodes.has(rel.targetId)) continue;
+          let targets = cloneAdj.get(rel.sourceId);
+          if (!targets) { targets = []; cloneAdj.set(rel.sourceId, targets); }
+          targets.push(rel.targetId);
+        }
 
-        const result = detectClones(adjList, nodeNames);
+        const result = detectClones(cloneAdj, nodeNames);
 
         // Format output
         const output = {
