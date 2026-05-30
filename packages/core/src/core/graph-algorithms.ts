@@ -884,6 +884,7 @@ export function tarjanSCC(adjList: Map<string, string[]>): SccResult[] {
   }
 
   return sccs
+    .filter(scc => scc.length >= 2)
     .sort((a, b) => b.length - a.length)
     .map((nodeIds, i) => ({
       id: i,
