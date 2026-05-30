@@ -64,6 +64,7 @@ const DEFAULT_IGNORE = [
   'obj',
   '.omo',
   '.claude',
+  '.sisyphus',
   '_debug_*.mjs',
   '_test_*.mjs',
 ];
