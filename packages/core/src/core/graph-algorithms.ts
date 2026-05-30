@@ -476,15 +476,31 @@ export function detectClones(
   }
 
   // Compare pairs within each group using neighbor WL hash Jaccard
+  // Memory-safe: cap group size and total pairs to avoid OOM on large repos
+  const MAX_GROUP_SIZE = 500;
+  const MAX_TOTAL_PAIRS = 50000;
   const allPairs: ClonePair[] = [];
 
   for (const [, group] of hashGroups) {
     if (group.length < 2) continue;
+    if (allPairs.length >= MAX_TOTAL_PAIRS) break;
 
-    for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        const a = group[i];
-        const b = group[j];
+    // For large groups, sample a subset instead of O(G²) full comparison
+    let compareGroup = group;
+    if (group.length > MAX_GROUP_SIZE) {
+      // Deterministic sample: spread across the group evenly
+      const step = Math.floor(group.length / MAX_GROUP_SIZE);
+      compareGroup = [];
+      for (let k = 0; k < group.length && compareGroup.length < MAX_GROUP_SIZE; k += step) {
+        compareGroup.push(group[k]);
+      }
+    }
+
+    for (let i = 0; i < compareGroup.length; i++) {
+      if (allPairs.length >= MAX_TOTAL_PAIRS) break;
+      for (let j = i + 1; j < compareGroup.length; j++) {
+        const a = compareGroup[i];
+        const b = compareGroup[j];
 
         const setA = neighborHashSets.get(a)!;
         const setB = neighborHashSets.get(b)!;
@@ -509,7 +525,7 @@ export function detectClones(
     }
   }
 
-  // Sort by similarity descending
+  // Sort by similarity descending, cap to maxPairs for output
   allPairs.sort((a, b) => b.similarity - a.similarity);
 
   // ── Stage 3: Union-Find Clustering ────────────────────────────────────
