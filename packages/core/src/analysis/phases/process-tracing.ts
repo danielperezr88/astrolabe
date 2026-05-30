@@ -100,7 +100,7 @@ function buildCallers(callGraph: Map<string, string[]>): Map<string, string[]> {
  * Returns node IDs sorted by score descending, filtered to > 0.5 threshold.
  * Each qualifying node gets a descriptive `entryPointReason` listing contributing factors.
  */
-const ENTRY_FILE_NAMES = /^(index|main|app|server|cli|start|bootstrap|run)\.(ts|js|tsx|jsx|py|go|rs|java|rb|php|cs|swift|c|cpp|dart|kt)$/i;
+const ENTRY_FILE_NAMES = /^(index|main|app|server|cli|start|bootstrap|run)\.(ts|js|tsx|jsx|py|go|rs|java|rb|php|cs|swift|c|cpp|kt)$/i;
 
 function findEntryPoints(
   graph: PhaseContext['graph'],

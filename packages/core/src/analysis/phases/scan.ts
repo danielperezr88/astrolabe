@@ -62,6 +62,11 @@ const DEFAULT_IGNORE = [
   'target',
   'bin',
   'obj',
+  '.omo',
+  '.claude',
+  '.sisyphus',
+  '_debug_*.mjs',
+  '_test_*.mjs',
 ];
 
 /** Extensions to skip regardless of language support (binary, media, fonts). */

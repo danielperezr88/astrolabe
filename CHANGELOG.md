@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.0.8] — 2026-05-13
+
+### 🚀 Features
+
+- code embedding propagation with semantic enrichment (#813)
+- GNN node classification feature engineering and export (#809)
+- graph-based clone detection via Weisfeiler-Lehman kernel (#810)
+- spectral graph analysis with entropy metrics and topology classification (#812)
+- graph resilience analysis with cut vertices and bridge detection (#805)
+- graph-based test coverage metrics with per-community analysis (#811)
+- probabilistic impact analysis with confidence decay (#806)
+- architecture anti-pattern detection via graph topology (#808)
+- temporal graph evolution with snapshots, diffs, trend detection (#807)
+- Python Graph Dataset API for Data Science consumption (#804)
+- graphlet-based architectural pattern detection (#461)
+- test coverage integration and coverage heatmap (#463)
+
+### 🐛 Bug Fixes
+
+- resolve merge conflict markers in CLI index.ts (#826)
+
+## [1.0.6] — 2026-05-11
+
+### 🔧 Chore
+
+- merge staging to main — CI notification fix + release pipeline fixes
+
+## [1.0.4] — 2026-05-09
+
+### 🔧 Chore
+
+- promote staging to main — CHANGELOG v1.0.3 + release pipeline fix
+
 ## [1.0.3] — 2026-05-07
 
 ### 🐛 Bug Fixes

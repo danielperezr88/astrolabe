@@ -73,7 +73,7 @@ npm link             # Makes `astrolabe` available globally
 **Running tests:**
 
 ```bash
-npm test             # 472 pass, 12 skipped (WASM/grammar)
+npm test             # 676 pass, 19 skipped (WASM/grammar)
 ```
 
 ### VS Code Extension
@@ -122,6 +122,9 @@ Alternatively, open `packages/vscode` in VS Code and press F5 (Extension Develop
 | `astrolabe status` | Show analysis status |
 | `astrolabe remove <target>` | Unregister a repo (`--purge`, `--force`) |
 | `astrolabe clean` | Remove analysis artifacts |
+| `astrolabe watch <repo-path>` | Watch for file changes and incrementally re-index |
+| `astrolabe index [path]` | Register existing .astrolabe/ folder without re-analysis |
+| `astrolabe migrate <source-path>` | Import GitNexus/LadybugDB analysis into Astrolabe |
 | `astrolabe setup` | Auto-detect editors and configure MCP (`--force`) |
 
 ### Cross-Repo Groups
@@ -134,6 +137,28 @@ Alternatively, open `packages/vscode` in VS Code and press F5 (Extension Develop
 | `astrolabe group remove-repo <group> <path>` | Remove repo from group |
 | `astrolabe group list` | List all groups |
 | `astrolabe group status <name>` | Show group staleness |
+| `astrolabe group contracts <name>` | Inspect extracted cross-repo contracts (`--type`, `--unmatched`) |
+| `astrolabe group query <name> <query>` | Search across all repos in a group |
+| `astrolabe group sync <name>` | Extract and cross-link HTTP contracts across group repos |
+
+### Architecture & Quality
+
+| Command | Description |
+|---------|-------------|
+| `astrolabe analyze-architecture [repo]` | Graphlet-based architectural pattern detection |
+| `astrolabe detect-smells [repo]` | Detect architecture smells (cycles, god modules, unstable deps) |
+| `astrolabe detect-clones [repo]` | Detect structurally similar functions via graph kernels |
+| `astrolabe spectral [repo]` | Spectral graph analysis — density, entropy, flow hierarchy |
+| `astrolabe resilience [repo]` | SPoF detection and critical edge analysis |
+| `astrolabe test-coverage [repo]` | Test coverage analysis via graph structure |
+| `astrolabe gnn-export [repo]` | Export GNN-ready feature vectors (`--format csv|json`) |
+
+### Security & Operations
+
+| Command | Description |
+|---------|-------------|
+| `astrolabe scan-secrets [repo]` | Scan for secrets and security-sensitive patterns |
+| `astrolabe ingest-coverage <report>` | Import LCOV/Istanbul/Cobertura coverage data |
 
 ### Documentation & Utilities
 
@@ -206,7 +231,7 @@ Or point to your local build:
 }
 ```
 
-### Tools (22)
+### Tools (29)
 
 **Core Analysis**
 
@@ -236,6 +261,8 @@ Or point to your local build:
 | `tool_map` | Map tools → callers |
 | `api_impact` | Pre-change route/tool impact analysis |
 | `shape_check` | Detect API response shape mismatches |
+| `analyze_architecture` | Graphlet-based structural pattern detection |
+| `generate_diagram` | Mermaid architecture diagram generation |
 
 **Cross-Repo Groups**
 
@@ -247,6 +274,17 @@ Or point to your local build:
 | `group_sync` | Extract cross-repo HTTP contracts |
 | `group_contracts` | Inspect extracted contracts |
 | `group_impact` | Cross-repo impact via contract tracing |
+
+**Security & Coverage**
+
+| Tool | Description |
+|------|-------------|
+| `security_audit` | Security vulnerability scan across indexed code |
+| `coverage_report` | Generate coverage summary from imported data |
+| `coverage_gaps` | Identify untested code paths |
+| `test_coverage` | Test coverage analysis via graph structure |
+| `gnn_export` | Export GNN-ready feature vectors (`--format csv\|json`) |
+| `graph_evolution` | Track graph changes over time |
 
 **AI**
 
@@ -304,7 +342,7 @@ astrolabe setup          # Auto-detect editors and write MCP configs
 astrolabe setup --force  # Overwrite existing configs
 ```
 
-Supports Cursor, Windsurf, Claude Code, and more.
+Supports Cursor, Windsurf, Claude Code, OpenCode, VS Code, Codex, and more.
 
 ## Skill Generation
 
@@ -316,7 +354,7 @@ astrolabe generate-skill --output astrolabe-skill.md
 
 ## Supported Languages
 
-TypeScript, JavaScript, TSX, Python, Java, Go, Rust, C#, PHP, Ruby, Swift, C, C++, Dart, Kotlin
+TypeScript, JavaScript, TSX, Python, Java, Go, Rust, C#, PHP, Ruby, Swift, C, C++, Kotlin, Protobuf
 
 ## Contributing
 
@@ -338,7 +376,7 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 1. **Find or create an issue** — bugs get `bug`, features get `enhancement`
 2. **Branch** from `staging`: `git checkout -b fix/issue-123-description origin/staging`
 3. **Implement** the fix with real code changes
-4. **Run tests**: `npm test` (472 passing required, 12 skipped OK)
+4. **Run tests**: `npm test` (676 passing required, 19 skipped OK)
 5. **Commit**: `fix: resolve auth crash (#42)` — one logical change per commit
 6. **Push and open PR** to `staging`
 7. **Merge** after checks pass and approval
@@ -354,10 +392,13 @@ feature/fix-xxx ──PR──▶ staging (auto RC) ──PR──▶ main (stab
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yml` | Push/PR to `main` or `staging` | Unit + integration tests |
-| `docker.yml` | PR to `main` or `staging` | Docker build validation |
-| `rc.yml` | Push to `staging` | Auto RC version bump → Docker image → pre-release |
-| `release.yml` | Push to `main` | Integration tests → stable Docker image → GitHub release |
+| `ci.yml` | Push/PR to `main` or `staging` | Unit tests (ubuntu + windows), integration tests, coverage report |
+| `docker.yml` | PR to `main` or `staging` | Docker build validation (no push) |
+| `rc.yml` | Push to `staging` (or manual dispatch) | Auto RC version bump → Docker image → pre-release |
+| `release.yml` | Push to `main` (or manual dispatch) | Integration tests → stable Docker image → GitHub release + npm publish |
+| `codeql.yml` | Push/PR to `main`, `staging` + weekly cron | CodeQL security analysis |
+| `prepare-release.yml` | PR to `main` (staging → main) | CHANGELOG generation + version bump |
+| `rollback.yml` | Manual dispatch | Rollback deployment to previous version |
 
 ### Getting Help
 
