@@ -446,9 +446,10 @@ async function handleGrep(res: ServerResponse, repoName: string, pattern: string
   }
 }
 
-// ── Job Manager (singleton) ────────────────────────────────────────────────
-
-const jobManager = new JobManager();
+// ── Job Manager (lazy singleton) ────────────────────────────────────────────
+// Initialized inside startHttpServer() to avoid keeping the event loop alive
+// when the HTTP server is not running (e.g., CLI commands that import this module).
+let jobManager: JobManager;
 
 // ── Analyze Handlers ──────────────────────────────────────────────────────
 
@@ -680,6 +681,10 @@ async function handleChat(res: ServerResponse, params: Record<string, unknown>) 
 }
 
 export function startHttpServer(opts: ServeOptions = {}): Server {
+  // Lazy-init JobManager only when the HTTP server starts,
+  // not at module import time (avoids keeping event loop alive for CLI commands).
+  jobManager = new JobManager();
+
   const port = opts.port ?? 4747;
   const host = opts.host ?? 'localhost';
 
