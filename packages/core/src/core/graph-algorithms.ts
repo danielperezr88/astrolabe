@@ -505,6 +505,10 @@ export function detectClones(
         const setA = neighborHashSets.get(a)!;
         const setB = neighborHashSets.get(b)!;
 
+        // Skip pairs where both nodes have empty neighbor sets —
+        // they're trivially similar (isolated leaf functions), not actual clones
+        if (setA.size === 0 && setB.size === 0) continue;
+
         // Jaccard similarity on neighbor WL hashes (structural equivalence)
         let intersection = 0;
         for (const item of setA) {
