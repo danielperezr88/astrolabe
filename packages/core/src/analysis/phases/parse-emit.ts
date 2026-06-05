@@ -144,11 +144,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
         if (workerResult.callSites && workerResult.callSites.length > 0) {
           callSitesMap.set(relPath, workerResult.callSites as ParsedCallSite[]);
         }
-      inferParentClasses(graph, relPath);
-      // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
-      inferHasPropertyEdges(graph, relPath);
-     }
-   }
+        inferParentClasses(graph, relPath);
+        // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
+        inferHasPropertyEdges(graph, relPath);
+      }
+    }
 
     // Sequential fallback: process in chunks to keep memory under control
     for (let i = 0; i < parsable.length; i += CHUNK_SIZE) {

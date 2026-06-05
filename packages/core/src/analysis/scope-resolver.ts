@@ -761,63 +761,61 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
           : undefined;
         const fileIntervals = buildFileIntervals(graph, incAffected);
 
+        // #860: Build name → bindings index for O(1) callee lookup
+        const bindingsByName = new Map<string, TypeBinding[]>();
+        for (const [, binding] of index.typeBindings) {
+          let arr = bindingsByName.get(binding.symbolName);
+          if (!arr) { arr = []; bindingsByName.set(binding.symbolName, arr); }
+          arr.push(binding);
+        }
+
         for (const [filePath, callSites] of callSitesMap) {
+          // In incremental mode, skip unchanged files
+          if (incAffected && !incAffected.has(filePath)) continue;
+
           for (const cs of callSites) {
             // Find the enclosing function/method (caller)
             const caller = findEnclosingSymbol(fileIntervals, filePath, cs.startLine);
             if (!caller) continue;
 
-            // Resolve callee by name
+            // Resolve callee: same-file → import-resolved → global fallback
             let targetBinding: TypeBinding | undefined;
+            let confidence: number;
 
-            if (cs.form === 'member' && cs.receiver) {
-              // Member call: try receiver.method pattern first
-              targetBinding = index.typeBindings.get(`${filePath}:${cs.name}`);
-              if (!targetBinding) {
-                // Try all files — find a Method with matching name inside a Class
-                for (const [, binding] of index.typeBindings) {
-                  if (binding.symbolName === cs.name && (binding.kind === 'Method' || binding.kind === 'Function')) {
-                    targetBinding = binding;
-                    break;
+            // Tier 1: Same-file lookup (highest confidence)
+            const sameFileKey = `${filePath}:${cs.name}`;
+            targetBinding = index.typeBindings.get(sameFileKey);
+            if (targetBinding) {
+              confidence = 0.9;
+            } else {
+              // Tier 2: Import-resolved lookup
+              const scope = index.moduleScopes.get(filePath);
+              if (scope) {
+                for (const imp of scope.imports) {
+                  if (imp.alias === cs.name) {
+                    const resolved = resolver.resolveImportTarget(imp.target, filePath, index);
+                    if (resolved.symbols.length > 0) {
+                      for (const sym of resolved.symbols) {
+                        const candidates = bindingsByName.get(sym);
+                        if (candidates && candidates.length > 0) {
+                          targetBinding = candidates[0];
+                          break;
+                        }
+                      }
+                    }
+                    if (targetBinding) break;
                   }
                 }
               }
-            } else {
-              // Free/constructor call: direct lookup in typeBindings
-              targetBinding = index.typeBindings.get(`${filePath}:${cs.name}`);
-              if (!targetBinding) {
-                // Try imported symbols in this file's module scope
-                const scope = index.moduleScopes.get(filePath);
-                if (scope) {
-                  for (const imp of scope.imports) {
-                    if (imp.alias === cs.name) {
-                      // Found an import with matching alias — resolve it
-                      const resolved = resolver.resolveImportTarget(imp.target, filePath, index);
-                      if (resolved.symbols.length > 0) {
-                        for (const sym of resolved.symbols) {
-                          // Try to find the binding in the imported-from file
-                          for (const [, binding] of index.typeBindings) {
-                            if (binding.symbolName === sym) {
-                              targetBinding = binding;
-                              break;
-                            }
-                          }
-                          if (targetBinding) break;
-                        }
-                      }
-                      if (targetBinding) break;
-                    }
-                  }
+              if (targetBinding) {
+                confidence = 0.8;
+              } else {
+                // Tier 3: Global name fallback (lowest confidence)
+                const candidates = bindingsByName.get(cs.name);
+                if (candidates && candidates.length > 0) {
+                  targetBinding = candidates[0];
                 }
-                // Final fallback: try all files for a matching symbol name
-                if (!targetBinding) {
-                  for (const [, binding] of index.typeBindings) {
-                    if (binding.symbolName === cs.name) {
-                      targetBinding = binding;
-                      break;
-                    }
-                  }
-                }
+                confidence = 0.4;
               }
             }
 
@@ -826,7 +824,7 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
                 sourceId: caller.nodeId,
                 targetId: targetBinding.nodeId,
                 type: 'CALLS',
-                confidence: cs.form === 'member' ? 0.8 : 0.7,
+                confidence,
                 reason: `${cs.form} call: ${cs.name}`,
               });
             }
