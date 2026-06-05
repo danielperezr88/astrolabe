@@ -23,6 +23,7 @@ import type {
   ParsedSymbol,
   ParsedImport,
   ParsedRelationship,
+  ParsedCallSite,
 } from './language-definition.js';
 import { symbolId } from './language-definition.js';
 import { languageForExtension, languageForFile } from './languages/index.js';
@@ -474,6 +475,84 @@ function extractImports(
   }
 
   return Array.from(grouped.values());
+}
+
+// ── Call-site extraction (#860) ─────────────────────────────────────────────
+
+/**
+ * Extract call-site information from query matches.
+ * For each match, determines the call form (free/member/constructor) and
+ * extracts callee name, receiver, and argument count.
+ */
+function extractCallSites(
+  matches: QueryMatch[],
+  patterns: LanguageDefinition['callPatterns'],
+  filePath: string,
+): ParsedCallSite[] {
+  const callSites: ParsedCallSite[] = [];
+
+  for (let pi = 0; pi < matches.length; pi++) {
+    const match = matches[pi];
+    const patternIndex = (match as any)._patternIndex ?? match.patternIndex;
+    const pattern = patterns![patternIndex] ?? patterns![pi];
+
+    // Find the name capture — this is the callee name
+    const nameCapture = pattern.nameCapture;
+    const nameNode = match.captures.find((c) => c.name === nameCapture);
+    if (!nameNode) continue;
+    const name = nameNode.node.text;
+    if (!name) continue;
+
+    // Find the outer capture for line number and AST structure
+    const outerCapture = pattern.outerCapture;
+    const outerNode = match.captures.find((c) => c.name === outerCapture);
+    if (!outerNode) continue;
+
+    const startLine = outerNode.node.startPosition.row + 1;
+    const outerNodeObj = outerNode.node;
+
+    // Determine call form by inspecting AST shape
+    let form: 'free' | 'member' | 'constructor' = 'free';
+    let receiver: string | undefined;
+    let argCount = 0;
+
+    // Constructor: new_expression
+    if (outerNodeObj.type === 'new_expression') {
+      form = 'constructor';
+    }
+    // Check if the callee's parent is a member_expression — member call
+    else if (nameNode.node.parent?.type === 'member_expression') {
+      form = 'member';
+      // Extract receiver: the object part of the member expression
+      const memberExpr = nameNode.node.parent;
+      const objectNode = memberExpr.childForFieldName
+        ? memberExpr.childForFieldName('object')
+        : null;
+      if (objectNode) {
+        receiver = objectNode.text;
+      }
+    }
+
+    // Count arguments: look for 'arguments' or 'argument_list' child
+    for (let i = 0; i < outerNodeObj.childCount; i++) {
+      const child = outerNodeObj.child(i);
+      if (child && (child.type === 'arguments' || child.type === 'argument_list')) {
+        argCount = child.namedChildCount;
+        break;
+      }
+    }
+
+    callSites.push({
+      name,
+      form,
+      receiver,
+      argCount,
+      filePath,
+      startLine,
+    });
+  }
+
+  return callSites;
 }
 
 // ── Symbol metadata extraction (#432) ────────────────────────────────────────
@@ -933,7 +1012,7 @@ function extractFromTree(
   root: any,
   langDef: LanguageDefinition,
   normalisedPath: string,
-): { symbols: ParsedSymbol[]; imports: ParsedImport[]; relationships: ParsedRelationship[] } {
+): { symbols: ParsedSymbol[]; imports: ParsedImport[]; relationships: ParsedRelationship[]; callSites?: ParsedCallSite[] } {
   // Symbol extraction
   const allSymbolMatches: QueryMatch[] = [];
   for (let pi = 0; pi < langDef.symbolPatterns.length; pi++) {
@@ -966,7 +1045,25 @@ function extractFromTree(
     relationships.push(...decoratorRelationships);
   }
 
-  return { symbols, imports, relationships };
+  // #860: Call-site extraction
+  let callSites: ParsedCallSite[] | undefined;
+  if (langDef.callPatterns && langDef.callPatterns.length > 0) {
+    const allCallMatches: QueryMatch[] = [];
+    for (let pi = 0; pi < langDef.callPatterns.length; pi++) {
+      const pattern = langDef.callPatterns[pi];
+      const query = getQuery(language, pattern.query, langDef.wasmFile);
+      const matches = query.matches(root);
+      for (const m of matches) {
+        (m as any)._patternIndex = pi;
+        allCallMatches.push(m);
+      }
+    }
+    if (allCallMatches.length > 0) {
+      callSites = extractCallSites(allCallMatches, langDef.callPatterns, normalisedPath);
+    }
+  }
+
+  return { symbols, imports, relationships, callSites };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -1084,7 +1181,7 @@ export async function parseFile(
   const root = tree.rootNode;
 
   // ── Extract symbols, imports, and relationships (#169) ──────────────────
-  const { symbols, imports, relationships } = extractFromTree(language, root, langDef, normalisedPath);
+  const { symbols, imports, relationships, callSites } = extractFromTree(language, root, langDef, normalisedPath);
 
   // Cache the tree for reuse by downstream pipeline phases.
   // The pipeline clears the tree cache after all phases complete,
@@ -1099,6 +1196,7 @@ export async function parseFile(
     symbols,
     imports,
     relationships,
+    callSites,
   };
 
   // Cache
@@ -1186,12 +1284,12 @@ export async function parseString(
   const root = tree.rootNode;
 
   // ── Extract symbols, imports, and relationships (#169) ──────────────────
-  const { symbols, imports, relationships } = extractFromTree(language, root, langDef, normalisedPath);
+  const { symbols, imports, relationships, callSites } = extractFromTree(language, root, langDef, normalisedPath);
 
   // Clean up tree — parser is cached and reused (#168)
   tree.delete();
 
-  return { filePath: normalisedPath, language: langDef.name, symbols, imports, relationships };
+  return { filePath: normalisedPath, language: langDef.name, symbols, imports, relationships, callSites };
 }
 
 // ── Re-exports for convenience ─────────────────────────────────────────────

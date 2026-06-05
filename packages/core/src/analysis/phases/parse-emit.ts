@@ -16,7 +16,7 @@ import type { PhaseDefinition, PhaseContext } from '../../core/pipeline.js';
 import { getPhaseOutput, AST_TREE_CACHE_KEY } from '../../core/pipeline.js';
 import type { AstCache } from '../ast-cache.js';
 import type { ScanOutput, FileEntry } from '../phases/scan.js';
-import type { ParsedSymbol, ParsedImport, ParsedRelationship } from '../language-definition.js';
+import type { ParsedSymbol, ParsedImport, ParsedRelationship, ParsedCallSite } from '../language-definition.js';
 import { parseFile, defaultWasmDir } from '../parser.js';
 import type { GraphNode, GraphRelationship } from '../../core/types.js';
 import { parseFilesParallel, type WorkerParseResult } from '../workers/pool.js';
@@ -90,6 +90,8 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
     let fileCount = 0;
     let errorCount = 0;
     const symbolCounts: Record<string, number> = {};
+    // #860: Collect call sites for scope-resolution phase
+    const callSitesMap = new Map<string, ParsedCallSite[]>();
 
     let parsable = scanOutput.files.filter(isParsable);
     if (changedPaths) {
@@ -112,6 +114,7 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
             symbols: r.symbols,
             imports: r.imports,
             relationships: r.relationships,
+            callSites: r.callSites,
             error: r.error,
           } as WorkerParseResult;
         },
@@ -137,11 +140,15 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
         for (const rel of workerResult.relationships) {
           emitRelationship(graph, rel as ParsedRelationship, relPath);
         }
-      inferParentClasses(graph, relPath);
-      // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
-      inferHasPropertyEdges(graph, relPath);
+        // #860: Collect call sites for scope-resolution phase
+        if (workerResult.callSites && workerResult.callSites.length > 0) {
+          callSitesMap.set(relPath, workerResult.callSites as ParsedCallSite[]);
+        }
+        inferParentClasses(graph, relPath);
+        // #750: Create HAS_PROPERTY edges from Class → Property nodes in this file
+        inferHasPropertyEdges(graph, relPath);
+      }
     }
-  }
 
     // Sequential fallback: process in chunks to keep memory under control
     for (let i = 0; i < parsable.length; i += CHUNK_SIZE) {
@@ -175,6 +182,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
           emitRelationship(graph, rel, relPath);
         }
 
+        // #860: Collect call sites for scope-resolution phase
+        if (result.callSites && result.callSites.length > 0) {
+          callSitesMap.set(relPath, result.callSites);
+        }
+
         // ── Infer parentClass for Methods/Constructors (#155) ─────────────
         // Language providers don't always set parentClass. Walk the file's
         // symbols to assign each Method/Constructor to its nearest Class.
@@ -192,6 +204,11 @@ export const parseEmitPhase: PhaseDefinition<ParseEmitOutput> = {
       context.onProgress('parse-emit', 100,
         `Parsed ${fileCount} files, ${treeCache.size} trees cached`,
       );
+    }
+
+    // #860: Store call sites in context for scope-resolution phase
+    if (callSitesMap.size > 0) {
+      context.state.set('callSites', callSitesMap);
     }
 
     return { symbolCount, importCount, fileCount, errorCount, symbolCounts };
