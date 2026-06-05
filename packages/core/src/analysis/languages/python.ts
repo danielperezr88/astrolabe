@@ -97,6 +97,25 @@ const importPatterns: QueryPattern[] = [
   },
 ];
 
+// ── Call-site patterns (#860) ────────────────────────────────────────────────
+
+const callPatterns: QueryPattern[] = [
+  // foo() — free function call
+  {
+    query: '(call function: (identifier) @call_name) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // obj.method() — attribute call
+  {
+    query: '(call function: (attribute attribute: (identifier) @call_name) arguments: (argument_list) @call_args) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+];
+
 // ── Language definition ────────────────────────────────────────────────────
 
 export const pythonLanguage: LanguageDefinition = {
@@ -112,6 +131,10 @@ export const pythonLanguage: LanguageDefinition = {
 
   get importPatterns(): QueryPattern[] {
     return importPatterns;
+  },
+
+  get callPatterns(): QueryPattern[] {
+    return callPatterns;
   },
 
   async load(wasmDir: string): Promise<WtsLanguage> {

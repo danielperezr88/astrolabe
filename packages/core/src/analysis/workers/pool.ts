@@ -31,6 +31,11 @@ export interface WorkerParseResult {
   relationships: Array<{
     sourceName: string; sourceStartLine: number; targetName: string; type: string;
   }>;
+  /** #860: Call sites extracted for CALLS edge emission. */
+  callSites?: Array<{
+    name: string; form: string; receiver?: string;
+    argCount: number; filePath: string; startLine: number;
+  }>;
   error?: string;
 }
 

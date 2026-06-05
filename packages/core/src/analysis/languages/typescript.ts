@@ -187,6 +187,32 @@ const decoratorPatterns: QueryPattern[] = [
   { query: '(decorator (member_expression object: (identifier) @ns property: (property_identifier) @name)) @decorator', captureLabels: {}, nameCapture: 'name', outerCapture: 'decorator' },
 ];
 
+// ── Call-site patterns (#860) ────────────────────────────────────────────────
+
+const callPatterns: QueryPattern[] = [
+  // foo() — free function call
+  {
+    query: '(call_expression function: (identifier) @call_name arguments: (arguments) @call_args) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // obj.method() — member call
+  {
+    query: '(call_expression function: (member_expression property: (property_identifier) @call_name) arguments: (arguments) @call_args) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // new Foo() — constructor call
+  {
+    query: '(new_expression constructor: (identifier) @call_name) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+];
+
 // ── Language definition ────────────────────────────────────────────────────
 
 export const typescriptLanguage: LanguageDefinition = {
@@ -206,6 +232,10 @@ export const typescriptLanguage: LanguageDefinition = {
 
   get decoratorPatterns(): QueryPattern[] {
     return decoratorPatterns;
+  },
+
+  get callPatterns(): QueryPattern[] {
+    return callPatterns;
   },
 
   importSemantics: 'named',
@@ -243,6 +273,10 @@ export const tsxLanguage: LanguageDefinition = {
 
   get decoratorPatterns(): QueryPattern[] {
     return decoratorPatterns;
+  },
+
+  get callPatterns(): QueryPattern[] {
+    return callPatterns;
   },
 
   importSemantics: 'named',

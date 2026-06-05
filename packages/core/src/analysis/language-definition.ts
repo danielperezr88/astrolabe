@@ -130,6 +130,8 @@ export interface LanguageDefinition {
   readonly importPatterns: QueryPattern[];
   /** #281: Query patterns for extracting decorator/annotation usage. */
   readonly decoratorPatterns?: QueryPattern[];
+  /** #860: Call-site extraction patterns for CALLS edge emission. */
+  readonly callPatterns?: QueryPattern[];
   /** #279: Import resolution strategy for cross-file symbol lookup. */
   readonly importSemantics: ImportSemantics;
   /** #278: MRO strategy for method resolution inheritance chains. */
@@ -182,6 +184,22 @@ export interface ParsedImport {
   startLine: number;
 }
 
+/** A call site extracted from source code (#860). */
+export interface ParsedCallSite {
+  /** Name of the called function/method (e.g. 'analyze', 'startWatch'). */
+  name: string;
+  /** Call form: free (foo()), member (obj.method()), constructor (new Foo()). */
+  form: 'free' | 'member' | 'constructor';
+  /** Receiver name for member calls (e.g. 'obj' in obj.method()). */
+  receiver?: string;
+  /** Number of arguments. */
+  argCount: number;
+  /** File containing the call. */
+  filePath: string;
+  /** 1-based line number of the call. */
+  startLine: number;
+}
+
 /** A relationship extracted from a tree-sitter match (e.g. EXTENDS, IMPLEMENTS). */
 export interface ParsedRelationship {
   /** Source file path. */
@@ -207,6 +225,8 @@ export interface FileParseResult {
   imports: ParsedImport[];
   /** Relationships extracted from tree-sitter captures (EXTENDS, IMPLEMENTS, etc.). */
   relationships: ParsedRelationship[];
+  /** #860: Call sites extracted from source for CALLS edge emission. */
+  callSites?: ParsedCallSite[];
   /** Top-level error message if parsing failed entirely. */
   error?: string;
 }

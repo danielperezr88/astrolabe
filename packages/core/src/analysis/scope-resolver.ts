@@ -22,6 +22,7 @@ import type { KnowledgeGraph, GraphNode } from '../core/types.js';
 import type { PhaseDefinition, PhaseContext } from '../core/pipeline.js';
 import type { SupportedLanguage } from '@astrolabe-dev/shared';
 import { loadTsconfigAliases, resolveAliasImport, type TsconfigPaths } from './tsconfig-utils.js';
+import type { ParsedCallSite } from './language-definition.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -603,6 +604,83 @@ function buildScopeIndex(graph: KnowledgeGraph, incremental?: { changedPaths: Se
   return index;
 }
 
+// ── Call-site helpers (#860) ─────────────────────────────────────────────────
+
+/** Interval entry for binary search of enclosing function/method symbols. */
+interface SymbolInterval {
+  nodeId: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * Build per-file sorted interval arrays of Function/Method/Constructor nodes
+ * for fast enclosing-symbol lookup.
+ */
+function buildFileIntervals(
+  graph: KnowledgeGraph,
+  affectedPaths?: Set<string>,
+): Map<string, SymbolInterval[]> {
+  const intervals = new Map<string, SymbolInterval[]>();
+
+  for (const node of graph.iterNodes()) {
+    const label = node.label;
+    if (label !== 'Function' && label !== 'Method' && label !== 'Constructor') continue;
+    const fp = node.properties.filePath as string;
+    if (!fp) continue;
+    // In incremental mode, only index affected files
+    if (affectedPaths && !affectedPaths.has(fp)) continue;
+
+    let arr = intervals.get(fp);
+    if (!arr) { arr = []; intervals.set(fp, arr); }
+    arr.push({
+      nodeId: node.id,
+      startLine: (node.properties.startLine as number) ?? 0,
+      endLine: (node.properties.endLine as number) ?? Infinity,
+    });
+  }
+
+  // Sort each file's intervals by startLine
+  for (const arr of intervals.values()) {
+    arr.sort((a, b) => a.startLine - b.startLine);
+  }
+
+  return intervals;
+}
+
+/**
+ * Find the innermost Function/Method/Constructor that contains the given line.
+ * Uses binary search on sorted intervals.
+ */
+function findEnclosingSymbol(
+  fileIntervals: Map<string, SymbolInterval[]>,
+  filePath: string,
+  line: number,
+): SymbolInterval | undefined {
+  const intervals = fileIntervals.get(filePath);
+  if (!intervals || intervals.length === 0) return undefined;
+
+  // Find the last interval whose startLine <= line, then check containment
+  let lo = 0;
+  let hi = intervals.length - 1;
+  let best: SymbolInterval | undefined;
+
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const iv = intervals[mid];
+    if (iv.startLine <= line) {
+      if (line <= iv.endLine) {
+        best = iv;
+      }
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return best;
+}
+
 // ── Phase definition ───────────────────────────────────────────────────────
 
 export interface ScopeResolutionOutput {
@@ -674,7 +752,87 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
         }
       }
 
-      // 4. Emit edges
+      // 4. #860: Resolve call sites → CALLS edges
+      const callSitesMap = context.state.get('callSites') as Map<string, ParsedCallSite[]> | undefined;
+      if (callSitesMap && callSitesMap.size > 0) {
+        // Build per-file interval tree for caller identification
+        const incAffected = incremental?.isIncremental
+          ? new Set([...incremental.changedPaths, ...incremental.addedPaths])
+          : undefined;
+        const fileIntervals = buildFileIntervals(graph, incAffected);
+
+        // #860: Build name → bindings index for O(1) callee lookup
+        const bindingsByName = new Map<string, TypeBinding[]>();
+        for (const [, binding] of index.typeBindings) {
+          let arr = bindingsByName.get(binding.symbolName);
+          if (!arr) { arr = []; bindingsByName.set(binding.symbolName, arr); }
+          arr.push(binding);
+        }
+
+        for (const [filePath, callSites] of callSitesMap) {
+          // In incremental mode, skip unchanged files
+          if (incAffected && !incAffected.has(filePath)) continue;
+
+          for (const cs of callSites) {
+            // Find the enclosing function/method (caller)
+            const caller = findEnclosingSymbol(fileIntervals, filePath, cs.startLine);
+            if (!caller) continue;
+
+            // Resolve callee: same-file → import-resolved → global fallback
+            let targetBinding: TypeBinding | undefined;
+            let confidence: number;
+
+            // Tier 1: Same-file lookup (highest confidence)
+            const sameFileKey = `${filePath}:${cs.name}`;
+            targetBinding = index.typeBindings.get(sameFileKey);
+            if (targetBinding) {
+              confidence = 0.9;
+            } else {
+              // Tier 2: Import-resolved lookup
+              const scope = index.moduleScopes.get(filePath);
+              if (scope) {
+                for (const imp of scope.imports) {
+                  if (imp.alias === cs.name) {
+                    const resolved = resolver.resolveImportTarget(imp.target, filePath, index);
+                    if (resolved.symbols.length > 0) {
+                      for (const sym of resolved.symbols) {
+                        const candidates = bindingsByName.get(sym);
+                        if (candidates && candidates.length > 0) {
+                          targetBinding = candidates[0];
+                          break;
+                        }
+                      }
+                    }
+                    if (targetBinding) break;
+                  }
+                }
+              }
+              if (targetBinding) {
+                confidence = 0.8;
+              } else {
+                // Tier 3: Global name fallback (lowest confidence)
+                const candidates = bindingsByName.get(cs.name);
+                if (candidates && candidates.length > 0) {
+                  targetBinding = candidates[0];
+                }
+                confidence = 0.4;
+              }
+            }
+
+            if (targetBinding) {
+              resolvedEdges.push({
+                sourceId: caller.nodeId,
+                targetId: targetBinding.nodeId,
+                type: 'CALLS',
+                confidence,
+                reason: `${cs.form} call: ${cs.name}`,
+              });
+            }
+          }
+        }
+      }
+
+      // 5. Emit edges
       edgeCount += resolver.emitEdges(resolvedEdges, graph);
     }
 

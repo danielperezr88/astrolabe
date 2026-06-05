@@ -21,8 +21,35 @@ const importPatterns: QueryPattern[] = [
   { query: '(using_directive name: (identifier_or_type_name) @name @source) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
+// ── Call-site patterns (#860) ────────────────────────────────────────────────
+
+const callPatterns: QueryPattern[] = [
+  // Method() — invocation
+  {
+    query: '(invocation_expression method: (identifier) @call_name) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // obj.Method() — member invocation
+  {
+    query: '(invocation_expression method: (member_access_expression name: (identifier) @call_name)) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // new Foo() — object creation
+  {
+    query: '(object_creation_expression (identifier) @call_name) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+] as QueryPattern[];
+
 export const csharpLanguage: LanguageDefinition = {
   name: 'csharp', extensions: ['.cs'], wasmFile: 'tree-sitter-c-sharp.wasm',   importSemantics: 'named', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; }, get importPatterns() { return importPatterns; },
+  get callPatterns() { return callPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> { return WtsLanguage.load(resolve(wasmDir, this.wasmFile)); },
 };
