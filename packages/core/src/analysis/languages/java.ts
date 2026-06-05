@@ -29,6 +29,25 @@ const importPatterns: QueryPattern[] = [
   { query: '(import_declaration (scoped_identifier) @name @source (asterisk)) @import', captureLabels: { 'import': 'Import' }, nameCapture: 'name', outerCapture: 'import', isImport: true },
 ] as QueryPattern[];
 
+// ── Call-site patterns (#860) ────────────────────────────────────────────────
+
+const callPatterns: QueryPattern[] = [
+  // method() — method invocation
+  {
+    query: '(method_invocation name: (identifier) @call_name arguments: (argument_list) @call_args) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+  // new Foo() — object creation
+  {
+    query: '(object_creation_expression (identifier) @call_name) @call_site',
+    captureLabels: {},
+    nameCapture: 'call_name',
+    outerCapture: 'call_site',
+  },
+] as QueryPattern[];
+
 export const javaLanguage: LanguageDefinition = {
   name: 'java',
   extensions: ['.java'],
@@ -36,6 +55,7 @@ export const javaLanguage: LanguageDefinition = {
   importSemantics: 'named', mroStrategy: 'first-wins',
   get symbolPatterns() { return symbolPatterns; },
   get importPatterns() { return importPatterns; },
+  get callPatterns() { return callPatterns; },
   async load(wasmDir: string): Promise<WtsLanguage> {
     return WtsLanguage.load(resolve(wasmDir, this.wasmFile));
   },
