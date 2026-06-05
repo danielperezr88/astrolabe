@@ -110,6 +110,7 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
   private _pipeline: unknown = null;
   private _modelName: string;
   private _ready = false;
+  private _initLogged = false;
   private _initPromise: Promise<void> | null = null;
 
   constructor(dimensions = DEFAULT_LOCAL_DIMS) {
@@ -145,10 +146,18 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
       });
       this._ready = true;
     } catch (err) {
-      throw new Error(
-        `Failed to load transformers model "${this._modelName}": ${(err as Error).message}. ` +
-        `Install with: npm install @huggingface/transformers`,
-      );
+      // Gracefully degrade — bag-of-words fallback in encodeAsync() handles null pipeline.
+      // This avoids CI failures when HuggingFace is rate-limited (429) or the package
+      // is not installed. Log once so operators know the model isn't loaded.
+      if (!this._initLogged) {
+        console.warn(
+          `[astrolabe] Transformers model "${this._modelName}" unavailable: ${(err as Error).message}. ` +
+          `Falling back to bag-of-words embeddings. Install @huggingface/transformers for better results.`,
+        );
+        this._initLogged = true;
+      }
+      this._pipeline = null;
+      this._ready = true;
     }
   }
 
