@@ -1447,6 +1447,71 @@ DIAGRAM TYPES:
     },
   },
 
+  // #872: Design pattern detection results
+  'astrolabe.patterns': {
+    name: 'astrolabe.patterns',
+    description: `List detected design patterns in the codebase. Shows which GoF patterns (creational, structural, behavioral) and language idioms are present, with confidence scores and file locations. Use to understand architectural decisions and pattern usage.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'Repository name (optional if only one indexed)' },
+        category: { type: 'string', description: 'Filter by category: gof-creational, gof-structural, gof-behavioral, idiom' },
+        min_confidence: { type: 'number', description: 'Minimum confidence threshold 0-1 (default: 0.5)' },
+      },
+    },
+    handler: async (params) => {
+      const ctx = backend.getRepo(params.repo as string | undefined);
+      const graph = ctx.loadGraph();
+
+      const category = params.category as string | undefined;
+      const minConfidence = requireNumber(params, 'min_confidence', 0.5);
+
+      // Find all PatternInstance nodes
+      const patternNodes = graph.findNodesByLabel('PatternInstance');
+      const filtered = patternNodes.filter((n) => {
+        if (category && n.properties.category !== category) return false;
+        if ((n.properties.confidence as number) < minConfidence) return false;
+        return true;
+      });
+
+      // Group by pattern ID
+      const byPattern = new Map<string, Array<{ name: string; filePath: string; startLine: number; endLine: number; confidence: number; captures: Record<string, string> }>>();
+      for (const n of filtered) {
+        const pid = n.properties.patternId as string;
+        if (!byPattern.has(pid)) byPattern.set(pid, []);
+        byPattern.get(pid)!.push({
+          name: n.properties.name as string,
+          filePath: n.properties.filePath as string,
+          startLine: n.properties.startLine as number,
+          endLine: n.properties.endLine as number,
+          confidence: n.properties.confidence as number,
+          captures: n.properties.captures as Record<string, string>,
+        });
+      }
+
+      // Category summary from node properties
+      const categorySummary: Record<string, number> = {};
+      for (const n of filtered) {
+        const cat = n.properties.category as string;
+        categorySummary[cat] = (categorySummary[cat] ?? 0) + 1;
+      }
+
+      const output = {
+        totalPatterns: filtered.length,
+        uniquePatternTypes: byPattern.size,
+        byCategory: categorySummary,
+        patterns: Object.fromEntries(
+          Array.from(byPattern.entries()).map(([pid, instances]) => [
+            pid,
+            { count: instances.length, instances: instances.map((i) => ({ ...i, confidence: Math.round(i.confidence * 100) / 100 })) },
+          ]),
+        ),
+      };
+
+      return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+    },
+  },
+
   // #464: Security audit tool
   'astrolabe.security_audit': {
     name: 'astrolabe.security_audit',
