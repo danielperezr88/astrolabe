@@ -22,7 +22,7 @@ export { PhaseTimer, type PhaseTimerResult } from './core/phase-timer.js';
 export { initParser, parseFile, parseFiles, parseString, resetParser, AstCache, defaultWasmDir, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
 export { symbolId, captureText, captureRange } from './analysis/language-definition.js';
 export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult, PatternDefinition, PatternSignature, PatternCategory, ParsedPatternMatch } from './analysis/language-definition.js';
-export { scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase, resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase, typeChainResolution, mroPhase, communityPhase, processTracingPhase, cobolPhase, vueSfcPhase, accessTrackingPhase, securityScanPhase, meetsSeverity, coveragePhase, callResolutionPhase, scopeResolutionPhase } from './analysis/phases/index.js';
+export { scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase, resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase, typeChainResolution, mroPhase, communityPhase, processTracingPhase, cobolPhase, vueSfcPhase, accessTrackingPhase, securityScanPhase, meetsSeverity, coveragePhase, callResolutionPhase, scopeResolutionPhase, patternDetectionPhase } from './analysis/phases/index.js';
 export type { FileEntry, ScanOutput } from './analysis/phases/scan.js';
 export type { StructureOutput } from './analysis/phases/structure.js';
 export type { ParseEmitOutput } from './analysis/phases/parse-emit.js';
@@ -32,6 +32,7 @@ export type { MroOutput } from './analysis/phases/mro.js';
 export type { CommunityOutput } from './analysis/phases/community.js';
 export type { ProcessTracingOutput } from './analysis/phases/process-tracing.js';
 export type { SecurityScanOutput } from './analysis/phases/security.js';
+export type { PatternDetectionOutput } from './analysis/phases/pattern-detection.js';
 export { checkVulnerabilities, detectManifestFiles, parseManifest } from './analysis/security/vulnerabilities.js';
 export type { Dependency, VulnerabilityInfo, VulnerabilityReport, ManifestFile } from './analysis/security/vulnerabilities.js';
 // #463: Coverage report parser
