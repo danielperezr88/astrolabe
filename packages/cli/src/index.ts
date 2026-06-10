@@ -17,6 +17,7 @@ import {
   securityScanPhase,
   coveragePhase,
   callResolutionPhase, scopeResolutionPhase,
+  patternDetectionPhase,
   initParser, createSqliteStore, createFtsSearch,
   createLogger, createPhaseContext, runPipeline, startMcpServer,
   loadRegistry, saveRegistry, removeRepo, getGitRemote,
@@ -173,6 +174,7 @@ program
           coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
+          patternDetectionPhase,
         ], ctx);
 
         nodeCount = graph.nodeCount;
@@ -193,6 +195,7 @@ program
           coveragePhase,
           cobolPhase,
           callResolutionPhase, scopeResolutionPhase, securityScanPhase,
+          patternDetectionPhase,
         ], context);
         nodeCount = graph.nodeCount;
         edgeCount = graph.relationshipCount;

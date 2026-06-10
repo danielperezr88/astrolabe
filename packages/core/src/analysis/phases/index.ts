@@ -19,6 +19,8 @@ export { securityScanPhase, meetsSeverity, type SecurityScanOutput } from './sec
 export { coveragePhase, type CoverageScanOutput } from './coverage.js';
 export { callResolutionPhase } from '../call-processor.js';
 export { scopeResolutionPhase } from '../scope-resolver.js';
+// #872: Pattern detection phase
+export { patternDetectionPhase, type PatternDetectionOutput } from './pattern-detection.js';
 export type { FileEntry, ScanOutput } from './scan.js';
 export type { StructureOutput } from './structure.js';
 export type { FrameworkOutput } from './framework.js';
