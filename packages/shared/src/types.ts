@@ -68,6 +68,8 @@ export type NodeLabel =
   // Synthetic
   | 'Community'
   | 'Process'
+  // Design patterns
+  | 'PatternInstance'
   // Multi-language extras
   | 'Struct'
   | 'Macro'
@@ -179,7 +181,8 @@ export type RelationshipType =
   | 'RETURNS_TYPE'
   | 'DECLARES_TYPE'
   | 'CHAINABLE_TO'
-  | 'SEMANTICALLY_SIMILAR';
+  | 'SEMANTICALLY_SIMILAR'
+  | 'IMPLEMENTS_PATTERN';
 
 // ── Evidence for edge provenance ───────────────────────────────────────────
 

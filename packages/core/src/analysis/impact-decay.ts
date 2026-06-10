@@ -20,6 +20,7 @@ export const EDGE_DECAY_FACTORS: Record<string, number> = {
   CHAINABLE_TO: 0.7,
   CO_CHANGES: 0.8,
   SEMANTICALLY_SIMILAR: 0.6,
+  IMPLEMENTS_PATTERN: 0.7,
 };
 
 export type DecaySchedule = 'linear' | 'exponential' | 'logarithmic';

@@ -104,6 +104,97 @@ export interface QueryPattern {
   typeAnnotationCaptures?: Record<string, string>;
 }
 
+// ── Design pattern detection types (#872) ─────────────────────────────────
+
+/** Categories of detectable design patterns. */
+export type PatternCategory =
+  | 'gof-creational'
+  | 'gof-structural'
+  | 'gof-behavioral'
+  | 'concurrency'
+  | 'error-handling'
+  | 'resource-management'
+  | 'idiom'
+  | 'architectural';
+
+/**
+ * A single tree-sitter query signature for detecting a design pattern
+ * in a specific language.
+ *
+ * Each signature is a tree-sitter S-expression that, when matched against
+ * a parsed AST, indicates the presence (or partial presence) of a pattern.
+ */
+export interface PatternSignature {
+  /** Tree-sitter S-expression query string. */
+  query: string;
+  /**
+   * Which captures must ALL be present for the match to be valid.
+   * If empty, any match of the query is accepted.
+   */
+  requiredCaptures?: string[];
+  /**
+   * Post-match validation functions applied after the tree-sitter match.
+   * Each key is a capture name; the value is a regex that the captured
+   * text must match (e.g., name convention checks).
+   */
+  postFilters?: Record<string, RegExp>;
+  /**
+   * Patterns that REDUCE confidence when found in the same scope.
+   * Each is a tree-sitter S-expression query.
+   */
+  negativeIndicators?: string[];
+  /** Minimum confidence to report a match from this signature (0–1). */
+  minConfidence?: number;
+}
+
+/**
+ * A complete design pattern definition with per-language AST signatures.
+ *
+ * The dictionary is a static catalog consumed by the pattern-detection
+ * pipeline phase. Each pattern defines its identity, category, and
+ * the tree-sitter queries needed to detect it in each supported language.
+ */
+export interface PatternDefinition {
+  /** Unique identifier (e.g., 'gof-singleton', 'idiom-python-decorator'). */
+  id: string;
+  /** Human-readable pattern name (e.g., 'Singleton'). */
+  name: string;
+  /** Pattern category for grouping and filtering. */
+  category: PatternCategory;
+  /**
+   * Per-language detection signatures.
+   * Key = SupportedLanguage name, Value = array of signatures (any match counts).
+   */
+  languages: Partial<Record<string, PatternSignature[]>>;
+  /** Short description of the pattern's intent. */
+  intent: string;
+  /** Named roles in the pattern (e.g., ['Subject', 'Observer', 'ConcreteObserver']). */
+  participants?: string[];
+  /** IDs of related patterns for cross-referencing. */
+  relatedPatterns?: string[];
+}
+
+/**
+ * A raw pattern match extracted from a single file during tree-sitter parsing.
+ * These are collected during the parse-emit phase and resolved in a later phase.
+ */
+export interface ParsedPatternMatch {
+  /** The PatternDefinition.id that matched. */
+  patternId: string;
+  /** Confidence score (0–1) based on how many required captures matched. */
+  confidence: number;
+  /** File where the match was found. */
+  filePath: string;
+  /** 1-based start line of the matched region. */
+  startLine: number;
+  /** 1-based end line of the matched region. */
+  endLine: number;
+  /** The capture name → captured text pairs. */
+  captures: Record<string, string>;
+  /** The language of the source file. */
+  language: string;
+}
+
 // ── Language definition contract ───────────────────────────────────────────
 
 /**
@@ -132,6 +223,8 @@ export interface LanguageDefinition {
   readonly decoratorPatterns?: QueryPattern[];
   /** #860: Call-site extraction patterns for CALLS edge emission. */
   readonly callPatterns?: QueryPattern[];
+  /** #872: Design pattern detection signatures for this language. */
+  readonly patternDefinitions?: PatternDefinition[];
   /** #279: Import resolution strategy for cross-file symbol lookup. */
   readonly importSemantics: ImportSemantics;
   /** #278: MRO strategy for method resolution inheritance chains. */
@@ -227,6 +320,8 @@ export interface FileParseResult {
   relationships: ParsedRelationship[];
   /** #860: Call sites extracted from source for CALLS edge emission. */
   callSites?: ParsedCallSite[];
+  /** #872: Design pattern matches extracted during parsing. */
+  patternMatches?: ParsedPatternMatch[];
   /** Top-level error message if parsing failed entirely. */
   error?: string;
 }

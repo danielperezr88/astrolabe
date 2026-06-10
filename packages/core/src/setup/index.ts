@@ -163,7 +163,7 @@ const EDITORS: EditorConfig[] = [
       if (!force && existsSync(configPath)) {
         try {
           const existing = JSON.parse(readFileSync(configPath, 'utf-8'));
-          if (existing.mcpServers?.astrolabe) {
+          if (existing.mcp?.astrolabe) {
             return { error: 'Already configured (use --force to overwrite)' };
           }
         } catch (err) { log.debug('Corrupt OpenCode config, will overwrite', { path: configPath, error: String(err) }); }
@@ -171,15 +171,16 @@ const EDITORS: EditorConfig[] = [
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-      let config: any = { mcpServers: {} };
+      let config: any = { mcp: {} };
       if (existsSync(configPath)) {
         try { config = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh OpenCode config', { path: configPath, error: String(err) }); }
       }
 
-      config.mcpServers = config.mcpServers || {};
-      config.mcpServers.astrolabe = {
+      config.mcp = config.mcp || {};
+      config.mcp.astrolabe = {
         command: 'npx',
         args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
+        enabled: true,
       };
 
       atomicWriteJson(configPath, config);
