@@ -21,7 +21,7 @@ export { runPipeline, createPhaseContext, getPhaseOutput, PIPELINE_TIMING_KEY, P
 export { PhaseTimer, type PhaseTimerResult } from './core/phase-timer.js';
 export { initParser, parseFile, parseFiles, parseString, resetParser, AstCache, defaultWasmDir, languageForExtension, languageForFile, getAllExtensions } from './analysis/parser.js';
 export { symbolId, captureText, captureRange } from './analysis/language-definition.js';
-export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult } from './analysis/language-definition.js';
+export type { LanguageDefinition, QueryPattern, ParsedSymbol, ParsedImport, FileParseResult, PatternDefinition, PatternSignature, PatternCategory, ParsedPatternMatch } from './analysis/language-definition.js';
 export { scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase, resolutionPhase, routesPhase, toolsPhase, ormPhase, crossFilePhase, typeChainResolution, mroPhase, communityPhase, processTracingPhase, cobolPhase, vueSfcPhase, accessTrackingPhase, securityScanPhase, meetsSeverity, coveragePhase, callResolutionPhase, scopeResolutionPhase } from './analysis/phases/index.js';
 export type { FileEntry, ScanOutput } from './analysis/phases/scan.js';
 export type { StructureOutput } from './analysis/phases/structure.js';
@@ -99,3 +99,5 @@ export { computeEmbeddings, propagateEmbeddings, typeAwarePropagation, createSem
 export type { PropagationResult, SemanticEdgeResult, ComputeEmbeddingsOptions, EmbeddingProvider, EmbeddingProviderType } from './core/embedding-propagation.js';
 // #807: Temporal graph evolution
 export { computeSnapshotMetrics, detectTrends, type SnapshotData, type TrendResult, type SnapshotDiff, type TrendDirection } from './core/graph-evolution.js';
+// #872: Design pattern dictionary
+export { PATTERN_CATALOG, getPatternsForLanguage, getPatternById } from './analysis/patterns/index.js';
