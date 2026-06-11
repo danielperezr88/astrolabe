@@ -12,6 +12,13 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        maxForks: 3,
+        minForks: 1,
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],
