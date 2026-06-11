@@ -90,7 +90,9 @@ export type NodeLabel =
   | 'Section'
   | 'Route'
   | 'Tool'
-  | 'Framework';
+  | 'Framework'
+  // Hierarchical groupings (#872 Phase 4)
+  | 'HierarchyGroup';
 
 // ── Node properties ────────────────────────────────────────────────────────
 
@@ -182,7 +184,9 @@ export type RelationshipType =
   | 'DECLARES_TYPE'
   | 'CHAINABLE_TO'
   | 'SEMANTICALLY_SIMILAR'
-  | 'IMPLEMENTS_PATTERN';
+  | 'IMPLEMENTS_PATTERN'
+  // Hierarchical groupings (#872 Phase 4)
+  | 'SUBGROUP_OF';
 
 // ── Evidence for edge provenance ───────────────────────────────────────────
 
