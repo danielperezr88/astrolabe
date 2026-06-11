@@ -12,11 +12,12 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    pool: 'forks',
+    pool: 'threads',
     poolOptions: {
-      forks: {
-        maxForks: 3,
-        minForks: 1,
+      threads: {
+        maxThreads: 3,
+        minThreads: 1,
+        isolate: true,
       },
     },
     coverage: {
