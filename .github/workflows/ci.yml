@@ -62,6 +62,8 @@ jobs:
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - run: npm test -- --coverage
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20'
         uses: actions/upload-artifact@v4
@@ -87,6 +89,7 @@ jobs:
       - run: npm test
         env:
           ASTROLABE_INTEGRATION: '1'
+          NODE_OPTIONS: '--max-old-space-size=8192'
 
   coverage-report:
     name: Coverage Report
