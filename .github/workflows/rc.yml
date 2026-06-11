@@ -64,11 +64,11 @@ jobs:
       - run: npm run build --workspace packages/core
       - run: npm test
         env:
-          NODE_OPTIONS: '--max-old-space-size=4096'
+          NODE_OPTIONS: '--max-old-space-size=6144'
       - run: npm test
         env:
           ASTROLABE_INTEGRATION: '1'
-          NODE_OPTIONS: '--max-old-space-size=4096'
+          NODE_OPTIONS: '--max-old-space-size=6144'
 
   # ── Build RC ────────────────────────────────────────────────────────────
   release-candidate:
