@@ -39,3 +39,17 @@ export {
   type TypedArchitectureHealth,
   type LabelHealthBreakdown,
 } from './typed-health.js';
+
+// #872 Phase 4: Hierarchical subgraph groupings
+export {
+  extractCommunityHierarchy,
+  extractNamespaceHierarchy,
+  collapseGroups,
+  findGroupForNode,
+  buildWeightedAdjacency,
+  computeSupernodeMetadata,
+  type HierarchyGroup,
+  type SupernodeMetadata,
+  type MetaEdge,
+  type HierarchyResult,
+} from './hierarchy.js';
