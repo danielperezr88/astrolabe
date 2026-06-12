@@ -12,6 +12,10 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
+    pool: 'forks',
+    testTimeout: 30000,
+    hookTimeout: 30000,
+    teardownTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],
