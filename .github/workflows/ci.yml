@@ -66,8 +66,9 @@ jobs:
         run: |
           echo "=== Starting vitest at $(date) ==="
           cd packages/core
-          timeout 600 npx vitest run --reporter=verbose 2>&1 || { code=$?; echo "=== vitest exited with code $code at $(date) ==="; exit $code; }
-          echo "=== Tests completed at $(date) ==="
+          timeout -s KILL 600 npx vitest run --reporter=verbose 2>&1; code=$?
+          echo "=== vitest exited with code $code at $(date) ==="
+          exit $code
         env:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
@@ -90,8 +91,9 @@ jobs:
         run: |
           echo "=== Starting integration tests at $(date) ==="
           cd packages/core
-          timeout 600 npx vitest run --reporter=verbose 2>&1 || { code=$?; echo "=== vitest exited with code $code at $(date) ==="; exit $code; }
-          echo "=== Integration tests completed at $(date) ==="
+          timeout -s KILL 600 npx vitest run --reporter=verbose 2>&1; code=$?
+          echo "=== vitest exited with code $code at $(date) ==="
+          exit $code
         env:
           ASTROLABE_INTEGRATION: '1'
           NODE_OPTIONS: '--max-old-space-size=8192'
