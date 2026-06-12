@@ -61,9 +61,14 @@ jobs:
       - run: npm install --no-save --package-lock=false --legacy-peer-deps
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
-      - run: npm test -- --coverage
+      - run: npm test
         env:
           NODE_OPTIONS: '--max-old-space-size=6144'
+      - name: Run tests with coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20'
+        run: npm test -- --coverage
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20'
         uses: actions/upload-artifact@v4
