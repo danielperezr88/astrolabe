@@ -12,12 +12,6 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    pool: 'threads',
-    poolOptions: {
-      threads: {
-        singleThread: true,
-      },
-    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],
