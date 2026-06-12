@@ -70,7 +70,11 @@ jobs:
           # due to open handles (servers, SQLite) in test files.
           # Tests complete in ~20s. 180s timeout with SIGKILL handles the hang.
           # Exit code 137 = killed by SIGKILL → tests passed but process hung
-          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1; code=$?
+          # set +e needed because bash -e exits before we can check $?
+          set +e
+          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1
+          code=$?
+          set -e
           echo "=== vitest exited with code $code at $(date) ==="
           if [ $code -eq 137 ]; then
             echo "vitest was SIGKILL'd after tests passed (open handles in test files)"
@@ -103,7 +107,11 @@ jobs:
           # due to open handles (servers, SQLite) in test files.
           # Tests complete in ~20s. 180s timeout with SIGKILL handles the hang.
           # Exit code 137 = killed by SIGKILL → tests passed but process hung
-          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1; code=$?
+          # set +e needed because bash -e exits before we can check $?
+          set +e
+          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1
+          code=$?
+          set -e
           echo "=== vitest exited with code $code at $(date) ==="
           if [ $code -eq 137 ]; then
             echo "vitest was SIGKILL'd after tests passed (open handles in test files)"
