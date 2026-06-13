@@ -63,24 +63,7 @@ jobs:
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - name: Run tests
-        run: |
-          echo "=== Starting vitest at $(date) ==="
-          cd packages/core
-          # vitest 2.x doesn't support --force-exit and hangs after tests pass
-          # due to open handles (servers, SQLite) in test files.
-          # Tests complete in ~20s. 180s timeout with SIGKILL handles the hang.
-          # Exit code 137 = killed by SIGKILL → tests passed but process hung
-          # set +e needed because bash -e exits before we can check $?
-          set +e
-          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1
-          code=$?
-          set -e
-          echo "=== vitest exited with code $code at $(date) ==="
-          if [ $code -eq 137 ]; then
-            echo "vitest was SIGKILL'd after tests passed (open handles in test files)"
-            exit 0
-          fi
-          exit $code
+        run: bash scripts/ci-vitest.sh
         env:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
@@ -100,24 +83,7 @@ jobs:
       - run: npm run build --workspace packages/shared
       - run: npm run build --workspace packages/core
       - name: Run integration tests
-        run: |
-          echo "=== Starting integration tests at $(date) ==="
-          cd packages/core
-          # vitest 2.x doesn't support --force-exit and hangs after tests pass
-          # due to open handles (servers, SQLite) in test files.
-          # Tests complete in ~20s. 180s timeout with SIGKILL handles the hang.
-          # Exit code 137 = killed by SIGKILL → tests passed but process hung
-          # set +e needed because bash -e exits before we can check $?
-          set +e
-          timeout -s KILL 180 npx vitest run --reporter=verbose 2>&1
-          code=$?
-          set -e
-          echo "=== vitest exited with code $code at $(date) ==="
-          if [ $code -eq 137 ]; then
-            echo "vitest was SIGKILL'd after tests passed (open handles in test files)"
-            exit 0
-          fi
-          exit $code
+        run: bash scripts/ci-vitest.sh
         env:
           ASTROLABE_INTEGRATION: '1'
           NODE_OPTIONS: '--max-old-space-size=8192'
