@@ -26,6 +26,7 @@ export const SUPPORTED_LANGUAGES = [
   'kotlin',
   'vue',
   'protobuf',
+  'bigquery',
 ] as const;
 
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
