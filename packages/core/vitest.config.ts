@@ -12,7 +12,21 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
+    // Single worker — better-sqlite3 (synchronous C++ native addon)
+    // deadlocks when multiple fork workers load it simultaneously.
+    // singleFork=true prevents worker pool contention on WAL file locks.
     pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
+    // Prevent vitest from processing the native module
+    server: {
+      deps: {
+        external: ['better-sqlite3'],
+      },
+    },
     testTimeout: 30000,
     hookTimeout: 30000,
     teardownTimeout: 30000,
