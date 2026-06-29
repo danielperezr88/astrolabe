@@ -4,8 +4,10 @@
  * Extracted from server.ts for modularity (#838).
  */
 
-import { execFileSync } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { execFileSync, fork } from 'node:child_process';
+import { statSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { resolve as pathResolve, join as pathJoin, basename } from 'node:path';
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import type { SqliteStore } from '../persist/sqlite.js';
@@ -14,6 +16,7 @@ import type { GraphNode } from '../core/types.js';
 import { loadRegistry, findEntryWithSiblingWarning, type RegistryEntry } from './registry.js';
 import { listGroups } from './groups.js';
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
+import { JobManager, type AnalyzeJob } from '../server/analyze-job.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -157,6 +160,7 @@ export class LocalBackend {
   private repos = new Map<string, RepoContext>();
   private maxConns = 5;
   private lastAccess = new Map<string, number>();
+  private jobManager = new JobManager();
 
   /**
    * Get the sibling clone warning for a given repo path.
@@ -979,7 +983,78 @@ export class LocalBackend {
     return { columns, rows, total_matched: currentIds.size, returned: rows.length };
   }
 
+  // ── #944: In-process analysis via MCP ────────────────────────────────
+
+  startAnalysis(repoPath: string): AnalyzeJob {
+    const repoName = basename(repoPath);
+    const job = this.jobManager.createJob({ repoPath, repoName });
+
+    if (job.status !== 'queued') return job;
+
+    this.jobManager.updateJob(job.id, {
+      status: 'analyzing',
+      progress: { phase: 'analyzing', percent: 0, message: 'Starting analysis...' },
+    });
+
+    const __filename = fileURLToPath(import.meta.url);
+    const cliDistPath = pathResolve(__filename, '..', '..', '..', 'cli', 'dist', 'index.js');
+    const workerPath = existsSync(cliDistPath) ? cliDistPath : process.argv[1] ?? cliDistPath;
+
+    const args = ['analyze', repoPath, '-o', pathJoin(repoPath, '.astrolabe', 'astrolabe.db')];
+    const child = fork(workerPath, args, { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+
+    this.jobManager.registerChild(job.id, child);
+
+    child.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString('utf-8');
+      const phaseMatch = text.match(/(\w+)\s+(phase|complete)/i);
+      if (phaseMatch) {
+        this.jobManager.updateJob(job.id, {
+          progress: { phase: phaseMatch[1].toLowerCase(), percent: 50, message: text.trim().slice(0, 200) },
+        });
+      }
+    });
+
+    child.on('message', (msg: unknown) => {
+      const m = msg as { type?: string; phase?: string; percent?: number; message?: string };
+      if (m && m.type === 'progress' && m.phase !== undefined && m.percent !== undefined) {
+        this.jobManager.updateJob(job.id, {
+          progress: { phase: m.phase, percent: m.percent, message: m.message ?? '' },
+        });
+      }
+    });
+
+    child.on('exit', (code: number | null) => {
+      if (code === 0) {
+        this.jobManager.updateJob(job.id, {
+          status: 'complete',
+          progress: { phase: 'complete', percent: 100, message: 'Analysis complete' },
+        });
+      } else {
+        this.jobManager.updateJob(job.id, {
+          status: 'failed',
+          error: `Analysis exited with code ${code}`,
+        });
+      }
+    });
+
+    child.on('error', (err: Error) => {
+      this.jobManager.updateJob(job.id, { status: 'failed', error: err.message });
+    });
+
+    return job;
+  }
+
+  getJob(jobId: string): AnalyzeJob | undefined {
+    return this.jobManager.getJob(jobId);
+  }
+
+  cancelAnalysis(jobId: string): boolean {
+    return this.jobManager.cancelJob(jobId);
+  }
+
   shutdown(): void {
+    this.jobManager.dispose();
     for (const ctx of this.repos.values()) {
       ctx.store.close();
       ctx.fts.close();

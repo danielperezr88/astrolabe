@@ -172,7 +172,7 @@ describe('MCP Server E2E (#536)', () => {
       expect(toolNames).toContain('astrolabe.query');
       expect(toolNames).toContain('astrolabe.context');
       expect(toolNames).toContain('astrolabe.impact');
-      expect(toolNames.length).toBeGreaterThanOrEqual(7);
+      expect(toolNames.length).toBeGreaterThanOrEqual(10);
     });
 
     it('returns error for unknown method', async () => {
