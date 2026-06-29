@@ -1996,6 +1996,99 @@ Returns snapshots filtered by date range, a trend summary (health direction, slo
       return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
     },
   },
+
+  'astrolabe.analyze': {
+    name: 'astrolabe.analyze',
+    description: 'Start codebase analysis. Returns immediately with a job ID — use job_status to poll progress. Safe to call while query tools are active (WAL mode handles concurrent read/write).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo_path: { type: 'string', description: 'Absolute path to the repository to analyze' },
+      },
+      required: ['repo_path'],
+    },
+    handler: async (params) => {
+      const repoPath = requireString(params, 'repo_path');
+      try {
+        const job = backend.startAnalysis(repoPath);
+        const isDedup = job.status === 'analyzing';
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              job_id: job.id,
+              status: job.status,
+              message: isDedup
+                ? 'Analysis already in progress for this repository.'
+                : 'Analysis started. Use job_status with this job_id to poll progress.',
+            }),
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: (e as Error).message }) }],
+          isError: true,
+        };
+      }
+    },
+  },
+
+  'astrolabe.job_status': {
+    name: 'astrolabe.job_status',
+    description: 'Check the status of an analysis job. Non-blocking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string', description: 'Job ID from analyze tool' },
+      },
+      required: ['job_id'],
+    },
+    handler: async (params) => {
+      const jobId = requireString(params, 'job_id');
+      const job = backend.getJob(jobId);
+      if (!job) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: `Job ${jobId} not found` }) }] };
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            status: job.status,
+            phase: job.progress.phase,
+            percent: job.progress.percent,
+            message: job.progress.message,
+            error: job.error,
+            elapsed_ms: Date.now() - job.startedAt,
+          }),
+        }],
+      };
+    },
+  },
+
+  'astrolabe.cancel_job': {
+    name: 'astrolabe.cancel_job',
+    description: 'Cancel a running analysis job.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string' },
+      },
+      required: ['job_id'],
+    },
+    handler: async (params) => {
+      const jobId = requireString(params, 'job_id');
+      const cancelled = backend.cancelAnalysis(jobId);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            cancelled,
+            message: cancelled ? `Job ${jobId} cancelled.` : `Job ${jobId} not found or already complete.`,
+          }),
+        }],
+      };
+    },
+  },
 };
 
 return TOOLS;
