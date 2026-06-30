@@ -151,10 +151,13 @@ export const patternDetectionPhase: PhaseDefinition<PatternDetectionOutput> = {
     const patternsByCategory: Record<string, number> = {};
     const filesWithPatternsSet = new Set<string>();
 
-    // Iterate over all cached trees using internal Map access
+    // Iterate over all cached trees using internal Map access.
+    // Snapshot keys into an array first — AstCache.get() triggers LRU refresh
+    // which reorders the Map, causing infinite iteration if we iterate keys() live.
     const cacheMap = (astCache as unknown as { cache: Map<string, unknown> }).cache;
+    const cachedPaths = Array.from(cacheMap.keys());
 
-    for (const absPath of cacheMap.keys()) {
+    for (const absPath of cachedPaths) {
       // Incremental filtering
       if (changedPaths && !changedPaths.has(absPath)) continue;
 
