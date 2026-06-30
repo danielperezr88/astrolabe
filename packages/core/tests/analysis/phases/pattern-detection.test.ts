@@ -86,7 +86,15 @@ function mockTsLangDef() {
     mroStrategy: 'c3' as const,
     symbolPatterns: [],
     importPatterns: [],
-    load: vi.fn(() => Promise.resolve({})),
+    load: vi.fn(() => Promise.resolve({
+      query: (pattern: string) => {
+        const qr = queryResults.get(pattern) ?? [];
+        return {
+          matches: () => qr,
+          delete: () => {},
+        };
+      },
+    })),
   };
 }
 
