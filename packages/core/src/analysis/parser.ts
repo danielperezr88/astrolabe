@@ -13,7 +13,7 @@
 
 import { Parser as WtsParser, Query as WtsQuery, Language as WtsLanguage } from 'web-tree-sitter';
 import type { QueryMatch } from 'web-tree-sitter';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, existsSync } from 'node:fs';
 import { resolve, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -174,16 +174,28 @@ async function loadLanguage(def: LanguageDefinition, wasmDir: string): Promise<W
   const key = def.wasmFile;
   let lang = languageCache.get(key);
   if (!lang) {
+    const wasmPath = resolve(wasmDir, def.wasmFile);
+    if (!existsSync(wasmPath)) {
+      throw new Error(
+        `Tree-sitter WASM grammar not found: ${wasmPath}. ` +
+        `Language "${def.name}" files will be skipped. ` +
+        `Run scripts/build-grammars.mjs to download missing grammars.`,
+      );
+    }
     lang = await def.load(wasmDir);
     languageCache.set(key, lang);
 
-    // Also load extra WASM files (e.g. TSX for TypeScript) so the
-    // secondary grammar is cached alongside the primary one.
     if (def.extraWasmFiles) {
       for (const extraFile of def.extraWasmFiles) {
         if (!languageCache.has(extraFile)) {
-          const wasmPath = resolve(wasmDir, extraFile);
-          const extraLang: WtsLanguage = await WtsLanguage.load(wasmPath);
+          const extraPath = resolve(wasmDir, extraFile);
+          if (!existsSync(extraPath)) {
+            throw new Error(
+              `Tree-sitter WASM grammar not found: ${extraPath}. ` +
+              `Required by language "${def.name}".`,
+            );
+          }
+          const extraLang: WtsLanguage = await WtsLanguage.load(extraPath);
           languageCache.set(extraFile, extraLang);
         }
       }
@@ -1130,8 +1142,20 @@ export async function parseFile(
     return result;
   }
 
-  // Load language WASM
-  const language = await loadLanguage(langDef, wasmDir);
+  // Load language WASM — gracefully skip if grammar not bundled
+  let language: WtsLanguage;
+  try {
+    language = await loadLanguage(langDef, wasmDir);
+  } catch (err) {
+    return {
+      filePath: normalisedPath,
+      language: langDef.name,
+      symbols: [],
+      imports: [],
+      relationships: [],
+      error: (err as Error).message,
+    };
+  }
 
   // Read file content
   let content: string;
