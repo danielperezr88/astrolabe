@@ -95,7 +95,7 @@ program
       // #643: Acquire advisory lock to prevent concurrent CLI + MCP writes
       dbLock = acquireDbLock(dirname(dbPath));
       const lastCommit = getGitCommit(repoPath);
-      const onProgress = () => undefined;
+      const onProgress = (phase: string, _pct: number, msg: string) => log.debug(`[${phase}] ${msg}`);
 
       // Phase 1: Always scan first — needed for meta.json and incremental diff
       const scanGraph = createKnowledgeGraph();
