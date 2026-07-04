@@ -117,6 +117,28 @@ node scripts/next-version.mjs --rc       # Check next RC version
 node scripts/next-version.mjs --release  # Check next stable version
 ```
 
+## Build Gotchas
+
+### TypeScript composite projects cache silently
+
+Astrolabe uses TypeScript [`composite` projects](https://www.typescriptlang.org/tsconfig/#composite). Each package has a `tsconfig.tsbuildinfo` file that caches compilation state for incremental builds. **If you delete `dist/` but not `tsconfig.tsbuildinfo`, `tsc` will report success but produce no output files.**
+
+This is a dangerous footgun when testing fixes: you edit a source file, run `tsc`, it says "OK," but the compiled `dist/` file is unchanged. You may falsely conclude your fix doesn't work and start debugging a non-existent problem.
+
+**To force a clean rebuild:**
+
+```bash
+# Delete the tsbuildinfo cache
+rm packages/core/tsconfig.tsbuildinfo
+# Or force a full rebuild
+tsc --build --force packages/core
+```
+
+**Symptoms of stale cache:**
+- `tsc` succeeds with no errors but no `.js` files in `dist/`
+- Changes to source files don't appear in compiled output
+- Tests pass before your edit but fail after (because they run against cached output)
+
 ## Questions?
 
 Open an issue at https://github.com/danielperezr88/astrolabe/issues/new
