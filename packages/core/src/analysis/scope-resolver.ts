@@ -67,6 +67,13 @@ export interface ResolvedEdge {
   reason: string;
 }
 
+const testPathPattern = /(?:^|[\\/])(?:tests?|__tests__|specs?)[\\/]/;
+const testFilePattern = /\.(?:test|spec)\.[a-z]+$/i;
+
+function isTestFilePath(filePath: string): boolean {
+  return testPathPattern.test(filePath) || testFilePattern.test(filePath);
+}
+
 /** Hook specifications that a language must implement. */
 export interface ScopeResolver {
   /** Language this resolver is for. */
@@ -813,7 +820,17 @@ export const scopeResolutionPhase: PhaseDefinition<ScopeResolutionOutput> = {
                 // Tier 3: Global name fallback (lowest confidence)
                 const candidates = bindingsByName.get(cs.name);
                 if (candidates && candidates.length > 0) {
-                  targetBinding = candidates[0];
+                  // Filter: production code must not resolve to test-file symbols.
+                  // A method call like `parser.parse()` creates a `parse` call site;
+                  // without filtering, it can match a test helper also named `parse`,
+                  // creating spurious production→test cycles.
+                  const callerInNonTestFile = !isTestFilePath(filePath);
+                  const filtered = callerInNonTestFile
+                    ? candidates.filter((c) => !isTestFilePath(c.filePath))
+                    : candidates;
+                  if (filtered.length > 0) {
+                    targetBinding = filtered[0];
+                  }
                 }
                 confidence = 0.4;
               }
