@@ -354,7 +354,8 @@ export function startEvalServer(opts: EvalServerOptions = {}): Server {
           server.close();
         }
       }, idleTimeout * 1000);
-      idleTimer.unref(); // Don't keep process alive just for timer
+      // Don't unref — socket.listen() already keeps the process alive,
+      // and unref causes non-deterministic timer firing in test/CI environments
     }
   }
 
