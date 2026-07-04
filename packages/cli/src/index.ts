@@ -577,15 +577,84 @@ program
 // ── context ────────────────────────────────────────────────────────────────────
 program
   .command('context <symbol-name>')
-  .description('Show the definition context for a symbol')
+  .description('Show 360° context for a symbol — incoming/outgoing edges and process membership')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
   .action((symbolName: string, opts: { db: string }) => {
-    const fts = createFtsSearch(opts.db);
+    const store = createSqliteStore(opts.db);
     try {
-      const results = fts.search(symbolName, 5);
-      if (results.length === 0) { console.log(`No symbols found matching "${symbolName}".`); }
-      else { console.log(`Context for "${symbolName}":`); for (const r of results) console.log(`  ${r.label} ${r.name}  (${r.filePath})`); }
-    } finally { fts.close(); }
+      const graph = store.loadGraph();
+
+      // #116: Find ALL matching symbols (handle overloads)
+      const matches: Array<{ node: import('@astrolabe-dev/core').GraphNode }> = [];
+      for (const node of graph.iterNodes()) {
+        if (node.id === symbolName || node.properties.name === symbolName) {
+          matches.push({ node });
+        }
+      }
+      if (matches.length === 0) {
+        console.log(`No symbols found matching "${symbolName}".`);
+        return;
+      }
+
+      // Build adjacency index once (O(R)) for O(1) per-symbol lookup
+      const incoming = new Map<string, Array<{ type: string; name: string }>>();
+      const outgoing = new Map<string, Array<{ type: string; name: string }>>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS') continue;
+        // Outgoing: source → target
+        let out = outgoing.get(rel.sourceId);
+        if (!out) { out = []; outgoing.set(rel.sourceId, out); }
+        out.push({ type: rel.type, name: (graph.getNode(rel.targetId)?.properties.name as string) ?? rel.targetId });
+        // Incoming: source → target
+        let inc = incoming.get(rel.targetId);
+        if (!inc) { inc = []; incoming.set(rel.targetId, inc); }
+        inc.push({ type: rel.type, name: (graph.getNode(rel.sourceId)?.properties.name as string) ?? rel.sourceId });
+      }
+
+      // Build process index (STEP_IN_PROCESS edges)
+      const processes = new Map<string, Array<{ name: string; step: number; total: number }>>();
+      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+        const procNode = graph.getNode(rel.sourceId);
+        if (!procNode) continue;
+        let arr = processes.get(rel.targetId);
+        if (!arr) { arr = []; processes.set(rel.targetId, arr); }
+        arr.push({
+          name: (procNode.properties.name as string) ?? procNode.id,
+          step: rel.step ?? 0,
+          total: (procNode.properties.stepCount as number) ?? 0,
+        });
+      }
+
+      console.log(`Context for "${symbolName}" (${matches.length} match${matches.length > 1 ? 'es' : ''}):`);
+      for (const { node } of matches) {
+        console.log(`\n  ${node.label}: ${node.id}`);
+        console.log(`    File: ${node.properties.filePath ?? '(none)'}`);
+
+        const inc = incoming.get(node.id);
+        if (inc && inc.length > 0) {
+          console.log('    ← Incoming:');
+          for (const { type, name } of inc) {
+            console.log(`      ${type.toLowerCase()} ← ${name}`);
+          }
+        }
+
+        const out = outgoing.get(node.id);
+        if (out && out.length > 0) {
+          console.log('    → Outgoing:');
+          for (const { type, name } of out) {
+            console.log(`      ${type.toLowerCase()} → ${name}`);
+          }
+        }
+
+        const procs = processes.get(node.id);
+        if (procs && procs.length > 0) {
+          console.log('    ⚡ Processes:');
+          for (const p of procs) {
+            console.log(`      "${p.name}" (step ${p.step}/${p.total})`);
+          }
+        }
+      }
+    } finally { store.close(); }
   });
 
 // ── impact ─────────────────────────────────────────────────────────────────────
