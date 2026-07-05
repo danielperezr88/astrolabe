@@ -155,7 +155,7 @@ export const patternDetectionPhase: PhaseDefinition<PatternDetectionOutput> = {
     // Snapshot keys first — astCache.get() mutates the LRU cache (delete+re-set),
     // which would invalidate a live iterator and cause an infinite loop.
     const cacheMap = (astCache as unknown as { cache: Map<string, unknown> }).cache;
-    const cachedPaths = [...cacheMap.keys()];
+    const cachedPaths = Array.from(cacheMap.keys());
     for (const absPath of cachedPaths) {
       // Incremental filtering
       if (changedPaths && !changedPaths.has(absPath)) continue;
