@@ -11,7 +11,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { createSqliteStore } from '../persist/sqlite.js';
 import { createFtsSearch } from '../search/fts.js';
 import { loadRegistry } from '../mcp/registry.js';
-import { execFileSync } from 'node:child_process';
+import { detectChanges as detectChangesCore } from '../analysis/detect-changes.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger({ level: 'info' });
@@ -252,72 +252,19 @@ function toolListRepos(): unknown {
 
 function toolDetectChanges(params: Record<string, unknown>): unknown {
   const repoName = params.repo as string | undefined;
-  const scope = (params.scope as string) ?? 'unstaged';
+const scope = (params.scope as string) ?? 'unstaged';
 
-  const entries = loadRegistry();
-  const name = repoName ?? entries[0]?.name;
-  if (!name) throw new Error('No indexed repositories. Run `astrolabe analyze` first.');
+const entries = loadRegistry();
+const name = repoName ?? entries[0]?.name;
+if (!name) throw new Error('No indexed repositories. Run `astrolabe analyze` first.');
 
-  const entry = entries.find((e) => e.name === name);
-  if (!entry) throw new Error(`Repository "${name}" not found.`);
+const entry = entries.find((e) => e.name === name);
+if (!entry) throw new Error(`Repository "${name}" not found.`);
 
-  const validScopes = ['unstaged', 'staged', 'all'];
-  if (!validScopes.includes(scope)) {
-    return { error: `Invalid scope "${scope}". Use: ${validScopes.join(', ')}` };
-  }
+const ctx = getRepo(entry.dbPath, name);
+if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
 
-  let diffFiles: string[] = [];
-  try {
-    const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
-    const args = ['diff', '--name-only'];
-    if (diffFlag) args.push(diffFlag);
-    const output = execFileSync('git', args, { cwd: entry.path, encoding: 'utf-8' });
-    diffFiles = output.trim().split('\n').filter(Boolean);
-  } catch {
-    return { error: 'Git diff failed. Is this a git repository?' };
-  }
-  if (diffFiles.length === 0) {
-    return { changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' };
-  }
-
-  const ctx = getRepo(entry.dbPath, name);
-  if (!ctx.graph) ctx.graph = ctx.store.loadGraph();
-  const graph = ctx.graph;
-
-  const diffFileSet = new Set(diffFiles);
-  const changedSymbols: string[] = [];
-  const changedNodeIds = new Set<string>();
-  for (const node of graph.iterNodes()) {
-    const fp = node.properties.filePath as string | undefined;
-    if (fp && diffFileSet.has(fp)) {
-      changedNodeIds.add(node.id);
-      changedSymbols.push(node.properties.name ?? node.id);
-    }
-  }
-
-  const affectedProcesses: string[] = [];
-  const seenProcessNames = new Set<string>();
-  for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-    if (changedNodeIds.has(rel.targetId)) {
-      const proc = graph.getNode(rel.sourceId);
-      if (proc) {
-        const procName = proc.properties.name ?? proc.id;
-        if (!seenProcessNames.has(procName)) {
-          seenProcessNames.add(procName);
-          affectedProcesses.push(procName);
-        }
-      }
-    }
-  }
-
-  return {
-    changed_files: diffFiles,
-    changed_count: diffFiles.length,
-    affected_count: affectedProcesses.length,
-    risk_level: affectedProcesses.length > 3 ? 'high' : affectedProcesses.length > 0 ? 'medium' : 'low',
-    changed_symbols: changedSymbols,
-    affected_processes: affectedProcesses,
-  };
+return detectChangesCore(ctx.graph, entry.path, scope as 'unstaged' | 'staged' | 'all');
 }
 
 // ── Route dispatch ────────────────────────────────────────────────────────

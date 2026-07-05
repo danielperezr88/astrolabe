@@ -6,7 +6,7 @@ import { program } from 'commander';
 import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
@@ -43,6 +43,7 @@ import {
   exportGnnDataset,
   computeEmbeddings, propagateEmbeddings, createSemanticEdges,
   computeSnapshotMetrics, detectTrends,
+  detectChanges,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -717,81 +718,19 @@ program
   .option('--scope <scope>', 'Diff scope: unstaged, staged, or all', 'unstaged')
   .option('--json', 'Output raw JSON')
   .action((repoPath: string | undefined, opts: { db: string; scope: string; json?: boolean }) => {
-    const validScopes = ['unstaged', 'staged', 'all'];
-    const scope = validScopes.includes(opts.scope) ? opts.scope as 'unstaged' | 'staged' | 'all' : 'unstaged';
+    const scope = (['unstaged', 'staged', 'all'].includes(opts.scope)
+      ? opts.scope : 'unstaged') as 'unstaged' | 'staged' | 'all';
     const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
     if (!existsSync(dbPath)) {
       console.log('No knowledge graph found. Run `astrolabe analyze` first.');
       return;
     }
 
-    // Get changed files from git
     const cwd = repoPath ?? '.';
-    let diffFiles: string[] = [];
-    try {
-      const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
-      const args = ['diff', '--name-only'];
-      if (diffFlag) args.push(diffFlag);
-      const output = execFileSync('git', args, { cwd, encoding: 'utf-8' });
-      diffFiles = output.trim().split('\n').filter(Boolean);
-    } catch {
-      console.log('Git diff failed. Is this a git repository?');
-      return;
-    }
-
-    if (diffFiles.length === 0) {
-      if (opts.json) { console.log(JSON.stringify({ changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' })); }
-      else { console.log('No changes detected.'); }
-      return;
-    }
-
-    // Match changed files to graph symbols
     const store = createSqliteStore(resolve(dbPath));
     try {
       const graph = store.loadGraph();
-      const diffFileSet = new Set(diffFiles);
-      const changedSymbols: string[] = [];
-      const changedNodeIds = new Set<string>();
-
-      for (const node of graph.iterNodes()) {
-        const fp = node.properties.filePath as string | undefined;
-        if (fp && diffFileSet.has(fp)) {
-          changedNodeIds.add(node.id);
-          changedSymbols.push(node.properties.name ?? node.id);
-        }
-      }
-
-      // Find affected processes
-      const affectedProcesses: string[] = [];
-      const seenProcessNames = new Set<string>();
-      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-        if (changedNodeIds.has(rel.targetId)) {
-          const proc = graph.getNode(rel.sourceId);
-          if (proc) {
-            const procName = proc.properties.name ?? proc.id;
-            if (!seenProcessNames.has(procName)) {
-              seenProcessNames.add(procName);
-              affectedProcesses.push(procName);
-            }
-          }
-        }
-      }
-
-      const crossCommunityCount = affectedProcesses.length;
-      const riskLevel = affectedProcesses.length > 3 ? 'high'
-        : affectedProcesses.length > 0 ? 'medium'
-        : changedNodeIds.size > 0 ? 'unknown'
-        : 'low';
-
-      const result = {
-        changed_files: diffFiles,
-        changed_count: diffFiles.length,
-        affected_count: affectedProcesses.length,
-        risk_level: riskLevel,
-        changed_symbols: changedSymbols,
-        affected_processes: affectedProcesses,
-        cross_community_affected: crossCommunityCount,
-      };
+      const result = detectChanges(graph, cwd, scope);
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
@@ -800,16 +739,24 @@ program
 
       console.log(`\n=== Change Impact Analysis (${scope}) ===`);
       console.log(`Changed files: ${result.changed_count}`);
-      for (const f of diffFiles) console.log(`  ${f}`);
-      console.log(`Risk level: ${riskLevel}`);
-      if (changedSymbols.length > 0) {
-        console.log(`\nChanged symbols (${changedSymbols.length}):`);
-        for (const s of changedSymbols.slice(0, 20)) console.log(`  ${s}`);
-        if (changedSymbols.length > 20) console.log(`  ... and ${changedSymbols.length - 20} more`);
+      for (const f of result.changed_files) console.log(`  ${f}`);
+
+      const symbols = result.affected_symbols;
+      if (symbols.length > 0) {
+        console.log(`\nAffected symbols (${symbols.length}):`);
+        for (const s of symbols.slice(0, 20)) {
+          console.log(`  [${s.changeType.toUpperCase()}] ${s.label}:${s.name} — ${s.filePath}:L${s.startLine}-${s.endLine}`);
+        }
+        if (symbols.length > 20) console.log(`  ... and ${symbols.length - 20} more`);
+      } else if (result.changed_count > 0) {
+        console.log(`\nAffected symbols: 0 (no symbol line ranges overlap with changed lines)`);
       }
-      if (affectedProcesses.length > 0) {
-        console.log(`\nAffected processes (${affectedProcesses.length}):`);
-        for (const p of affectedProcesses) console.log(`  ${p}`);
+
+      console.log(`Risk level: ${result.risk_level}`);
+      if (result.affected_processes.length > 0) {
+        console.log(`\nAffected processes (${result.affected_processes.length}):`);
+        for (const p of result.affected_processes.slice(0, 10)) console.log(`  ${p}`);
+        if (result.affected_processes.length > 10) console.log(`  ... and ${result.affected_processes.length - 10} more`);
       }
     } finally {
       store.close();
