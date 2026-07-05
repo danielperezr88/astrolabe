@@ -33,6 +33,7 @@ import {
   generateWiki,
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+  analyzeSubgraphArchitecture,
   detectClones,
   computeSpectralMetrics,
   detectAntiPatterns,
@@ -1256,7 +1257,8 @@ program
   .description('Detect architectural patterns using graphlet-based structural analysis (#461)')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
   .option('--json', 'Output raw JSON')
-  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+  .option('--no-subgraph', 'Score entire graph monolithically (default: per-subgraph)')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean; subgraph?: boolean }) => {
     const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
     if (!existsSync(dbPath)) {
       console.log('No knowledge graph found. Run `astrolabe analyze` first.');
@@ -1267,51 +1269,77 @@ program
     const graph = store.loadGraph();
     store.close();
 
-    // Build adjacency map from CALLS, IMPORTS, EXTENDS edges
-    const nodeIds = new Set<string>();
-    for (const node of graph.iterNodes()) nodeIds.add(node.id);
-    const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
-    const profile = countGraphlets(graph.iterNodes(), adjMap);
+    if (opts.subgraph === false) {
+      // Monolithic mode: original behavior
+      const nodeIds = new Set<string>();
+      for (const node of graph.iterNodes()) nodeIds.add(node.id);
+      const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
+      const profile = countGraphlets(graph.iterNodes(), adjMap);
 
-    // Extract community info from Community nodes
-    const communities: Array<{ id: string; nodeCount: number }> = [];
-    for (const node of graph.iterNodes()) {
-      if (node.label === 'Community') {
-        communities.push({ id: node.id, nodeCount: (node.properties.symbolCount as number) ?? 0 });
+      const communities: Array<{ id: string; nodeCount: number }> = [];
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'Community') {
+          communities.push({ id: node.id, nodeCount: (node.properties.symbolCount as number) ?? 0 });
+        }
       }
-    }
 
-    const patterns = detectPatterns(profile);
-    const health = scoreArchitectureHealth(profile, communities, adjMap);
+      const patterns = detectPatterns(profile);
+      const health = scoreArchitectureHealth(profile, communities, adjMap);
 
-    if (opts.json) {
-      console.log(JSON.stringify({ profile, patterns, health }, null, 2));
-      return;
-    }
+      if (opts.json) {
+        console.log(JSON.stringify({ profile, patterns, health }, null, 2));
+        return;
+      }
 
-    const totalMotifs3 = profile.motif3.empty + profile.motif3.oneEdge + profile.motif3.twoEdge + profile.motif3.triangle;
-    const totalMotifs4 = profile.motif4.chain + profile.motif4.star + profile.motif4.diamond + profile.motif4.cycle + profile.motif4.clique;
+      const totalMotifs3 = profile.motif3.empty + profile.motif3.oneEdge + profile.motif3.twoEdge + profile.motif3.triangle;
+      const totalMotifs4 = profile.motif4.chain + profile.motif4.star + profile.motif4.diamond + profile.motif4.cycle + profile.motif4.clique;
+      console.log(`\n=== Architecture Analysis (Monolithic) ===`);
+      console.log(`Nodes: ${profile.nodeCount} | Edges: ${profile.edgeCount}`);
+      console.log(`\n--- 3-Node Motifs (${totalMotifs3} total) ---`);
+      console.log(`  empty:    ${profile.motif3.empty}`);
+      console.log(`  oneEdge:  ${profile.motif3.oneEdge}`);
+      console.log(`  twoEdge:  ${profile.motif3.twoEdge}`);
+      console.log(`  triangle: ${profile.motif3.triangle}`);
+      console.log(`\n--- 4-Node Motifs (${totalMotifs4} total) ---`);
+      console.log(`  chain:   ${profile.motif4.chain}  star: ${profile.motif4.star}  diamond: ${profile.motif4.diamond}  cycle: ${profile.motif4.cycle}  clique: ${profile.motif4.clique}`);
+      console.log(`\n--- Detected Patterns ---`);
+      for (const p of patterns) console.log(`  ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
+      console.log(`\n--- Health Score: ${health.overallScore}/100 ---`);
+      console.log(`  Cohesion: ${(health.cohesion * 100).toFixed(1)}% | Modularity: ${(health.modularity * 100).toFixed(1)}% | Complexity: ${(health.complexity * 100).toFixed(1)}%`);
+      if (health.antiPatterns.length > 0) {
+        console.log(`\n--- Anti-Patterns ---`);
+        for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
+      }
+    } else {
+      // Subgraph-aware mode
+      const result = analyzeSubgraphArchitecture(graph);
 
-    console.log(`\n=== Architecture Analysis ===`);
-    console.log(`Nodes: ${profile.nodeCount} | Edges: ${profile.edgeCount} | ${profile.sampled ? `Sampled (${profile.sampleSize} nodes)` : 'Full enumeration'}`);
-    console.log(`\n--- 3-Node Motifs (${totalMotifs3} total) ---`);
-    console.log(`  empty:    ${profile.motif3.empty}`);
-    console.log(`  oneEdge:  ${profile.motif3.oneEdge}`);
-    console.log(`  twoEdge:  ${profile.motif3.twoEdge}`);
-    console.log(`  triangle: ${profile.motif3.triangle}`);
-    console.log(`\n--- 4-Node Motifs (${totalMotifs4} total) ---`);
-    console.log(`  chain:   ${profile.motif4.chain}`);
-    console.log(`  star:    ${profile.motif4.star}`);
-    console.log(`  diamond: ${profile.motif4.diamond}`);
-    console.log(`  cycle:   ${profile.motif4.cycle}`);
-    console.log(`  clique:  ${profile.motif4.clique}`);
-    console.log(`\n--- Detected Patterns ---`);
-    for (const p of patterns) console.log(`  ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
-    console.log(`\n--- Health Score: ${health.overallScore}/100 ---`);
-    console.log(`  Cohesion: ${(health.cohesion * 100).toFixed(1)}% | Modularity: ${(health.modularity * 100).toFixed(1)}% | Complexity: ${(health.complexity * 100).toFixed(1)}%`);
-    if (health.antiPatterns.length > 0) {
-      console.log(`\n--- Anti-Patterns ---`);
-      for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Architecture Analysis (Per-Subgraph) ===`);
+      console.log(`Subgraphs detected: ${result.subgraphs.length} total, ${result.scores.filter(s => s.scored).length} scored`);
+      console.log(`Overall Health: ${result.overallHealth}/100 — ${result.overallLabel}\n`);
+
+      for (const score of result.scores) {
+        if (!score.scored) {
+          console.log(`--- ${score.name} (${score.nodeCount} nodes, ${score.language}) — [skipped: docs/config]`);
+          continue;
+        }
+        console.log(`--- ${score.name} (${score.nodeCount} nodes, ${score.edgeCount} edges, ${score.language}) ---`);
+        console.log(`  Health: ${score.health.overallScore}/100`);
+        console.log(`  Cohesion: ${(score.health.cohesion * 100).toFixed(1)}% | Modularity: ${(score.health.modularity * 100).toFixed(1)}% | Complexity: ${(score.health.complexity * 100).toFixed(1)}%`);
+        if (score.patterns.length > 0) {
+          console.log(`  Patterns:`);
+          for (const p of score.patterns) console.log(`    ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
+        }
+        if (score.health.antiPatterns.length > 0) {
+          console.log(`  Anti-Patterns:`);
+          for (const ap of score.health.antiPatterns) console.log(`    [${ap.severity}] ${ap.name}: ${ap.description}`);
+        }
+      }
     }
     console.log();
   });
