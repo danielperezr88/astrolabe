@@ -60,8 +60,8 @@ export type { RepoGroup, GroupRepo, GroupsConfig, GroupStatus, ServiceBoundary }
 export { ServiceBoundaryDetector, autoDetectGroups as detectServiceBoundaries } from './analysis/service-boundary-detector.js';
 export type { ServiceBoundaryDetectorOptions } from './analysis/service-boundary-detector.js';
 export { generateSkill } from './skill/index.js';
-export { detectChanges } from './incremental/index.js';
-export type { IncrementalState } from './incremental/index.js';
+export { detectChanges } from './analysis/detect-changes.js';
+export type { DetectChangesResult, AffectedSymbol, GraphDelta, DeltaImpact } from './analysis/detect-changes.js';
 export { autoSetup } from './setup/index.js';
 export type { SetupResult } from './setup/index.js';
 export { generateWiki } from './wiki/index.js';
