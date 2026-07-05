@@ -40,6 +40,7 @@ export interface DetectChangesResult {
   cross_community_affected: number;
   risk_level: 'none' | 'low' | 'unknown' | 'medium' | 'high';
   graph_delta?: GraphDelta;
+  delta_impact?: DeltaImpact;
 }
 
 // ── Phase 2: Graph Delta ───────────────────────────────────────────────────
@@ -75,6 +76,81 @@ export interface GraphDelta {
   totalRemovedRelationships: number;
   totalAddedImports: number;
   totalRemovedImports: number;
+}
+
+// ── Phase 3: Delta Impact (blast radius from delta) ────────────────────────
+
+export interface SymbolImpact {
+  symbolName: string;
+  filePath: string;
+  changeType: ChangeType;
+  upstreamCallers: string[];
+  downstreamCallees: string[];
+}
+
+export interface DeltaImpact {
+  symbols: SymbolImpact[];
+  maxImpactSymbol: string | null;
+}
+
+/**
+ * Compute blast-radius impact for delta symbols using existing graph edges.
+ *
+ * For each affected symbol, finds:
+ * - Upstream: callers (nodes with CALLS edges targeting this symbol)
+ * - Downstream: callees (nodes this symbol CALLS)
+ *
+ * @param graph Full knowledge graph
+ * @param symbols Affected symbols from Phase 1
+ * @param maxSymbols Cap on symbols to analyze for performance
+ */
+export function detectDeltaImpact(
+  graph: KnowledgeGraph,
+  symbols: AffectedSymbol[],
+  maxSymbols = 30,
+): DeltaImpact {
+  const results: SymbolImpact[] = [];
+
+  for (const sym of symbols.slice(0, maxSymbols)) {
+    const upstream: string[] = [];
+    const downstream: string[] = [];
+
+    // Find upstream callers via incoming CALLS edges
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type !== 'CALLS' && rel.type !== 'IMPORTS') continue;
+      if (rel.targetId === sym.nodeId) {
+        const caller = graph.getNode(rel.sourceId);
+        if (caller) upstream.push(caller.properties.name as string ?? caller.id);
+      }
+      if (rel.sourceId === sym.nodeId) {
+        const callee = graph.getNode(rel.targetId);
+        if (callee) downstream.push(callee.properties.name as string ?? callee.id);
+      }
+    }
+
+    if (upstream.length > 0 || downstream.length > 0) {
+      results.push({
+        symbolName: sym.name,
+        filePath: sym.filePath,
+        changeType: sym.changeType,
+        upstreamCallers: upstream.slice(0, 10),
+        downstreamCallees: downstream.slice(0, 10),
+      });
+    }
+  }
+
+  // Find the symbol with highest impact
+  let maxImpact: SymbolImpact | null = null;
+  let maxCount = 0;
+  for (const r of results) {
+    const count = r.upstreamCallers.length + r.downstreamCallees.length;
+    if (count > maxCount) { maxCount = count; maxImpact = r; }
+  }
+
+  return {
+    symbols: results,
+    maxImpactSymbol: maxImpact ? `${maxImpact.symbolName} (${maxCount} edges)` : null,
+  };
 }
 
 // ── Diff Parsing ───────────────────────────────────────────────────────────
@@ -464,6 +540,10 @@ export function detectChanges(
     : changedNodeIds.size > 0 ? 'unknown'
     : 'low';
 
+  const deltaImpact = affectedSymbols.length > 0
+    ? detectDeltaImpact(graph, affectedSymbols)
+    : { symbols: [], maxImpactSymbol: null };
+
   return {
     changed_files: diffFiles,
     changed_count: diffFiles.length,
@@ -472,5 +552,6 @@ export function detectChanges(
     affected_processes: affectedProcesses,
     cross_community_affected: crossCommunityCount,
     risk_level: riskLevel,
+    delta_impact: deltaImpact,
   };
 }
