@@ -53,3 +53,14 @@ export {
   type MetaEdge,
   type HierarchyResult,
 } from './hierarchy.js';
+
+// #968: Subgraph-aware architecture scoring
+export {
+  analyzeSubgraphArchitecture,
+  detectSubgraphs,
+  scoreSubgraphs,
+  computeAggregateHealth,
+  type SubgraphInfo,
+  type SubgraphScore,
+  type SubgraphArchitectureResult,
+} from './subgraph-scorer.js';
