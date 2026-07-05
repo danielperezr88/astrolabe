@@ -1,13 +1,13 @@
 /**
  * Diff-aware change detection for detect-changes command.
  *
- * Replaces the old file-level approach (all symbols in changed files)
- * with line-level precision using `git diff -U0` output.
- *
  * Phase 1: Line-level precision — parse diff hunks, map to symbols.
+ * Phase 2: Graph delta detection — parse old file versions, diff subgraphs.
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { KnowledgeGraph } from '../core/types.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -39,6 +39,42 @@ export interface DetectChangesResult {
   affected_processes: string[];
   cross_community_affected: number;
   risk_level: 'none' | 'low' | 'unknown' | 'medium' | 'high';
+  graph_delta?: GraphDelta;
+}
+
+// ── Phase 2: Graph Delta ───────────────────────────────────────────────────
+
+export interface RelationshipDelta {
+  type: string;
+  sourceName: string;
+  targetName: string;
+  changeType: 'added' | 'removed';
+}
+
+export interface ImportDelta {
+  source: string;
+  names: { name: string; isDefault: boolean }[];
+  changeType: 'added' | 'removed';
+}
+
+export interface FileDelta {
+  filePath: string;
+  addedSymbols: string[];
+  removedSymbols: string[];
+  addedRelationships: RelationshipDelta[];
+  removedRelationships: RelationshipDelta[];
+  addedImports: ImportDelta[];
+  removedImports: ImportDelta[];
+}
+
+export interface GraphDelta {
+  files: FileDelta[];
+  totalAddedSymbols: number;
+  totalRemovedSymbols: number;
+  totalAddedRelationships: number;
+  totalRemovedRelationships: number;
+  totalAddedImports: number;
+  totalRemovedImports: number;
 }
 
 // ── Diff Parsing ───────────────────────────────────────────────────────────
@@ -95,6 +131,131 @@ export function parseUnifiedDiffWithLineNumbers(diffOutput: string): ChangedFile
   }
 
   return result;
+}
+
+// ── Phase 2: Graph Delta Detection ─────────────────────────────────────────
+
+const MAX_GRAPH_DELTA_FILES = 20;
+
+async function getOldContent(repoPath: string, filePath: string): Promise<string | null> {
+  try {
+    return execFileSync('git', ['show', `HEAD:${filePath}`], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch {
+    return null; // new file (not in HEAD) or binary
+  }
+}
+
+async function getNewContent(repoPath: string, filePath: string): Promise<string> {
+  return readFileSync(join(repoPath, filePath), 'utf-8');
+}
+
+/**
+ * Detect relationship deltas by parsing old (HEAD) and new (working tree)
+ * versions of changed files. Uses in-memory `parseString` to avoid
+ * filesystem writes and graph persistence.
+ */
+export async function detectGraphDelta(
+  repoPath: string,
+  wasmDir: string,
+  changedFiles: string[],
+): Promise<GraphDelta> {
+  const { parseString, languageForFile, initParser } = await import('./parser.js');
+
+  // Ensure parser WASM is loaded (no-op if already initialised)
+  try { await initParser(); } catch { /* already initialised */ }
+
+  const files = changedFiles.slice(0, MAX_GRAPH_DELTA_FILES);
+  const fileDeltas: FileDelta[] = [];
+
+  let totalAddedSym = 0;
+  let totalRemovedSym = 0;
+  let totalAddedRel = 0;
+  let totalRemovedRel = 0;
+  let totalAddedImp = 0;
+  let totalRemovedImp = 0;
+
+  for (const relPath of files) {
+    if (!languageForFile(relPath)) continue; // unsupported extension
+
+    const oldContent = await getOldContent(repoPath, relPath);
+    const newContent = await getNewContent(repoPath, relPath);
+
+    if (oldContent === null && newContent.length === 0) continue;
+
+    const oldResult = oldContent !== null
+      ? await parseString(oldContent, relPath, wasmDir)
+      : null;
+
+    const newResult = await parseString(newContent, relPath, wasmDir);
+
+    if (oldResult?.error || newResult.error) continue; // parse failure
+
+    // Diff symbols
+    const oldSymbols = new Set((oldResult?.symbols ?? []).map(s => s.id));
+    const newSymbols = new Set(newResult.symbols.map(s => s.id));
+    const addedSymbols = newResult.symbols.filter(s => !oldSymbols.has(s.id)).map(s => `${s.label}:${s.name}`);
+    const removedSymbols = (oldResult?.symbols ?? []).filter(s => !newSymbols.has(s.id)).map(s => `${s.label}:${s.name}`);
+
+    // Diff relationships (EXTENDS, IMPLEMENTS, DECORATES)
+    const oldRelSet = new Set((oldResult?.relationships ?? []).map(r => `${r.sourceName}|${r.targetName}|${r.type}`));
+    const newRelSet = new Set(newResult.relationships.map(r => `${r.sourceName}|${r.targetName}|${r.type}`));
+
+    const addedRelationships: RelationshipDelta[] = newResult.relationships
+      .filter(r => !oldRelSet.has(`${r.sourceName}|${r.targetName}|${r.type}`))
+      .map(r => ({ type: r.type, sourceName: r.sourceName, targetName: r.targetName, changeType: 'added' as const }));
+
+    const removedRelationships: RelationshipDelta[] = (oldResult?.relationships ?? [])
+      .filter(r => !newRelSet.has(`${r.sourceName}|${r.targetName}|${r.type}`))
+      .map(r => ({ type: r.type, sourceName: r.sourceName, targetName: r.targetName, changeType: 'removed' as const }));
+
+    // Diff imports
+    const oldImpSet = new Set((oldResult?.imports ?? []).map(i => i.source));
+    const newImpSet = new Set(newResult.imports.map(i => i.source));
+
+    const addedImports: ImportDelta[] = newResult.imports
+      .filter(i => !oldImpSet.has(i.source))
+      .map(i => ({ source: i.source, names: i.names, changeType: 'added' as const }));
+
+    const removedImports: ImportDelta[] = (oldResult?.imports ?? [])
+      .filter(i => !newImpSet.has(i.source))
+      .map(i => ({ source: i.source, names: i.names, changeType: 'removed' as const }));
+
+    // Only include files with actual changes
+    if (addedSymbols.length > 0 || removedSymbols.length > 0 ||
+        addedRelationships.length > 0 || removedRelationships.length > 0 ||
+        addedImports.length > 0 || removedImports.length > 0) {
+      fileDeltas.push({
+        filePath: relPath,
+        addedSymbols,
+        removedSymbols,
+        addedRelationships,
+        removedRelationships,
+        addedImports,
+        removedImports,
+      });
+    }
+
+    totalAddedSym += addedSymbols.length;
+    totalRemovedSym += removedSymbols.length;
+    totalAddedRel += addedRelationships.length;
+    totalRemovedRel += removedRelationships.length;
+    totalAddedImp += addedImports.length;
+    totalRemovedImp += removedImports.length;
+  }
+
+  return {
+    files: fileDeltas,
+    totalAddedSymbols: totalAddedSym,
+    totalRemovedSymbols: totalRemovedSym,
+    totalAddedRelationships: totalAddedRel,
+    totalRemovedRelationships: totalRemovedRel,
+    totalAddedImports: totalAddedImp,
+    totalRemovedImports: totalRemovedImp,
+  };
 }
 
 // ── Symbol Mapping ─────────────────────────────────────────────────────────
