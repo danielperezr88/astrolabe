@@ -6,7 +6,7 @@ import { program } from 'commander';
 import { readFileSync, existsSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import {
   createKnowledgeGraph, scanPhase, structurePhase, frameworkPhase, markdownPhase, parseEmitPhase,
@@ -33,6 +33,7 @@ import {
   generateWiki,
   startEvalServer,
   countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+  analyzeSubgraphArchitecture,
   detectClones,
   computeSpectralMetrics,
   detectAntiPatterns,
@@ -43,6 +44,7 @@ import {
   exportGnnDataset,
   computeEmbeddings, propagateEmbeddings, createSemanticEdges,
   computeSnapshotMetrics, detectTrends,
+  detectChanges,
 } from '@astrolabe-dev/core';
 // #463: Coverage report parser
 import { parseCoverageReport, detectFormat, annotateGraphWithCoverage } from '@astrolabe-dev/core';
@@ -95,7 +97,7 @@ program
       // #643: Acquire advisory lock to prevent concurrent CLI + MCP writes
       dbLock = acquireDbLock(dirname(dbPath));
       const lastCommit = getGitCommit(repoPath);
-      const onProgress = () => undefined;
+      const onProgress = (phase: string, _pct: number, msg: string) => log.debug(`[${phase}] ${msg}`);
 
       // Phase 1: Always scan first — needed for meta.json and incremental diff
       const scanGraph = createKnowledgeGraph();
@@ -577,15 +579,84 @@ program
 // ── context ────────────────────────────────────────────────────────────────────
 program
   .command('context <symbol-name>')
-  .description('Show the definition context for a symbol')
+  .description('Show 360° context for a symbol — incoming/outgoing edges and process membership')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
   .action((symbolName: string, opts: { db: string }) => {
-    const fts = createFtsSearch(opts.db);
+    const store = createSqliteStore(opts.db);
     try {
-      const results = fts.search(symbolName, 5);
-      if (results.length === 0) { console.log(`No symbols found matching "${symbolName}".`); }
-      else { console.log(`Context for "${symbolName}":`); for (const r of results) console.log(`  ${r.label} ${r.name}  (${r.filePath})`); }
-    } finally { fts.close(); }
+      const graph = store.loadGraph();
+
+      // #116: Find ALL matching symbols (handle overloads)
+      const matches: Array<{ node: import('@astrolabe-dev/core').GraphNode }> = [];
+      for (const node of graph.iterNodes()) {
+        if (node.id === symbolName || node.properties.name === symbolName) {
+          matches.push({ node });
+        }
+      }
+      if (matches.length === 0) {
+        console.log(`No symbols found matching "${symbolName}".`);
+        return;
+      }
+
+      // Build adjacency index once (O(R)) for O(1) per-symbol lookup
+      const incoming = new Map<string, Array<{ type: string; name: string }>>();
+      const outgoing = new Map<string, Array<{ type: string; name: string }>>();
+      for (const rel of graph.iterRelationships()) {
+        if (rel.type === 'STEP_IN_PROCESS') continue;
+        // Outgoing: source → target
+        let out = outgoing.get(rel.sourceId);
+        if (!out) { out = []; outgoing.set(rel.sourceId, out); }
+        out.push({ type: rel.type, name: (graph.getNode(rel.targetId)?.properties.name as string) ?? rel.targetId });
+        // Incoming: source → target
+        let inc = incoming.get(rel.targetId);
+        if (!inc) { inc = []; incoming.set(rel.targetId, inc); }
+        inc.push({ type: rel.type, name: (graph.getNode(rel.sourceId)?.properties.name as string) ?? rel.sourceId });
+      }
+
+      // Build process index (STEP_IN_PROCESS edges)
+      const processes = new Map<string, Array<{ name: string; step: number; total: number }>>();
+      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
+        const procNode = graph.getNode(rel.sourceId);
+        if (!procNode) continue;
+        let arr = processes.get(rel.targetId);
+        if (!arr) { arr = []; processes.set(rel.targetId, arr); }
+        arr.push({
+          name: (procNode.properties.name as string) ?? procNode.id,
+          step: rel.step ?? 0,
+          total: (procNode.properties.stepCount as number) ?? 0,
+        });
+      }
+
+      console.log(`Context for "${symbolName}" (${matches.length} match${matches.length > 1 ? 'es' : ''}):`);
+      for (const { node } of matches) {
+        console.log(`\n  ${node.label}: ${node.id}`);
+        console.log(`    File: ${node.properties.filePath ?? '(none)'}`);
+
+        const inc = incoming.get(node.id);
+        if (inc && inc.length > 0) {
+          console.log('    ← Incoming:');
+          for (const { type, name } of inc) {
+            console.log(`      ${type.toLowerCase()} ← ${name}`);
+          }
+        }
+
+        const out = outgoing.get(node.id);
+        if (out && out.length > 0) {
+          console.log('    → Outgoing:');
+          for (const { type, name } of out) {
+            console.log(`      ${type.toLowerCase()} → ${name}`);
+          }
+        }
+
+        const procs = processes.get(node.id);
+        if (procs && procs.length > 0) {
+          console.log('    ⚡ Processes:');
+          for (const p of procs) {
+            console.log(`      "${p.name}" (step ${p.step}/${p.total})`);
+          }
+        }
+      }
+    } finally { store.close(); }
   });
 
 // ── impact ─────────────────────────────────────────────────────────────────────
@@ -717,81 +788,19 @@ program
   .option('--scope <scope>', 'Diff scope: unstaged, staged, or all', 'unstaged')
   .option('--json', 'Output raw JSON')
   .action((repoPath: string | undefined, opts: { db: string; scope: string; json?: boolean }) => {
-    const validScopes = ['unstaged', 'staged', 'all'];
-    const scope = validScopes.includes(opts.scope) ? opts.scope as 'unstaged' | 'staged' | 'all' : 'unstaged';
+    const scope = (['unstaged', 'staged', 'all'].includes(opts.scope)
+      ? opts.scope : 'unstaged') as 'unstaged' | 'staged' | 'all';
     const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
     if (!existsSync(dbPath)) {
       console.log('No knowledge graph found. Run `astrolabe analyze` first.');
       return;
     }
 
-    // Get changed files from git
     const cwd = repoPath ?? '.';
-    let diffFiles: string[] = [];
-    try {
-      const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
-      const args = ['diff', '--name-only'];
-      if (diffFlag) args.push(diffFlag);
-      const output = execFileSync('git', args, { cwd, encoding: 'utf-8' });
-      diffFiles = output.trim().split('\n').filter(Boolean);
-    } catch {
-      console.log('Git diff failed. Is this a git repository?');
-      return;
-    }
-
-    if (diffFiles.length === 0) {
-      if (opts.json) { console.log(JSON.stringify({ changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' })); }
-      else { console.log('No changes detected.'); }
-      return;
-    }
-
-    // Match changed files to graph symbols
     const store = createSqliteStore(resolve(dbPath));
     try {
       const graph = store.loadGraph();
-      const diffFileSet = new Set(diffFiles);
-      const changedSymbols: string[] = [];
-      const changedNodeIds = new Set<string>();
-
-      for (const node of graph.iterNodes()) {
-        const fp = node.properties.filePath as string | undefined;
-        if (fp && diffFileSet.has(fp)) {
-          changedNodeIds.add(node.id);
-          changedSymbols.push(node.properties.name ?? node.id);
-        }
-      }
-
-      // Find affected processes
-      const affectedProcesses: string[] = [];
-      const seenProcessNames = new Set<string>();
-      for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
-        if (changedNodeIds.has(rel.targetId)) {
-          const proc = graph.getNode(rel.sourceId);
-          if (proc) {
-            const procName = proc.properties.name ?? proc.id;
-            if (!seenProcessNames.has(procName)) {
-              seenProcessNames.add(procName);
-              affectedProcesses.push(procName);
-            }
-          }
-        }
-      }
-
-      const crossCommunityCount = affectedProcesses.length;
-      const riskLevel = affectedProcesses.length > 3 ? 'high'
-        : affectedProcesses.length > 0 ? 'medium'
-        : changedNodeIds.size > 0 ? 'unknown'
-        : 'low';
-
-      const result = {
-        changed_files: diffFiles,
-        changed_count: diffFiles.length,
-        affected_count: affectedProcesses.length,
-        risk_level: riskLevel,
-        changed_symbols: changedSymbols,
-        affected_processes: affectedProcesses,
-        cross_community_affected: crossCommunityCount,
-      };
+      const result = detectChanges(graph, cwd, scope);
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
@@ -800,16 +809,24 @@ program
 
       console.log(`\n=== Change Impact Analysis (${scope}) ===`);
       console.log(`Changed files: ${result.changed_count}`);
-      for (const f of diffFiles) console.log(`  ${f}`);
-      console.log(`Risk level: ${riskLevel}`);
-      if (changedSymbols.length > 0) {
-        console.log(`\nChanged symbols (${changedSymbols.length}):`);
-        for (const s of changedSymbols.slice(0, 20)) console.log(`  ${s}`);
-        if (changedSymbols.length > 20) console.log(`  ... and ${changedSymbols.length - 20} more`);
+      for (const f of result.changed_files) console.log(`  ${f}`);
+
+      const symbols = result.affected_symbols;
+      if (symbols.length > 0) {
+        console.log(`\nAffected symbols (${symbols.length}):`);
+        for (const s of symbols.slice(0, 20)) {
+          console.log(`  [${s.changeType.toUpperCase()}] ${s.label}:${s.name} — ${s.filePath}:L${s.startLine}-${s.endLine}`);
+        }
+        if (symbols.length > 20) console.log(`  ... and ${symbols.length - 20} more`);
+      } else if (result.changed_count > 0) {
+        console.log(`\nAffected symbols: 0 (no symbol line ranges overlap with changed lines)`);
       }
-      if (affectedProcesses.length > 0) {
-        console.log(`\nAffected processes (${affectedProcesses.length}):`);
-        for (const p of affectedProcesses) console.log(`  ${p}`);
+
+      console.log(`Risk level: ${result.risk_level}`);
+      if (result.affected_processes.length > 0) {
+        console.log(`\nAffected processes (${result.affected_processes.length}):`);
+        for (const p of result.affected_processes.slice(0, 10)) console.log(`  ${p}`);
+        if (result.affected_processes.length > 10) console.log(`  ... and ${result.affected_processes.length - 10} more`);
       }
     } finally {
       store.close();
@@ -1256,7 +1273,8 @@ program
   .description('Detect architectural patterns using graphlet-based structural analysis (#461)')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
   .option('--json', 'Output raw JSON')
-  .action((repoPath: string | undefined, opts: { db: string; json?: boolean }) => {
+  .option('--no-subgraph', 'Score entire graph monolithically (default: per-subgraph)')
+  .action((repoPath: string | undefined, opts: { db: string; json?: boolean; subgraph?: boolean }) => {
     const dbPath = repoPath ? join(repoPath, '.astrolabe', 'astrolabe.db') : opts.db;
     if (!existsSync(dbPath)) {
       console.log('No knowledge graph found. Run `astrolabe analyze` first.');
@@ -1267,51 +1285,77 @@ program
     const graph = store.loadGraph();
     store.close();
 
-    // Build adjacency map from CALLS, IMPORTS, EXTENDS edges
-    const nodeIds = new Set<string>();
-    for (const node of graph.iterNodes()) nodeIds.add(node.id);
-    const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
-    const profile = countGraphlets(graph.iterNodes(), adjMap);
+    if (opts.subgraph === false) {
+      // Monolithic mode: original behavior
+      const nodeIds = new Set<string>();
+      for (const node of graph.iterNodes()) nodeIds.add(node.id);
+      const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
+      const profile = countGraphlets(graph.iterNodes(), adjMap);
 
-    // Extract community info from Community nodes
-    const communities: Array<{ id: string; nodeCount: number }> = [];
-    for (const node of graph.iterNodes()) {
-      if (node.label === 'Community') {
-        communities.push({ id: node.id, nodeCount: (node.properties.symbolCount as number) ?? 0 });
+      const communities: Array<{ id: string; nodeCount: number }> = [];
+      for (const node of graph.iterNodes()) {
+        if (node.label === 'Community') {
+          communities.push({ id: node.id, nodeCount: (node.properties.symbolCount as number) ?? 0 });
+        }
       }
-    }
 
-    const patterns = detectPatterns(profile);
-    const health = scoreArchitectureHealth(profile, communities, adjMap);
+      const patterns = detectPatterns(profile);
+      const health = scoreArchitectureHealth(profile, communities, adjMap);
 
-    if (opts.json) {
-      console.log(JSON.stringify({ profile, patterns, health }, null, 2));
-      return;
-    }
+      if (opts.json) {
+        console.log(JSON.stringify({ profile, patterns, health }, null, 2));
+        return;
+      }
 
-    const totalMotifs3 = profile.motif3.empty + profile.motif3.oneEdge + profile.motif3.twoEdge + profile.motif3.triangle;
-    const totalMotifs4 = profile.motif4.chain + profile.motif4.star + profile.motif4.diamond + profile.motif4.cycle + profile.motif4.clique;
+      const totalMotifs3 = profile.motif3.empty + profile.motif3.oneEdge + profile.motif3.twoEdge + profile.motif3.triangle;
+      const totalMotifs4 = profile.motif4.chain + profile.motif4.star + profile.motif4.diamond + profile.motif4.cycle + profile.motif4.clique;
+      console.log(`\n=== Architecture Analysis (Monolithic) ===`);
+      console.log(`Nodes: ${profile.nodeCount} | Edges: ${profile.edgeCount}`);
+      console.log(`\n--- 3-Node Motifs (${totalMotifs3} total) ---`);
+      console.log(`  empty:    ${profile.motif3.empty}`);
+      console.log(`  oneEdge:  ${profile.motif3.oneEdge}`);
+      console.log(`  twoEdge:  ${profile.motif3.twoEdge}`);
+      console.log(`  triangle: ${profile.motif3.triangle}`);
+      console.log(`\n--- 4-Node Motifs (${totalMotifs4} total) ---`);
+      console.log(`  chain:   ${profile.motif4.chain}  star: ${profile.motif4.star}  diamond: ${profile.motif4.diamond}  cycle: ${profile.motif4.cycle}  clique: ${profile.motif4.clique}`);
+      console.log(`\n--- Detected Patterns ---`);
+      for (const p of patterns) console.log(`  ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
+      console.log(`\n--- Health Score: ${health.overallScore}/100 ---`);
+      console.log(`  Cohesion: ${(health.cohesion * 100).toFixed(1)}% | Modularity: ${(health.modularity * 100).toFixed(1)}% | Complexity: ${(health.complexity * 100).toFixed(1)}%`);
+      if (health.antiPatterns.length > 0) {
+        console.log(`\n--- Anti-Patterns ---`);
+        for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
+      }
+    } else {
+      // Subgraph-aware mode
+      const result = analyzeSubgraphArchitecture(graph);
 
-    console.log(`\n=== Architecture Analysis ===`);
-    console.log(`Nodes: ${profile.nodeCount} | Edges: ${profile.edgeCount} | ${profile.sampled ? `Sampled (${profile.sampleSize} nodes)` : 'Full enumeration'}`);
-    console.log(`\n--- 3-Node Motifs (${totalMotifs3} total) ---`);
-    console.log(`  empty:    ${profile.motif3.empty}`);
-    console.log(`  oneEdge:  ${profile.motif3.oneEdge}`);
-    console.log(`  twoEdge:  ${profile.motif3.twoEdge}`);
-    console.log(`  triangle: ${profile.motif3.triangle}`);
-    console.log(`\n--- 4-Node Motifs (${totalMotifs4} total) ---`);
-    console.log(`  chain:   ${profile.motif4.chain}`);
-    console.log(`  star:    ${profile.motif4.star}`);
-    console.log(`  diamond: ${profile.motif4.diamond}`);
-    console.log(`  cycle:   ${profile.motif4.cycle}`);
-    console.log(`  clique:  ${profile.motif4.clique}`);
-    console.log(`\n--- Detected Patterns ---`);
-    for (const p of patterns) console.log(`  ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
-    console.log(`\n--- Health Score: ${health.overallScore}/100 ---`);
-    console.log(`  Cohesion: ${(health.cohesion * 100).toFixed(1)}% | Modularity: ${(health.modularity * 100).toFixed(1)}% | Complexity: ${(health.complexity * 100).toFixed(1)}%`);
-    if (health.antiPatterns.length > 0) {
-      console.log(`\n--- Anti-Patterns ---`);
-      for (const ap of health.antiPatterns) console.log(`  [${ap.severity}] ${ap.name}: ${ap.description}`);
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      console.log(`\n=== Architecture Analysis (Per-Subgraph) ===`);
+      console.log(`Subgraphs detected: ${result.subgraphs.length} total, ${result.scores.filter(s => s.scored).length} scored`);
+      console.log(`Overall Health: ${result.overallHealth}/100 — ${result.overallLabel}\n`);
+
+      for (const score of result.scores) {
+        if (!score.scored) {
+          console.log(`--- ${score.name} (${score.nodeCount} nodes, ${score.language}) — [skipped: docs/config]`);
+          continue;
+        }
+        console.log(`--- ${score.name} (${score.nodeCount} nodes, ${score.edgeCount} edges, ${score.language}) ---`);
+        console.log(`  Health: ${score.health.overallScore}/100`);
+        console.log(`  Cohesion: ${(score.health.cohesion * 100).toFixed(1)}% | Modularity: ${(score.health.modularity * 100).toFixed(1)}% | Complexity: ${(score.health.complexity * 100).toFixed(1)}%`);
+        if (score.patterns.length > 0) {
+          console.log(`  Patterns:`);
+          for (const p of score.patterns) console.log(`    ${p.name}: ${(p.confidence * 100).toFixed(0)}% — ${p.description}`);
+        }
+        if (score.health.antiPatterns.length > 0) {
+          console.log(`  Anti-Patterns:`);
+          for (const ap of score.health.antiPatterns) console.log(`    [${ap.severity}] ${ap.name}: ${ap.description}`);
+        }
+      }
     }
     console.log();
   });

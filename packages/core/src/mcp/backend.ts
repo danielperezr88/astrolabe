@@ -4,7 +4,7 @@
  * Extracted from server.ts for modularity (#838).
  */
 
-import { execFileSync, fork } from 'node:child_process';
+import { fork } from 'node:child_process';
 import { statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve as pathResolve, join as pathJoin, basename } from 'node:path';
@@ -17,6 +17,7 @@ import { loadRegistry, findEntryWithSiblingWarning, type RegistryEntry } from '.
 import { listGroups } from './groups.js';
 import { EDGE_DECAY_FACTORS, applyDecay, noisyOr } from '../analysis/impact-decay.js';
 import { JobManager, type AnalyzeJob } from '../server/analyze-job.js';
+import { detectChanges as detectChangesCore, type DetectChangesResult } from '../analysis/detect-changes.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -758,48 +759,23 @@ export class LocalBackend {
   }
 
   detectChanges(scope: 'unstaged' | 'staged' | 'all' = 'unstaged', repo?: string) {
-    // Validate scope parameter (#118)
     const validScopes = ['unstaged', 'staged', 'all'];
     if (!validScopes.includes(scope)) {
       return { error: `Invalid scope "${scope}". Use: ${validScopes.join(', ')}` };
     }
 
     const ctx = this.getRepo(repo);
-    // Invalidate cached graph since changes may have occurred (#176)
     ctx.invalidateGraph();
     const repoPath = ctx.entry.path;
-
-    let diffFiles: string[] = [];
-    try {
-      const diffFlag = scope === 'staged' ? '--cached' : scope === 'all' ? 'HEAD' : '';
-      const args = ['diff', '--name-only'];
-      if (diffFlag) args.push(diffFlag);
-      const output = execFileSync('git', args, { cwd: repoPath, encoding: 'utf-8' });
-      diffFiles = output.trim().split('\n').filter(Boolean);
-    } catch {
-      return { error: 'Git diff failed. Is this a git repository?' };
-    }
-    if (diffFiles.length === 0) return { changed_files: [], changed_count: 0, affected_count: 0, risk_level: 'none' };
-
     const graph = ctx.loadGraph();
 
-    const changedSymbols: string[] = [];
+    const result: DetectChangesResult = detectChangesCore(graph, repoPath, scope);
 
-    // #314: Use Set for O(N+M) file matching instead of Array.includes O(N*M)
-    const changedNodeIds = new Set<string>();
-    const diffFileSet = new Set(diffFiles);
-    for (const node of graph.iterNodes()) {
-      const fp = node.properties.filePath as string | undefined;
-      if (fp && diffFileSet.has(fp)) {
-        changedNodeIds.add(node.id);
-        changedSymbols.push(node.properties.name ?? node.id);
-      }
-    }
-
-    // Find affected processes by matching STEP_IN_PROCESS targets by node ID
-    // Include processType to flag cross-community processes (#153)
+    // Enrich with processType (#153)
     const affectedProcesses: Array<{ name: string; processType: string }> = [];
     const seenProcessNames = new Set<string>();
+    const changedNodeIds = new Set(result.affected_symbols.map(s => s.nodeId));
+
     for (const rel of graph.iterRelationshipsByType('STEP_IN_PROCESS')) {
       if (changedNodeIds.has(rel.targetId)) {
         const proc = graph.getNode(rel.sourceId);
@@ -818,20 +794,13 @@ export class LocalBackend {
 
     const crossCommunityCount = affectedProcesses.filter((p) => p.processType === 'cross_community').length;
 
-    // #643 Pitfall 4: When changed symbols exist but no processes are affected,
-    // report UNKNOWN instead of LOW. Symbol tracing may be incomplete.
-    const riskLevel = affectedProcesses.length > 3 ? 'high'
-      : affectedProcesses.length > 0 ? 'medium'
-      : changedNodeIds.size > 0 ? 'unknown'
-      : 'low';
-
     return {
-      changed_files: diffFiles,
-      changed_count: diffFiles.length,
+      changed_files: result.changed_files,
+      changed_count: result.changed_count,
       affected_count: affectedProcesses.length,
-      risk_level: riskLevel,
-      changed_symbols: changedSymbols,
-      affected_processes: affectedProcesses.map((p) => p.name),
+      risk_level: result.risk_level,
+      changed_symbols: result.affected_symbols.map(s => s.name),
+      affected_processes: affectedProcesses.map(p => p.name),
       cross_community_affected: crossCommunityCount,
     };
   }

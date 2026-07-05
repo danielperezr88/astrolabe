@@ -155,6 +155,17 @@ node scripts/next-version.mjs --release    # Check next stable version
 node scripts/next-version.mjs --current    # Check current stable version
 ```
 
+### Build gotcha: `.tsbuildinfo` cache
+
+TypeScript composite projects cache compilation state in `tsconfig.tsbuildinfo`. If you delete `dist/` without also deleting this file, `tsc` will report success but silently produce no output — your changes won't appear in compiled code. This can mislead fix testing into thinking a fix doesn't work.
+
+**Always delete both when forcing a clean rebuild:**
+```bash
+rm packages/core/tsconfig.tsbuildinfo  # or packages/cli/tsconfig.tsbuildinfo
+npm run build --workspace packages/core
+```
+Or verify compiled output exists: `ls packages/core/dist/analysis/phases/pattern-detection.js`.
+
 ## Reviewer
 
 A reviewer agent works in 10-minute rounds: reviews open PRs, pushes back with change requests, approves when ready.
