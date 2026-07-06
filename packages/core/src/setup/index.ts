@@ -152,39 +152,55 @@ const EDITORS: EditorConfig[] = [
       return candidates.some((p) => existsSync(p));
     },
     configure(force) {
-      // Use first existing platform-appropriate config directory
       const candidates = [
         join(HOME, '.config', 'opencode'),
         join(appDataDir(), 'opencode'),
       ];
       const dir = candidates.find((p) => existsSync(p)) || candidates[0];
-      const configPath = join(dir, 'config.json');
 
-      if (!force && existsSync(configPath)) {
-        try {
-          const existing = JSON.parse(readFileSync(configPath, 'utf-8'));
-          if (existing.mcp?.astrolabe) {
-            return { error: 'Already configured (use --force to overwrite)' };
-          }
-        } catch (err) { log.debug('Corrupt OpenCode config, will overwrite', { path: configPath, error: String(err) }); }
+      // OpenCode reads both config.json (legacy, lower precedence) and
+      // opencode.json (current, higher precedence) and merges them.
+      // Write to both so the MCP server is picked up regardless of
+      // which file the user's OpenCode version checks first.
+      const configPath = join(dir, 'config.json');
+      const opencodePath = join(dir, 'opencode.json');
+
+      const checkExisting = (filePath: string): boolean => {
+        if (!force && existsSync(filePath)) {
+          try {
+            const existing = JSON.parse(readFileSync(filePath, 'utf-8'));
+            if (existing.mcp?.astrolabe) return true;
+          } catch (err) { log.debug('Corrupt OpenCode config', { path: filePath, error: String(err) }); }
+        }
+        return false;
+      };
+
+      if (checkExisting(configPath) || checkExisting(opencodePath)) {
+        return { error: 'Already configured (use --force to overwrite)' };
       }
 
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-      let config: any = { mcp: {} };
-      if (existsSync(configPath)) {
-        try { config = JSON.parse(readFileSync(configPath, 'utf-8')); } catch (err) { log.debug('Starting fresh OpenCode config', { path: configPath, error: String(err) }); }
-      }
-
-      config.mcp = config.mcp || {};
-      config.mcp.astrolabe = {
-        command: 'npx',
-        args: ['-y', '@astrolabe-dev/cli', 'serve-mcp'],
+      const mcpEntry = {
+        type: 'local' as const,
+        command: ['npx', '-y', '@astrolabe-dev/cli', 'serve-mcp'],
         enabled: true,
       };
 
-      atomicWriteJson(configPath, config);
-      return { path: configPath };
+      const writeMcpConfig = (filePath: string) => {
+        let config: any = {};
+        if (existsSync(filePath)) {
+          try { config = JSON.parse(readFileSync(filePath, 'utf-8')); } catch (err) { log.debug('Starting fresh OpenCode config', { path: filePath, error: String(err) }); }
+        }
+        config.mcp = config.mcp || {};
+        config.mcp.astrolabe = mcpEntry;
+        atomicWriteJson(filePath, config);
+      };
+
+      writeMcpConfig(configPath);
+      writeMcpConfig(opencodePath);
+
+      return { path: `${configPath} + ${opencodePath}` };
     },
   },
 
