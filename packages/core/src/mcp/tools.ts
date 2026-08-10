@@ -15,8 +15,8 @@ import { PhaseTimer } from '../core/phase-timer.js';
 import { pageRank, betweennessCentrality, shortestPath, detectClones, computeSpectralMetrics, detectCutVertices, detectBridges, architectureSmells } from '../core/graph-algorithms.js';
 import { chat as ragChat, type ChatMessage } from '../agent/rag-chat.js';
 import { generateDiagram, generateMarkdownDoc, type DiagramType, type DiagramOptions } from './diagram-generator.js';
-import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
-import type { CommunityInfo } from '../analysis/graphlet/index.js';
+import { countGraphlets, buildAdjacencyMap, detectPatterns, scoreTypedArchitectureHealth } from '../analysis/graphlet/index.js';
+import type { CommunityInfo, TypedArchitectureHealth } from '../analysis/graphlet/index.js';
 import { computeGraphCoverageMetrics } from '../analysis/coverage/graph-metrics.js';
 import { exportGnnDataset } from '../core/gnn-features.js';
 import { EmbeddingStore, createEmbeddingProvider, type EmbeddingProviderType } from '../search/embeddings-store.js';
@@ -55,6 +55,65 @@ const TOOLS: Record<string, ToolDefinition> = {
       if (repos.length === 0) return { content: [{ type: 'text', text: 'No indexed repositories. Run `astrolabe analyze <path>` first.' }] };
       const lines = repos.map((r) => `${r.name} (${r.path}) — ${new Date(r.indexedAt).toISOString()}`);
       return { content: [{ type: 'text', text: `Indexed repositories:\n${lines.join('\n')}\n\nNext: use query({query: "your search"}) or context({name: "symbolName"}). For complex graph patterns, use cypher({match: {...}}). Read astrolabe://repo/{name}/schema for node labels and relationship types.` }] };
+    },
+  },
+
+  'astrolabe.explore': {
+    name: 'astrolabe.explore',
+    description: `A powerful omni-tool that takes a natural language query about the codebase and returns comprehensive results including symbol source code, call paths, blast radius, and relationships. Should be the primary tool used for codebase exploration.
+
+Combines hybrid search with 360-degree symbol context in a single call — first searches for matching symbols, then enriches the top result with full context (callers, callees, process membership, and relationships).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural language query about the codebase (e.g., "how does authentication work", "find the login handler")' },
+        repo: { type: 'string', description: 'Repository name. Omit if only one repo indexed.' },
+      },
+      required: ['query'],
+    },
+    handler: async (params) => {
+      const timer = new PhaseTimer('explore');
+      timer.start();
+      const query = requireString(params, 'query');
+      const repo = params.repo as string | undefined;
+
+      const searchResult = backend.query(query, repo, 5, undefined, undefined) as Record<string, unknown>;
+      timer.mark('search');
+
+      const definitions = (searchResult.definitions as Array<Record<string, unknown>>) ?? [];
+      const processSymbols = (searchResult.process_symbols as Array<Record<string, unknown>>) ?? [];
+
+      let topSymbol: Record<string, unknown> | null = null;
+      if (definitions.length > 0) {
+        topSymbol = definitions[0];
+      } else if (processSymbols.length > 0) {
+        topSymbol = processSymbols[0];
+        const { process_id: _, ...rest } = topSymbol;
+        topSymbol = rest;
+      }
+
+      let contextResult: unknown = null;
+      if (topSymbol) {
+        try {
+          contextResult = backend.context(
+            (topSymbol.name as string) ?? '',
+            repo,
+            topSymbol.type as string | undefined,
+            topSymbol.filePath as string | undefined,
+          );
+        } catch {
+          contextResult = null;
+        }
+      }
+      timer.mark('context');
+
+      timer.stop();
+      const combined = {
+        search: searchResult,
+        context: contextResult,
+      };
+      const nextHint = '\n\nNext: use astrolabe.explore({query: "more specific query"}) to drill deeper, or astrolabe.impact({target: "symbol"}) for blast radius analysis.';
+      return { content: [{ type: 'text', text: JSON.stringify(combined, null, 2) + nextHint }] };
     },
   },
 
@@ -100,9 +159,10 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
           return { content: [{ type: 'text', text: JSON.stringify({ error: 'No indexed repository found. Use astrolabe embed first.' }) }] };
         }
 
+        let embedStore: EmbeddingStore | undefined;
         try {
           const dbPath = ctx.entry.dbPath;
-          const embedStore = new EmbeddingStore(new (await import('better-sqlite3')).default(dbPath));
+          embedStore = new EmbeddingStore(new (await import('better-sqlite3')).default(dbPath));
           const providerType = (params.embedding_provider as EmbeddingProviderType) ?? 'auto';
           const provider = createEmbeddingProvider(providerType);
           const demand = provider.dimensions;
@@ -118,7 +178,6 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
           const allEmbs = embedStore.getAll();
 
           if (allEmbs.length === 0) {
-            embedStore.close?.();
             return { content: [{ type: 'text', text: JSON.stringify({ error: 'No embeddings found. Run `astrolabe embed` first.' }) }] };
           }
 
@@ -151,7 +210,6 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
             };
           });
 
-          embedStore.close?.();
           result = {
             mode: 'semantic',
             hops_used,
@@ -167,6 +225,8 @@ GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that grou
               }),
             }],
           };
+        } finally {
+          embedStore?.close();
         }
       } else {
         // Hybrid mode (existing behavior)
@@ -1367,23 +1427,35 @@ DIAGRAM TYPES:
       const graph = ctx.loadGraph();
 
       // 2. Collect non-structural node IDs (exclude File, Folder, Import, Package)
+      //    and build typed node label map for typed health scoring
       const structuralLabels = new Set(['File', 'Folder', 'Import', 'Package']);
       const nodeIds = new Set<string>();
       const nodeIterable: Array<{ id: string }> = [];
+      const nodeLabels = new Map<string, string>();
       for (const node of graph.iterNodes()) {
+        nodeLabels.set(node.id, node.label);
         if (!structuralLabels.has(node.label)) {
           nodeIds.add(node.id);
           nodeIterable.push({ id: node.id });
         }
       }
 
-      // 3. Build adjacency map from CALLS, IMPORTS, EXTENDS edges only
+      // 3. Build adjacency map from CALLS, IMPORTS, EXTENDS edges only,
+      //    and typed adjacency map for typed health scoring
       const allowedEdgeTypes = new Set(['CALLS', 'IMPORTS', 'EXTENDS']);
       const relIterable: Array<{ sourceId: string; targetId: string; type: string }> = [];
+      const typedAdjMap = new Map<string, Array<{ target: string; type: string }>>();
       for (const rel of graph.iterRelationships()) {
         if (allowedEdgeTypes.has(rel.type)) {
           relIterable.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
         }
+        // Build typed adjacency: directed edges with labels preserved
+        let edges = typedAdjMap.get(rel.sourceId);
+        if (!edges) {
+          edges = [];
+          typedAdjMap.set(rel.sourceId, edges);
+        }
+        edges.push({ target: rel.targetId, type: rel.type });
       }
       const adjMap = buildAdjacencyMap(relIterable, nodeIds);
 
@@ -1400,7 +1472,7 @@ DIAGRAM TYPES:
       timer.mark('detect_patterns');
 
       // 6. Optionally score health
-      let health: ReturnType<typeof scoreArchitectureHealth> | undefined;
+      let health: TypedArchitectureHealth | undefined;
       const includeHealth = params.include_health !== false; // default true
       if (includeHealth) {
         // Extract community info from graph
@@ -1412,7 +1484,7 @@ DIAGRAM TYPES:
             communities.push({ id: cNode.id, nodeCount: memberCount });
           }
         }
-        health = scoreArchitectureHealth(profile, communities, adjMap);
+        health = scoreTypedArchitectureHealth(profile, {}, communities, adjMap, nodeLabels, typedAdjMap);
         timer.mark('health_score');
       }
 

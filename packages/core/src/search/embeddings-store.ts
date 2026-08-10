@@ -411,6 +411,7 @@ const SCHEMA = `
 `;
 
 export class EmbeddingStore {
+  #db: Database.Database;
   private insertStmt: Database.Statement;
   private getStmt: Database.Statement;
   private getAllStmt: Database.Statement;
@@ -420,6 +421,7 @@ export class EmbeddingStore {
   private clearAllStmt: Database.Statement;
 
   constructor(db: Database.Database) {
+    this.#db = db;
     db.exec(SCHEMA);
     this.insertStmt = db.prepare(
       'INSERT OR REPLACE INTO embeddings (node_id, hash, vector, dims, indexed_at) VALUES (?, ?, ?, ?, ?)',
@@ -591,6 +593,6 @@ export class EmbeddingStore {
   }
 
   close(): void {
-    // Statements are automatically finalized when DB closes
+    this.#db.close();
   }
 }

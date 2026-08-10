@@ -7,7 +7,7 @@
 
 import type { KnowledgeGraph } from '../core/types.js';
 import { pageRank, betweennessCentrality, tarjanSCC, detectHubs, detectBridges } from './graph-algorithms.js';
-import { countGraphlets, buildAdjacencyMap, scoreArchitectureHealth } from '../analysis/graphlet/index.js';
+import { countGraphlets, buildAdjacencyMap, scoreTypedArchitectureHealth } from '../analysis/graphlet/index.js';
 import type { CommunityInfo } from '../analysis/graphlet/index.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -139,7 +139,9 @@ export function computeSnapshotMetrics(
   const structuralLabels = new Set(['File', 'Folder', 'Import', 'Package']);
   const nodeIds = new Set<string>();
   const nodeIterable: Array<{ id: string }> = [];
+  const nodeLabels = new Map<string, string>();
   for (const node of graph.iterNodes()) {
+    nodeLabels.set(node.id, node.label);
     if (!structuralLabels.has(node.label)) {
       nodeIds.add(node.id);
       nodeIterable.push({ id: node.id });
@@ -148,10 +150,17 @@ export function computeSnapshotMetrics(
 
   const allowedEdgeTypes = new Set(['CALLS', 'IMPORTS', 'EXTENDS']);
   const relIterable: Array<{ sourceId: string; targetId: string; type: string }> = [];
+  const typedAdjMap = new Map<string, Array<{ target: string; type: string }>>();
   for (const rel of graph.iterRelationships()) {
     if (allowedEdgeTypes.has(rel.type)) {
       relIterable.push({ sourceId: rel.sourceId, targetId: rel.targetId, type: rel.type });
     }
+    let edges = typedAdjMap.get(rel.sourceId);
+    if (!edges) {
+      edges = [];
+      typedAdjMap.set(rel.sourceId, edges);
+    }
+    edges.push({ target: rel.targetId, type: rel.type });
   }
 
   const adjMap = buildAdjacencyMap(relIterable, nodeIds);
@@ -168,7 +177,7 @@ export function computeSnapshotMetrics(
     }
   }
 
-  const health = scoreArchitectureHealth(profile, communities, adjMap);
+  const health = scoreTypedArchitectureHealth(profile, {}, communities, adjMap, nodeLabels, typedAdjMap);
 
   return {
     id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

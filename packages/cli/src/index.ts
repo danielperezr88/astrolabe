@@ -32,7 +32,7 @@ import {
   startHttpServer,
   generateWiki,
   startEvalServer,
-  countGraphlets, buildAdjacencyMap, detectPatterns, scoreArchitectureHealth,
+countGraphlets, buildAdjacencyMap, detectPatterns, scoreTypedArchitectureHealth,
   analyzeSubgraphArchitecture,
   detectClones,
   computeSpectralMetrics,
@@ -72,11 +72,13 @@ program
   .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
   .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
+  .option('--no-hooks', 'Skip Claude Code hooks installation in target repo')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
   .option('--no-stats', 'Omit volatile counts from AGENTS.md/CLAUDE.md (#760)')
   .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
+  .option('--exclude <patterns...>', 'Glob patterns for additional file/directory exclusion')
   .option('--profile', 'Emit phase-level timing information (Pitfall 7)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; skills?: boolean; noStats?: boolean; maxFileSize?: number; profile?: boolean }) => {
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; hooks?: boolean; skills?: boolean; stats?: boolean; maxFileSize?: number; exclude?: string[]; profile?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
 
@@ -102,6 +104,7 @@ program
       // Phase 1: Always scan first — needed for meta.json and incremental diff
       const scanGraph = createKnowledgeGraph();
       const scanCtx = createPhaseContext(repoPath, scanGraph, onProgress);
+      if (opts.exclude) scanCtx.state.set('options:exclude', opts.exclude);
       await runPipeline([scanPhase], scanCtx);
       const scanOutput = (scanCtx.state.get('output:scan') as ScanOutput | undefined);
       if (!scanOutput) throw new Error('Scan phase did not produce output');
@@ -252,8 +255,10 @@ program
       saveRegistry(repos);
 
       // #276: Install Claude Code hooks for auto-augmentation
-      const hookResult = installHooks(repoPath);
-      log.info('Claude Code hooks installed', { scripts: hookResult.scripts, config: hookResult.config });
+      if (opts.hooks !== false) {
+        const hookResult = installHooks(repoPath);
+        log.info('Claude Code hooks installed', { scripts: hookResult.scripts, config: hookResult.config });
+      }
 
       // #268, #267: Generate AGENTS.md/CLAUDE.md and per-community skills
       if (!opts.skipAgentsMd) {
@@ -274,12 +279,13 @@ program
           isIncremental,
           graph: opts.skills ? graph : undefined,
           skills: opts.skills ?? false,
-          noStats: opts.noStats ?? false,
+          noStats: opts.stats === false,
         });
         log.info('Agent files generated', { agentsMd: agentResult.agentsMd, claudeMd: agentResult.claudeMd, skillsCount: agentResult.skillsCount });
       }
 
       log.info('Analysis complete', { nodes: nodeCount, edges: edgeCount, repo: repoName });
+      process.exit(0);
     } catch (err) {
       log.error('Analysis failed', { error: String(err) });
       process.exit(1);
@@ -839,16 +845,22 @@ program
   .description('List all symbols in the knowledge graph')
   .option('-d, --db <path>', 'Database path', '.astrolabe/astrolabe.db')
   .option('--label <label>', 'Filter by node label (Function, Class, etc.)')
-  .action((opts: { db: string; label?: string }) => {
+  .option('-n, --limit <number>', 'Max results', '100')
+  .option('--offset <number>', 'Skip first N results', '0')
+  .action((opts: { db: string; label?: string; limit: string; offset: string }) => {
+    const maxResults = parseInt(opts.limit, 10) || 100;
+    const skip = parseInt(opts.offset, 10) || 0;
     const store = createSqliteStore(opts.db);
     try {
       const graph = store.loadGraph();
       let count = 0;
+      let skipped = 0;
       for (const node of graph.iterNodes()) {
         if (opts.label && node.label !== opts.label) continue;
+        if (skipped < skip) { skipped++; continue; }
         count++;
         console.log(`${node.label.padEnd(12)} ${node.properties.name ?? '?'}  (${node.properties.filePath ?? '?'})`);
-        if (count >= 100) { console.log('...(truncated at 100)'); break; }
+        if (count >= maxResults) { console.log(`...(showing ${count} of many, use --offset ${skip + count} for next page)`); break; }
       }
       if (count === 0) console.log('No symbols found.');
     } finally { store.close(); }
@@ -1247,8 +1259,12 @@ program.command('wiki <repoPath>')
     }
 
     const store = createSqliteStore(dbPath);
-    const graph = store.loadGraph();
-    store.close();
+    let graph;
+    try {
+      graph = store.loadGraph();
+    } finally {
+      store.close();
+    }
 
     console.log(`Generating wiki for ${repoName}...`);
     const result = await generateWiki({
@@ -1282,15 +1298,35 @@ program
     }
 
     const store = createSqliteStore(dbPath);
-    const graph = store.loadGraph();
-    store.close();
+    let graph;
+    try {
+      graph = store.loadGraph();
+    } finally {
+      store.close();
+    }
 
-    if (opts.subgraph === false) {
-      // Monolithic mode: original behavior
+if (opts.subgraph === false) {
       const nodeIds = new Set<string>();
-      for (const node of graph.iterNodes()) nodeIds.add(node.id);
+      const nodeLabels = new Map<string, string>();
+      const nodeIterable: Array<{ id: string }> = [];
+      for (const node of graph.iterNodes()) {
+        nodeLabels.set(node.id, node.label);
+        nodeIds.add(node.id);
+        nodeIterable.push({ id: node.id });
+      }
       const adjMap = buildAdjacencyMap(graph.iterRelationships(), nodeIds);
-      const profile = countGraphlets(graph.iterNodes(), adjMap);
+
+      const typedAdjMap = new Map<string, Array<{ target: string; type: string }>>();
+      for (const rel of graph.iterRelationships()) {
+        let edges = typedAdjMap.get(rel.sourceId);
+        if (!edges) {
+          edges = [];
+          typedAdjMap.set(rel.sourceId, edges);
+        }
+        edges.push({ target: rel.targetId, type: rel.type });
+      }
+
+      const profile = countGraphlets(nodeIterable, adjMap);
 
       const communities: Array<{ id: string; nodeCount: number }> = [];
       for (const node of graph.iterNodes()) {
@@ -1300,7 +1336,7 @@ program
       }
 
       const patterns = detectPatterns(profile);
-      const health = scoreArchitectureHealth(profile, communities, adjMap);
+      const health = scoreTypedArchitectureHealth(profile, {}, communities, adjMap, nodeLabels, typedAdjMap);
 
       if (opts.json) {
         console.log(JSON.stringify({ profile, patterns, health }, null, 2));
@@ -1376,8 +1412,12 @@ program
       return;
     }
     const store = createSqliteStore(dbPath);
-    const graph = store.loadGraph();
-    store.close();
+    let graph;
+    try {
+      graph = store.loadGraph();
+    } finally {
+      store.close();
+    }
     const options: any = {};
     if (opts.fanIn) options.fanInThreshold = Number(opts.fanIn);
     if (opts.fanOut) options.fanOutThreshold = Number(opts.fanOut);
@@ -2138,4 +2178,4 @@ program
     }
   });
 
-program.parse();
+program.parseAsync().catch((err) => { console.error(err); process.exit(1); });

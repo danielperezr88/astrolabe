@@ -20,6 +20,9 @@
     "watch": "tsc --watch",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
+  "engines": {
+    "node": ">=18.0.0 <25.0.0"
+  },
   "license": "MIT",
   "keywords": [
     "astrolabe",
