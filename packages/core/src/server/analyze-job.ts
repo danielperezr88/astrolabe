@@ -43,6 +43,7 @@ export class JobManager {
 
   constructor() {
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref();
   }
 
   /** Create a new job, or return existing active job for the same repo. */

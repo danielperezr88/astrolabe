@@ -83,6 +83,7 @@ export { countGraphlets, buildAdjacencyMap, type GraphletProfile } from './analy
 export { detectPatterns, type ArchitecturePattern } from './analysis/graphlet/index.js';
 export { scoreArchitectureHealth, type ArchitectureHealth, type CommunityInfo } from './analysis/graphlet/index.js';
 export { analyzeSubgraphArchitecture, type SubgraphArchitectureResult } from './analysis/graphlet/index.js';
+export { scoreTypedArchitectureHealth, type TypedArchitectureHealth } from './analysis/graphlet/index.js';
 // #810: Clone detection
 export { detectClones, type CloneDetectionResult, type ClonePair, type CloneCluster } from './core/graph-algorithms.js';
 // #812: Spectral graph analysis

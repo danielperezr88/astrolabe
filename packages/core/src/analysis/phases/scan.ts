@@ -186,9 +186,14 @@ function globToRegex(glob: string, dirOnly: boolean): string {
   return `^(?:.*/)?${re}`;
 }
 
-/** Build the combined ignore regex list from file + defaults. */
-function buildIgnorePatterns(repoPath: string): RegExp[] {
+/** Build the combined ignore regex list from file + defaults + explicit excludes. */
+function buildIgnorePatterns(repoPath: string, explicitExcludes: string[] = []): RegExp[] {
   const patterns: RegExp[] = DEFAULT_IGNORE.map((g) => new RegExp(globToRegex(g, false)));
+
+  // Explicit --exclude patterns (from CLI/context)
+  for (const ex of explicitExcludes) {
+    patterns.push(new RegExp(globToRegex(ex, false)));
+  }
 
   const ignoreFile = join(repoPath, '.astrolabeignore');
   if (existsSync(ignoreFile)) {
@@ -274,7 +279,8 @@ export const scanPhase: PhaseDefinition<ScanOutput> = {
   dependencies: [],
 
   execute(context: PhaseContext): ScanOutput {
-    const patterns = buildIgnorePatterns(context.repoPath);
+    const explicitExcludes = (context.state.get('options:exclude') as string[]) ?? [];
+    const patterns = buildIgnorePatterns(context.repoPath, explicitExcludes);
     const files: FileEntry[] = [];
     const maxFileSize = getMaxFileSize(context);
 
