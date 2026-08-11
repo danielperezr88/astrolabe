@@ -22,7 +22,22 @@ import { StreamableHttpTransport } from './http-transport.js';
 // ── Singleton backend & wired handlers ─────────────────────────────────────
 
 const backend = new LocalBackend();
-const TOOLS: Record<string, ToolDefinition> = createTools(backend);
+const ALL_TOOLS: Record<string, ToolDefinition> = createTools(backend);
+const VISIBLE_TOOLS: Record<string, ToolDefinition> = (() => {
+  const allowlistRaw = process.env.ASTROLABE_MCP_TOOLS;
+  const alwaysVisible = new Set(['astrolabe.list_repos', 'astrolabe.explore']);
+
+  if (!allowlistRaw || allowlistRaw.toLowerCase() === 'all') return ALL_TOOLS;
+
+  const allowed = new Set(allowlistRaw.split(',').map((s) => `astrolabe.${s.trim()}`));
+  for (const k of alwaysVisible) allowed.add(k);
+
+  const filtered: Record<string, ToolDefinition> = {};
+  for (const [key, tool] of Object.entries(ALL_TOOLS)) {
+    if (allowed.has(key)) filtered[key] = tool;
+  }
+  return filtered;
+})();
 const resourceHandlers: ResourceHandlers = createResourceHandlers(backend);
 
 // ── Server ─────────────────────────────────────────────────────────────────
@@ -88,7 +103,7 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
         jsonrpc: '2.0',
         id: req.id,
         result: {
-          tools: Object.values(TOOLS).map((t) => ({
+          tools: Object.values(VISIBLE_TOOLS).map((t) => ({
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,
@@ -98,12 +113,12 @@ async function handleRequest(req: JsonRpcRequest): Promise<JsonRpcResponse | nul
 
     case 'tools/call': {
       const params = req.params as { name: string; arguments?: unknown } | undefined;
-      const tool = TOOLS[params?.name ?? ''];
+      const tool = ALL_TOOLS[params?.name ?? ''];
       if (!tool) {
         return {
           jsonrpc: '2.0',
           id: req.id,
-          error: { code: -32601, message: `Unknown tool: ${params?.name}. Available: ${Object.keys(TOOLS).join(', ')}` },
+          error: { code: -32601, message: `Unknown tool: ${params?.name}. Available: ${Object.keys(ALL_TOOLS).join(', ')}` },
         };
       }
       try {
