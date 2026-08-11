@@ -101,9 +101,11 @@ Alternatively, open `packages/vscode` in VS Code and press F5 (Extension Develop
 | `astrolabe context <symbol>` | 360° symbol view — incoming/outgoing edges, processes |
 | `astrolabe impact <symbol>` | Blast radius analysis — upstream/downstream impact |
 | `astrolabe augment <pattern>` | Enrich search results with graph context |
-| `astrolabe list` | List all symbols in the graph (`--label` to filter) |
+| `astrolabe list` | List all symbols in the graph (`--label` to filter, `--limit`, `--offset` for paging) |
 
-`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--skip-agents-md`, `--skills`, `--max-file-size`, `--profile`
+`analyze` flags: `--output`, `--log-level`, `--skip-workers`, `--exclude <patterns...>`, `--agents-md`, `--hooks`, `--stats`, `--skills`, `--max-file-size`, `--profile`
+
+> **Non-mutating by default**: `analyze` does not write to the target repo unless you pass `--agents-md` (generates AGENTS.md/CLAUDE.md), `--hooks` (installs Claude Code hooks), or `--skills` (generates per-community SKILL.md files). Use `.astrolabeignore` (gitignore syntax) to exclude files from analysis.
 
 > **Concurrency note**: Running `astrolabe analyze` while the MCP server (`serve-mcp`) is active on the same repo will be blocked to prevent SQLite WAL corruption. Stop the MCP server first, or analyze a different repository.
 
@@ -231,13 +233,16 @@ Or point to your local build:
 }
 ```
 
-### Tools (29)
+### Tools
+
+> By default all tools are visible. Set `ASTROLABE_MCP_TOOLS=explore,cypher` to filter the MCP tool list to a curated subset (always includes `list_repos` + `explore`). Set `ASTROLABE_MCP_TOOLS=all` to restore the full list.
 
 **Core Analysis**
 
 | Tool | Description |
 |------|-------------|
 | `list_repos` | List all indexed repositories |
+| `explore` | Omni-tool: natural language query returning search results + 360° context of top symbol |
 | `query` | Hybrid search with context boosting (`query`, `limit`, `repo`, `service`, `task_context`, `goal`) |
 | `context` | 360° symbol view — incoming/outgoing edges (`name`, `repo`) |
 | `impact` | Blast radius with cross-repo fan-out (`target`, `direction`, `maxDepth`, `minConfidence`, `crossDepth`) |

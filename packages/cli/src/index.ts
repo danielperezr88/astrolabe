@@ -71,14 +71,14 @@ program
   .option('-o, --output <path>', 'Output database path', '.astrolabe/astrolabe.db')
   .option('--log-level <level>', 'Log level (debug, info, warn, error)', 'info')
   .option('--skip-workers', 'Disable parallel parsing (sequential only)')
-  .option('--skip-agents-md', 'Skip AGENTS.md/CLAUDE.md generation (#268)')
-  .option('--no-hooks', 'Skip Claude Code hooks installation in target repo')
+  .option('--agents-md', 'Generate AGENTS.md/CLAUDE.md in target repo (opt-in)')
+  .option('--hooks', 'Install Claude Code hooks in target repo (opt-in)')
   .option('--skills', 'Generate per-community SKILL.md files (#267)')
-  .option('--no-stats', 'Omit volatile counts from AGENTS.md/CLAUDE.md (#760)')
+  .option('--stats', 'Include volatile counts in AGENTS.md/CLAUDE.md (opt-in)')
   .option('--max-file-size <kb>', 'Skip files larger than N KB (default: 512, max: 32768)', parseInt)
   .option('--exclude <patterns...>', 'Glob patterns for additional file/directory exclusion')
   .option('--profile', 'Emit phase-level timing information (Pitfall 7)')
-  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; skipAgentsMd?: boolean; hooks?: boolean; skills?: boolean; stats?: boolean; maxFileSize?: number; exclude?: string[]; profile?: boolean }) => {
+  .action(async (repoPath: string, opts: { output: string; logLevel: string; skipWorkers?: boolean; agentsMd?: boolean; hooks?: boolean; skills?: boolean; stats?: boolean; maxFileSize?: number; exclude?: string[]; profile?: boolean }) => {
     const log = createLogger({ level: opts.logLevel as any });
     log.info('Starting analysis', { repoPath, output: opts.output });
 
@@ -255,13 +255,12 @@ program
       saveRegistry(repos);
 
       // #276: Install Claude Code hooks for auto-augmentation
-      if (opts.hooks !== false) {
+      if (opts.hooks) {
         const hookResult = installHooks(repoPath);
         log.info('Claude Code hooks installed', { scripts: hookResult.scripts, config: hookResult.config });
       }
 
-      // #268, #267: Generate AGENTS.md/CLAUDE.md and per-community skills
-      if (!opts.skipAgentsMd) {
+      if (opts.agentsMd) {
         // Count nodes by label
         const lc: Record<string, number> = {};
         for (const n of graph.iterNodes()) lc[n.label] = (lc[n.label] ?? 0) + 1;
@@ -279,7 +278,7 @@ program
           isIncremental,
           graph: opts.skills ? graph : undefined,
           skills: opts.skills ?? false,
-          noStats: opts.stats === false,
+          noStats: !opts.stats,
         });
         log.info('Agent files generated', { agentsMd: agentResult.agentsMd, claudeMd: agentResult.claudeMd, skillsCount: agentResult.skillsCount });
       }
